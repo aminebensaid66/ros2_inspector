@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>pkg_a</name>
+  <version>1.0.0</version>
+  <description>A simple Python publisher node.</description>
+  <maintainer email="dev@example.com">Dev User</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

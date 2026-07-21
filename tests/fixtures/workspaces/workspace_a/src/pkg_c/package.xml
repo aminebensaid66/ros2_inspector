@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>pkg_c</name>
+  <version>0.1.0</version>
+  <description>A meta-package for bringup.</description>
+  <maintainer email="dev@example.com">Dev User</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>pkg_a</exec_depend>
+  <exec_depend>pkg_b</exec_depend>
+
+  <export>
+    <metapackage/>
+  </export>
+</package>

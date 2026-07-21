@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Tool artifacts
+.ros2inspector_cache/
+.coverage
+htmlcov/
+
+# Generated outputs (ros2inspector viz / graph)
+ros2inspector_graph.html
+*.dot
+
+# IDE
+.vscode/
+.idea/
+*.swp

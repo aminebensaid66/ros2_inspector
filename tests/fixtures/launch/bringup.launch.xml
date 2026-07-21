@@ -1,0 +1,7 @@
+<launch>
+  <node pkg="pkg_a" exec="talker" name="talker_node">
+    <remap from="/chatter" to="/my_chatter"/>
+  </node>
+  <node pkg="pkg_b" exec="listener" name="listener_node" ns="/robot"/>
+  <include file="$(find pkg_c)/launch/extras.launch.xml"/>
+</launch>
