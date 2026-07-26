@@ -7,4 +7,4 @@ class StrEnum(str, Enum):
     """Python 3.10-compatible equivalent of :class:`enum.StrEnum`."""
 
     def __str__(self) -> str:
-        return self.value
+        return str(self.value)
