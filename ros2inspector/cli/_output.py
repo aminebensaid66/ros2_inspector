@@ -1,4 +1,4 @@
-from enum import StrEnum
+from ros2inspector.utils.enums import StrEnum
 
 
 class OutputFormat(StrEnum):

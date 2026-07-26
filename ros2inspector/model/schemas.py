@@ -1,6 +1,6 @@
-from enum import StrEnum
-
 from pydantic import BaseModel, Field
+
+from ros2inspector.utils.enums import StrEnum
 
 DYNAMIC_SENTINEL = "<dynamic>"
 

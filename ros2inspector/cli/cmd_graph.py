@@ -1,5 +1,4 @@
 import sys
-from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -10,6 +9,7 @@ from ros2inspector.cli._state import state
 from ros2inspector.cli._workspace import build_uam_or_exit
 from ros2inspector.discovery import find_workspace_root
 from ros2inspector.graph import render_dot, render_json, render_mermaid
+from ros2inspector.utils.enums import StrEnum
 
 app = typer.Typer(
     help="Render workspace architecture as a graph.",

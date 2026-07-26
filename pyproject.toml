@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,15 +7,18 @@ name = "ros2inspector"
 version = "0.1.0"
 description = "Static ROS 2 architecture analysis, visualization, and policy checking"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = "MIT"
-authors = [{ name = "Amine Bensaid", email = "mahdibouzidi04@gmail.com" }]
+license-files = ["LICENSE"]
+authors = [{ name = "Amine Bensaid", email = "aminebensaid66@gmail.com" }]
 keywords = ["ros2", "robotics", "architecture", "static-analysis", "cli"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Quality Assurance",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -24,7 +27,7 @@ classifiers = [
 dependencies = [
     "typer>=0.12",
     "rich>=13.7",
-    "networkx>=3.3",
+    "networkx>=3.3,<3.5",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "orjson>=3.10",
@@ -32,6 +35,12 @@ dependencies = [
     "tree-sitter-cpp>=0.22",
     "diskcache>=5.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/aminebensaid66/ros2_inspector"
+Documentation = "https://github.com/aminebensaid66/ros2_inspector_website"
+Repository = "https://github.com/aminebensaid66/ros2_inspector"
+Issues = "https://github.com/aminebensaid66/ros2_inspector/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -61,7 +70,7 @@ addopts = "--cov=ros2inspector --cov-report=term-missing"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -71,7 +80,7 @@ select = ["E", "F", "I", "UP", "B"]
 "ros2inspector/viz/renderer.py" = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.10"
 strict = true
 ignore_missing_imports = true
 

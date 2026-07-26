@@ -22,7 +22,21 @@ ROS 2 Inspector analyzes source files without executing or building the workspac
 
 ## Installation
 
-Requires Python 3.11 or newer.
+Requires Python 3.10 or newer. A ROS 2 installation is not required for source analysis.
+
+For a globally available CLI in an isolated environment, use `pipx`:
+
+```bash
+pipx install ros2inspector
+```
+
+Run it once without keeping it installed:
+
+```bash
+pipx run ros2inspector --help
+```
+
+Inside an existing Python virtual environment, use `pip`:
 
 ```bash
 pip install ros2inspector
@@ -35,8 +49,6 @@ git clone https://github.com/aminebensaid66/ros2_inspector
 cd ros2_inspector
 pip install -e ".[dev]"
 ```
-
-A ROS 2 installation is not required for source analysis.
 
 ## Quickstart
 
@@ -251,6 +263,11 @@ mypy ros2inspector/
 
 The test suite uses fixture workspaces under `tests/fixtures/` and does not require a live ROS 2 environment.
 
+## Publishing
+
+Maintainers should follow [`RELEASING.md`](RELEASING.md). Publishing is performed by
+GitHub Actions through PyPI Trusted Publishing when a GitHub Release is published.
+
 ## License
 
-MIT
+MIT. See [`LICENSE`](LICENSE).
