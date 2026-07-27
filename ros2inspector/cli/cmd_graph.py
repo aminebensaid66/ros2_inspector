@@ -60,7 +60,7 @@ def graph(
       ros2inspector graph full --format dot -o out.dot
       ros2inspector graph comms -C ~/my_ws
     """
-    root = find_workspace_root(path.resolve())
+    root = find_workspace_root(path)
     uam = build_uam_or_exit(root, use_cache=not no_cache, show_progress=not state.quiet)
 
     if fmt == GraphFormat.MERMAID:

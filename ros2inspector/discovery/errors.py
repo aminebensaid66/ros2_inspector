@@ -7,6 +7,14 @@ class WorkspaceAnalysisError(RuntimeError):
     """Base class for user-actionable workspace analysis failures."""
 
 
+class WorkspaceAccessError(WorkspaceAnalysisError):
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(
+            f"Cannot access workspace path '{path}'. Check that it exists and is readable."
+        )
+
+
 class NoPackagesFoundError(WorkspaceAnalysisError):
     def __init__(self, root: Path) -> None:
         self.root = root

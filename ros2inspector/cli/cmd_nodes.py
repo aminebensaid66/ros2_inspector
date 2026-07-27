@@ -59,7 +59,7 @@ def nodes(
       ros2inspector nodes --show-connections
       ros2inspector nodes --format json -C ~/my_ws
     """
-    root = find_workspace_root(path.resolve())
+    root = find_workspace_root(path)
     uam = build_uam_or_exit(root, use_cache=not no_cache, show_progress=not state.quiet)
 
     node_list = uam.nodes()

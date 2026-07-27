@@ -38,7 +38,7 @@ def viz(
       ros2inspector viz -C ~/my_ws -o graph.html
       ros2inspector viz --no-open
     """
-    root = find_workspace_root(path.resolve())
+    root = find_workspace_root(path)
 
     err_console.print(f"[dim]Scanning {root}…[/dim]")
     uam = build_uam_or_exit(root, use_cache=not no_cache)

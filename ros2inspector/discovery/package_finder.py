@@ -4,6 +4,8 @@ from collections import deque
 from collections.abc import Collection
 from pathlib import Path
 
+from .errors import WorkspaceAccessError
+
 _STOP_MARKERS = frozenset({"COLCON_IGNORE", ".rosignore"})
 DEFAULT_EXCLUDED_DIRS = frozenset(
     {
@@ -35,9 +37,12 @@ def source_search_root(root: Path) -> Path:
     caller already points at ``src`` or at a standalone package tree, that path
     is used unchanged.
     """
-    resolved = root.expanduser().resolve()
-    src = resolved / "src"
-    return src if resolved.name != "src" and src.is_dir() else resolved
+    try:
+        resolved = root.expanduser().resolve()
+        src = resolved / "src"
+        return src if resolved.name != "src" and src.is_dir() else resolved
+    except PermissionError as exc:
+        raise WorkspaceAccessError(root) from exc
 
 
 def find_package_xml_files(
@@ -58,22 +63,31 @@ def find_package_xml_files(
 
     while queue:
         current = queue.popleft()
-        if not current.is_dir() or current.name in excluded:
-            continue
-        if any((current / marker).exists() for marker in _STOP_MARKERS):
-            continue
-
-        pkg_xml = current / "package.xml"
-        if pkg_xml.is_file():
-            results.append(pkg_xml.resolve())
-            continue
-
         try:
+            if not current.is_dir() or current.name in excluded:
+                continue
+            if any((current / marker).exists() for marker in _STOP_MARKERS):
+                continue
+
+            pkg_xml = current / "package.xml"
+            if pkg_xml.is_file():
+                results.append(pkg_xml.resolve())
+                continue
+
             children = sorted(current.iterdir(), key=lambda p: p.name)
+        except PermissionError as exc:
+            if current == scan_root:
+                raise WorkspaceAccessError(scan_root) from exc
+            continue
         except OSError:
             continue
+
         for child in children:
-            if child.is_dir() and not child.name.startswith(".") and child.name not in excluded:
+            try:
+                is_directory = child.is_dir()
+            except OSError:
+                continue
+            if is_directory and not child.name.startswith(".") and child.name not in excluded:
                 queue.append(child)
 
     return results

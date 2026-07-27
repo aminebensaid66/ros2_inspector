@@ -74,7 +74,7 @@ def validate(
         err_console.print(f"[red]Error:[/red] policy file not found: {policy_path}")
         raise typer.Exit(3)
 
-    root = find_workspace_root(path.resolve())
+    root = find_workspace_root(path)
 
     if not state.quiet:
         diag = console if fmt == OutputFormat.TABLE else err_console

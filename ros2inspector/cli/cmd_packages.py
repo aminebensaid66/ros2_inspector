@@ -63,7 +63,7 @@ def packages(
         )
         raise typer.Exit(2)
 
-    root = find_workspace_root(path.resolve())
+    root = find_workspace_root(path)
     packages_list = load_packages_or_exit(root)
 
     _ = score_workspace(packages_list)

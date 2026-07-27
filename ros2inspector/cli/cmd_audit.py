@@ -161,7 +161,7 @@ def audit(
     extra_excludes = [t.strip() for t in exclude.split(",") if t.strip()]
     all_excludes = _DEFAULT_EXCLUDES + extra_excludes
 
-    root = find_workspace_root(path.resolve())
+    root = find_workspace_root(path)
 
     if not state.quiet:
         diag = console if fmt == OutputFormat.TABLE else err_console
