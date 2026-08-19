@@ -6,6 +6,8 @@
 
 This first release ships seven commands: `scan`, `packages`, `nodes`, `graph`, `viz`, `audit`, and `validate`.
 
+**Website and documentation:** [ros2-inspector-theta.vercel.app](https://ros2-inspector-theta.vercel.app/)
+
 ## Features
 
 - Static node and endpoint discovery with Python AST and Tree-sitter C++ parsers

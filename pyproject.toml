@@ -37,8 +37,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/aminebensaid66/ros2_inspector"
-Documentation = "https://github.com/aminebensaid66/ros2_inspector_website"
+Homepage = "https://ros2-inspector-theta.vercel.app/"
+Documentation = "https://ros2-inspector-theta.vercel.app/docs/"
 Repository = "https://github.com/aminebensaid66/ros2_inspector"
 Issues = "https://github.com/aminebensaid66/ros2_inspector/issues"
 
