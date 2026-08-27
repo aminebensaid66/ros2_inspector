@@ -51,7 +51,7 @@ PyPI token is stored in the repository.
 
 5. Commit and push the version change.
 6. Create a GitHub Release with a tag that exactly matches `v<project.version>`, for example
-   `v0.1.0`. The workflow rejects mismatched tags.
+   `v0.1.1`. The workflow rejects mismatched tags.
 7. Confirm the package on PyPI, then test the public installation:
 
    ```bash
