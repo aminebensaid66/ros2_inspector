@@ -29,7 +29,7 @@ from ros2inspector.static import (
     parse_python_nodes,
     score_workspace,
 )
-from ros2inspector.static.launch_analyzer import LaunchNode
+from ros2inspector.static.launch_analyzer import LaunchGraph, LaunchNode
 
 
 def _pkg_id(name: str) -> str:
@@ -105,6 +105,7 @@ class UnifiedArchitectureModel:
         self._diagnostics: list[dict[str, Any]] = []
         # package_name → list of LaunchNodes found in launch files (per-node remaps)
         self._launch_remaps: dict[str, list[LaunchNode]] = {}
+        self._launch_includes: list[dict[str, str]] = []
 
     # ── build ──────────────────────────────────────────────────────────────
 
@@ -188,6 +189,7 @@ class UnifiedArchitectureModel:
                 for lf in find_launch_files(pkg_path):
                     try:
                         lg = analyze_launch_file(lf)
+                        uam._record_launch_uncertainty(lg)
                         for launch_node in lg.nodes:
                             launch_node.source_file = lg.source_file
                             target_package = launch_node.package
@@ -219,6 +221,30 @@ class UnifiedArchitectureModel:
         uam._resolve_interface_types(all_interfaces)
 
         return uam
+
+    def _record_launch_uncertainty(self, launch_graph: object) -> None:
+        """Keep launch constructs that static analysis cannot safely execute."""
+        if not isinstance(launch_graph, LaunchGraph):
+            return
+        self._launch_includes.extend(
+            {
+                "source_file": include.source_file,
+                "target_file": include.target_file,
+            }
+            for include in launch_graph.includes
+        )
+        if launch_graph.unresolved_branches:
+            self._diagnostics.append(
+                {
+                    "severity": "warning",
+                    "code": "launch_branch_unresolved",
+                    "message": (
+                        "Launch file contains substitutions, conditions, groups, or other "
+                        "constructs that were not resolved statically."
+                    ),
+                    "file": launch_graph.source_file,
+                }
+            )
 
     @staticmethod
     def _add_edge(
@@ -671,11 +697,20 @@ class UnifiedArchitectureModel:
     def launch_remaps(self) -> dict[str, list[dict[str, Any]]]:
         return {
             pkg: [
-                {"executable": ln.executable, "name": ln.name or "", "remaps": ln.remaps}
+                {
+                    "executable": ln.executable,
+                    "name": ln.name or "",
+                    "remaps": ln.remaps,
+                    "namespace": ln.namespace,
+                    "source_file": ln.source_file,
+                }
                 for ln in nodes
             ]
             for pkg, nodes in self._launch_remaps.items()
         }
+
+    def launch_includes(self) -> list[dict[str, str]]:
+        return [dict(include) for include in self._launch_includes]
 
     def summary(self) -> dict[str, int]:
         g = self._graph
@@ -710,6 +745,7 @@ class UnifiedArchitectureModel:
             "services": self.services(),
             "actions": self.actions(),
             "launch_remaps": self.launch_remaps(),
+            "launch_includes": self.launch_includes(),
             "diagnostics": self.diagnostics(),
             "summary": self.summary(),
             "graph": {
