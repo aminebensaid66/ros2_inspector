@@ -239,6 +239,10 @@ def _parse_cpp_template_arg(args_node: Node, source: bytes) -> str:
 
 def _cpp_type_to_ros(cpp_type: str) -> str:
     """Convert 'std_msgs::msg::String' → 'std_msgs/String'."""
+    # A dependent template parameter is not a concrete ROS interface. Keeping
+    # it unknown prevents the graph from presenting an inference as fact.
+    if re.search(r"(?:^|::)(?:T|[A-Za-z_][A-Za-z0-9_]*T)(?:$|::)", cpp_type.strip()):
+        return "unknown"
     parts = [p.strip() for p in cpp_type.split("::") if p.strip()]
     for marker in ("msg", "srv", "action"):
         if marker in parts:

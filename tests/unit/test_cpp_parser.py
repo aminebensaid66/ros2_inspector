@@ -31,3 +31,25 @@ def test_detects_service():
 def test_no_dynamic_names():
     nodes = parse_cpp_nodes(FIXTURE_DIR, "test_pkg")
     assert not nodes[0].has_dynamic_names
+
+
+def test_dependent_template_type_is_unresolved(tmp_path: Path):
+    source = tmp_path / "generic.cpp"
+    source.write_text(
+        "#include <rclcpp/rclcpp.hpp>\n"
+        "template<typename T>\n"
+        "class GenericNode : public rclcpp::Node {\n"
+        "public:\n"
+        "  GenericNode() : Node(\"generic\") {\n"
+        "    pub_ = this->create_publisher<T>(\"/data\", 10);\n"
+        "  }\n"
+        "private:\n"
+        "  rclcpp::Publisher<T>::SharedPtr pub_;\n"
+        "};\n"
+    )
+
+    node = parse_cpp_nodes(tmp_path, "generic_pkg")[0]
+
+    assert node.publishers[0].msg_type == "unknown"
+    assert node.publishers[0].type_source == "unknown"
+    assert node.publishers[0].confidence == "low"
