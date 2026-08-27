@@ -131,6 +131,43 @@ def test_dynamic_endpoints_do_not_share_a_communication_node(tmp_path: Path) -> 
         assert len(relations) == 1
 
 
+def test_launch_records_match_nodes_from_another_package(tmp_path: Path) -> None:
+    driver = tmp_path / "src" / "driver_pkg"
+    (driver / "driver_pkg").mkdir(parents=True)
+    (driver / "package.xml").write_text(
+        "<package format='3'><name>driver_pkg</name><version>0.1.0</version>"
+        "<description>x</description><maintainer email='a@b.c'>A</maintainer>"
+        "<license>Apache-2.0</license><exec_depend>rclpy</exec_depend></package>"
+    )
+    (driver / "driver_pkg" / "driver.py").write_text(
+        "from rclpy.node import Node\n"
+        "class Camera(Node):\n"
+        "    def __init__(self):\n"
+        "        super().__init__('camera')\n"
+        "        self.create_publisher(object, 'image', 10)\n"
+    )
+
+    bringup = tmp_path / "src" / "robot_bringup"
+    (bringup / "launch").mkdir(parents=True)
+    (bringup / "package.xml").write_text(
+        "<package format='3'><name>robot_bringup</name><version>0.1.0</version>"
+        "<description>x</description><maintainer email='a@b.c'>A</maintainer>"
+        "<license>Apache-2.0</license><exec_depend>driver_pkg</exec_depend></package>"
+    )
+    launch = bringup / "launch" / "robot.launch.xml"
+    launch.write_text(
+        "<launch><node pkg='driver_pkg' exec='camera' name='front_camera' ns='robot' "
+        "/><node pkg='driver_pkg' exec='camera' name='rear_camera' ns='robot2' /></launch>"
+    )
+
+    model = UAM.build(tmp_path, use_cache=False)
+    camera = next(node for node in model.graph.nodes if node == _node_id("driver_pkg", "Camera"))
+    attrs = model.graph.nodes[camera]
+    assert attrs["deployment_name"] == "front_camera"
+    assert attrs["namespace"] == "robot"
+    assert attrs["launch_file"] == str(launch)
+
+
 def test_to_dict_is_json_serializable_and_keeps_edge_keys(uam: UAM) -> None:
     data = uam.to_dict()
     assert all("key" in edge for edge in data["graph"]["edges"])

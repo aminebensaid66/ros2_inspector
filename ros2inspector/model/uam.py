@@ -13,9 +13,9 @@ from ros2inspector.discovery import (
     find_package_xml_files,
 )
 from ros2inspector.model.schemas import (
+    DYNAMIC_SENTINEL,
     CommunicationEndpoint,
     DataSource,
-    DYNAMIC_SENTINEL,
     InterfaceDefinition,
     NodeDefinition,
     PackageMetadata,
@@ -183,12 +183,18 @@ class UnifiedArchitectureModel:
                 all_nodes.extend(pkg_nodes)
                 all_interfaces.extend(pkg_ifaces)
 
-                # Collect launch file remaps (not cached — fast to parse)
-                pkg_launch_nodes: list[LaunchNode] = []
+                # Collect launch records (not cached — fast to parse). Index by
+                # target package because bringup files commonly live elsewhere.
                 for lf in find_launch_files(pkg_path):
                     try:
                         lg = analyze_launch_file(lf)
-                        pkg_launch_nodes.extend(lg.nodes)
+                        for launch_node in lg.nodes:
+                            launch_node.source_file = lg.source_file
+                            target_package = launch_node.package
+                            if target_package not in {"<unknown>", "<dynamic>"}:
+                                uam._launch_remaps.setdefault(target_package, []).append(
+                                    launch_node
+                                )
                     except Exception as exc:  # noqa: BLE001
                         uam._diagnostics.append(
                             {
@@ -198,9 +204,6 @@ class UnifiedArchitectureModel:
                                 "file": str(lf),
                             }
                         )
-                if pkg_launch_nodes:
-                    uam._launch_remaps[pkg.name] = pkg_launch_nodes
-
                 if _progress is not None and _task is not None:
                     _progress.advance(_task)
         finally:
@@ -370,6 +373,7 @@ class UnifiedArchitectureModel:
                     namespace = ln.namespace
                     g.nodes[nid]["deployment_name"] = ln.name or ln.executable
                     g.nodes[nid]["namespace"] = ln.namespace
+                    g.nodes[nid]["launch_file"] = ln.source_file
                     break
 
             for index, ep in enumerate(nd.publishers):

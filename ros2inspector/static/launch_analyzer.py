@@ -13,6 +13,7 @@ class LaunchNode:
     name: str | None = None
     remaps: dict[str, str] = field(default_factory=dict)
     namespace: str | None = None
+    source_file: str | None = None
 
 
 @dataclass
