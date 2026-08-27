@@ -365,7 +365,16 @@ class UnifiedArchitectureModel:
             pkg_remaps: dict[str, str] = {}
             namespace: str | None = None
             for ln in self._launch_remaps.get(nd.package, []):
-                names = {nd.name, _normalise_symbol(nd.name)}
+                names = {
+                    value
+                    for value in (
+                        nd.name,
+                        nd.source_symbol,
+                        nd.declared_ros_name,
+                        _normalise_symbol(nd.name),
+                    )
+                    if value
+                }
                 if (
                     ln.name in names
                     or ln.executable in names
