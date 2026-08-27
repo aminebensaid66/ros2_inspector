@@ -211,19 +211,71 @@ def _analyze_yaml_launch(path: Path) -> LaunchGraph:
         return graph
 
     if not isinstance(data, dict):
+        graph.unresolved_branches = True
         return graph
 
-    for entry in data.get("launch", []):
+    entries = data.get("launch", [])
+    if not isinstance(entries, list):
+        graph.unresolved_branches = True
+        return graph
+
+    for entry in entries:
         if not isinstance(entry, dict):
+            graph.unresolved_branches = True
             continue
-        node_cfg = entry.get("node", {})
-        if node_cfg:
+        node_cfg = entry.get("node")
+        if isinstance(node_cfg, dict):
             graph.nodes.append(
                 LaunchNode(
-                    executable=node_cfg.get("executable", "<unknown>"),
-                    package=node_cfg.get("package", "<unknown>"),
-                    name=node_cfg.get("name"),
+                    executable=_yaml_string(node_cfg.get("exec")),
+                    package=_yaml_string(node_cfg.get("pkg")),
+                    name=_yaml_string(node_cfg.get("name")),
+                    remaps=_extract_yaml_remaps(node_cfg.get("remap")),
+                    namespace=_yaml_string(node_cfg.get("namespace")),
                 )
             )
+            continue
+
+        include_cfg = entry.get("include")
+        if include_cfg is not None:
+            target = include_cfg if isinstance(include_cfg, str) else None
+            if isinstance(include_cfg, dict):
+                target = include_cfg.get("file") or include_cfg.get("path")
+            if target:
+                graph.includes.append(
+                    LaunchInclude(source_file=str(path), target_file=target)
+                )
+            else:
+                graph.unresolved_branches = True
+            continue
+
+        # Conditions, substitutions, groups, and other frontend constructs may
+        # affect the effective deployment but cannot be resolved safely here.
+        graph.unresolved_branches = True
 
     return graph
+
+
+def _yaml_string(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "<unknown>"
+    return "<dynamic>"
+
+
+def _extract_yaml_remaps(value: object) -> dict[str, str]:
+    if not isinstance(value, list):
+        return {}
+    remaps: dict[str, str] = {}
+    for item in value:
+        if isinstance(item, dict):
+            src = item.get("from")
+            dst = item.get("to")
+        elif isinstance(item, list) and len(item) == 2:
+            src, dst = item
+        else:
+            continue
+        if isinstance(src, str) and isinstance(dst, str):
+            remaps[src] = dst
+    return remaps

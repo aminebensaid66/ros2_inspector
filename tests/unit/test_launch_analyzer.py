@@ -43,3 +43,30 @@ def test_xml_launch_remaps():
     graph = analyze_launch_file(FIXTURE_DIR / "bringup.launch.xml")
     talker = next(n for n in graph.nodes if n.name == "talker_node")
     assert talker.remaps.get("/chatter") == "/my_chatter"
+
+
+def test_yaml_launch_uses_ros_frontend_keys_and_metadata(tmp_path: Path):
+    launch_file = tmp_path / "standard.launch.yaml"
+    launch_file.write_text(
+        "launch:\n"
+        "  - node:\n"
+        "      pkg: turtlesim\n"
+        "      exec: mimic\n"
+        "      name: mimic\n"
+        "      namespace: robot1\n"
+        "      remap:\n"
+        "        - from: /input/pose\n"
+        "          to: /robot1/pose\n"
+        "  - include: other.launch.yaml\n"
+    )
+
+    graph = analyze_launch_file(launch_file)
+
+    assert len(graph.nodes) == 1
+    node = graph.nodes[0]
+    assert node.package == "turtlesim"
+    assert node.executable == "mimic"
+    assert node.name == "mimic"
+    assert node.namespace == "robot1"
+    assert node.remaps == {"/input/pose": "/robot1/pose"}
+    assert graph.includes[0].target_file == "other.launch.yaml"
