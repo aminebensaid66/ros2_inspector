@@ -54,8 +54,8 @@ def score_package(pkg: PackageMetadata) -> int:
     # Assume no cycles initially; score_workspace deducts these points for cyclic packages.
     score += _WEIGHTS["no_circular_deps"]
 
-    test_dir = path / "test"
-    if test_dir.exists() and any(test_dir.iterdir()):
+    test_dirs = (path / "test", path / "tests")
+    if any(test_dir.is_dir() and any(test_dir.iterdir()) for test_dir in test_dirs):
         score += _WEIGHTS["has_test_dir"]
 
     if pkg.dependencies.get(DepType.TEST):
