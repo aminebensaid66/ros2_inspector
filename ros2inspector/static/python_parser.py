@@ -69,6 +69,7 @@ class _NodeVisitor(ast.NodeVisitor):
 
             nd = NodeDefinition(
                 name=node.name,
+                source_symbol=node.name,
                 package=self.package,
                 language="python",
                 file_path=str(self.file_path),
@@ -147,6 +148,11 @@ class _NodeVisitor(ast.NodeVisitor):
             return
 
         func_name = _get_attr_name(node.func).split(".")[-1]
+
+        if func_name == "__init__" and node.args:
+            ros_name = _literal_string(node.args[0])
+            if ros_name is not None and _is_super_init(node.func):
+                self._current_node.declared_ros_name = ros_name
 
         if func_name in ("create_publisher", "create_subscription"):
             msg_type = _extract_type_arg(node, 0, self._imports)
@@ -255,3 +261,17 @@ def _extract_type_arg(call: ast.Call, index: int, imports: dict[str, str]) -> st
                     return f"{parts[idx - 1]}/{parts[-1]}"
         return full
     return "unknown"
+
+
+def _literal_string(node: ast.expr) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _is_super_init(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "__init__"
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "super"
+    )

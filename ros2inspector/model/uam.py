@@ -347,6 +347,8 @@ class UnifiedArchitectureModel:
                 nid,
                 kind="Node",
                 name=nd.name,
+                source_symbol=nd.source_symbol or nd.name,
+                declared_ros_name=nd.declared_ros_name,
                 package=nd.package,
                 language=nd.language,
                 file_path=nd.file_path,

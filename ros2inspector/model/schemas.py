@@ -47,6 +47,8 @@ class CommunicationEndpoint(BaseModel):
 
 class NodeDefinition(BaseModel):
     name: str
+    source_symbol: str | None = None
+    declared_ros_name: str | None = None
     package: str
     language: str
     file_path: str | None = None

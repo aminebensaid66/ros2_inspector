@@ -17,3 +17,19 @@ def test_detects_talker_node():
     assert any(ep.name == "/chatter" for ep in node.publishers)
     assert node.subscriptions == []
     assert not node.has_dynamic_names
+
+
+def test_preserves_source_and_ros_node_identity(tmp_path: Path):
+    source = tmp_path / "nodes.py"
+    source.write_text(
+        "from rclpy.node import Node\n"
+        "class TalkerNode(Node):\n"
+        "    def __init__(self):\n"
+        "        super().__init__('talker')\n"
+    )
+
+    node = parse_python_nodes(tmp_path, "demo")[0]
+
+    assert node.name == "TalkerNode"
+    assert node.source_symbol == "TalkerNode"
+    assert node.declared_ros_name == "talker"
