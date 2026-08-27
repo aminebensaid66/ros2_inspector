@@ -15,6 +15,7 @@ from ros2inspector.discovery import (
 from ros2inspector.model.schemas import (
     CommunicationEndpoint,
     DataSource,
+    DYNAMIC_SENTINEL,
     InterfaceDefinition,
     NodeDefinition,
     PackageMetadata,
@@ -49,6 +50,20 @@ def _svc_id(name: str) -> str:
 
 def _action_id(name: str) -> str:
     return f"action:{name}"
+
+
+def _communication_id(
+    kind: str,
+    name: str,
+    node_id: str,
+    role: str,
+    index: int,
+) -> str:
+    """Return a stable ID without merging unresolved communication endpoints."""
+    builders = {"Topic": _topic_id, "Service": _svc_id, "Action": _action_id}
+    if name != DYNAMIC_SENTINEL:
+        return builders[kind](name)
+    return f"unresolved:{kind.lower()}:{node_id}:{role}:{index}"
 
 
 def _iface_id(package: str, name: str) -> str:
@@ -228,6 +243,7 @@ class UnifiedArchitectureModel:
         name: str,
         type_key: str,
         interface_type: str,
+        unresolved: bool = False,
     ) -> None:
         graph = self._graph
         explicit = interface_type != "unknown"
@@ -239,7 +255,8 @@ class UnifiedArchitectureModel:
                 **{
                     type_key: interface_type,
                     "type_source": "explicit" if explicit else "unknown",
-                    "confidence": "high" if explicit else "unknown",
+                    "confidence": "low" if unresolved else ("high" if explicit else "unknown"),
+                    "resolution": "unresolved" if unresolved else "known",
                     "observed_types": [interface_type] if explicit else [],
                 },
             )
@@ -283,6 +300,7 @@ class UnifiedArchitectureModel:
             "line": endpoint.line,
             "evidence": endpoint.evidence,
             "confidence": endpoint.confidence,
+            "resolution": "unresolved" if actual_name == DYNAMIC_SENTINEL else "known",
         }
 
     # ── graph construction ─────────────────────────────────────────────────
@@ -354,15 +372,16 @@ class UnifiedArchitectureModel:
                     g.nodes[nid]["namespace"] = ln.namespace
                     break
 
-            for ep in nd.publishers:
+            for index, ep in enumerate(nd.publishers):
                 actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                tid = _topic_id(actual)
+                tid = _communication_id("Topic", actual, nid, "publisher", index)
                 self._upsert_comm_node(
                     tid,
                     kind="Topic",
                     name=actual,
                     type_key="msg_type",
                     interface_type=ep.msg_type,
+                    unresolved=actual == DYNAMIC_SENTINEL,
                 )
                 self._add_edge(
                     g,
@@ -372,15 +391,16 @@ class UnifiedArchitectureModel:
                     **self._endpoint_edge_attrs(ep, actual),
                 )
 
-            for ep in nd.subscriptions:
+            for index, ep in enumerate(nd.subscriptions):
                 actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                tid = _topic_id(actual)
+                tid = _communication_id("Topic", actual, nid, "subscription", index)
                 self._upsert_comm_node(
                     tid,
                     kind="Topic",
                     name=actual,
                     type_key="msg_type",
                     interface_type=ep.msg_type,
+                    unresolved=actual == DYNAMIC_SENTINEL,
                 )
                 self._add_edge(
                     g,
@@ -390,15 +410,16 @@ class UnifiedArchitectureModel:
                     **self._endpoint_edge_attrs(ep, actual),
                 )
 
-            for ep in nd.services:
+            for index, ep in enumerate(nd.services):
                 actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                sid = _svc_id(actual)
+                sid = _communication_id("Service", actual, nid, "service", index)
                 self._upsert_comm_node(
                     sid,
                     kind="Service",
                     name=actual,
                     type_key="srv_type",
                     interface_type=ep.msg_type,
+                    unresolved=actual == DYNAMIC_SENTINEL,
                 )
                 self._add_edge(
                     g,
@@ -408,15 +429,16 @@ class UnifiedArchitectureModel:
                     **self._endpoint_edge_attrs(ep, actual),
                 )
 
-            for ep in nd.clients:
+            for index, ep in enumerate(nd.clients):
                 actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                sid = _svc_id(actual)
+                sid = _communication_id("Service", actual, nid, "client", index)
                 self._upsert_comm_node(
                     sid,
                     kind="Service",
                     name=actual,
                     type_key="srv_type",
                     interface_type=ep.msg_type,
+                    unresolved=actual == DYNAMIC_SENTINEL,
                 )
                 self._add_edge(
                     g,
@@ -426,15 +448,16 @@ class UnifiedArchitectureModel:
                     **self._endpoint_edge_attrs(ep, actual),
                 )
 
-            for ep in nd.action_servers:
+            for index, ep in enumerate(nd.action_servers):
                 actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                aid = _action_id(actual)
+                aid = _communication_id("Action", actual, nid, "action_server", index)
                 self._upsert_comm_node(
                     aid,
                     kind="Action",
                     name=actual,
                     type_key="action_type",
                     interface_type=ep.msg_type,
+                    unresolved=actual == DYNAMIC_SENTINEL,
                 )
                 self._add_edge(
                     g,
@@ -444,15 +467,16 @@ class UnifiedArchitectureModel:
                     **self._endpoint_edge_attrs(ep, actual),
                 )
 
-            for ep in nd.action_clients:
+            for index, ep in enumerate(nd.action_clients):
                 actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                aid = _action_id(actual)
+                aid = _communication_id("Action", actual, nid, "action_client", index)
                 self._upsert_comm_node(
                     aid,
                     kind="Action",
                     name=actual,
                     type_key="action_type",
                     interface_type=ep.msg_type,
+                    unresolved=actual == DYNAMIC_SENTINEL,
                 )
                 self._add_edge(
                     g,

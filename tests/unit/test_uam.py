@@ -92,6 +92,45 @@ def test_graph_is_lossless_multidigraph(tmp_path: Path) -> None:
     assert relations == {"publishes", "subscribes"}
 
 
+def test_dynamic_endpoints_do_not_share_a_communication_node(tmp_path: Path) -> None:
+    package = tmp_path / "src" / "dynamic_pkg"
+    source_dir = package / "dynamic_pkg"
+    source_dir.mkdir(parents=True)
+    (package / "package.xml").write_text(
+        "<package format='3'><name>dynamic_pkg</name><version>0.1.0</version>"
+        "<description>x</description><maintainer email='a@b.c'>A</maintainer>"
+        "<license>Apache-2.0</license><exec_depend>rclpy</exec_depend></package>"
+    )
+    (source_dir / "dynamic.py").write_text(
+        "from rclpy.node import Node\n"
+        "class Publisher(Node):\n"
+        "    def __init__(self):\n"
+        "        super().__init__('publisher')\n"
+        "        self.create_publisher(object, topic_name, 10)\n"
+        "class Subscriber(Node):\n"
+        "    def __init__(self):\n"
+        "        super().__init__('subscriber')\n"
+        "        self.create_subscription(object, topic_name, self.cb, 10)\n"
+        "    def cb(self, msg):\n"
+        "        pass\n"
+    )
+
+    graph = UAM.build(tmp_path, use_cache=False).graph
+    dynamic_topics = [
+        node_id
+        for node_id, attrs in graph.nodes(data=True)
+        if attrs.get("kind") == "Topic" and attrs.get("resolution") == "unresolved"
+    ]
+
+    assert len(dynamic_topics) == 2
+    for topic_id in dynamic_topics:
+        relations = {
+            data["rel"]
+            for _, _, data in graph.in_edges(topic_id, data=True)
+        }
+        assert len(relations) == 1
+
+
 def test_to_dict_is_json_serializable_and_keeps_edge_keys(uam: UAM) -> None:
     data = uam.to_dict()
     assert all("key" in edge for edge in data["graph"]["edges"])
