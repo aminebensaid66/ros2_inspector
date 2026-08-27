@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+.DS_Store
 *.egg-info/
 dist/
 build/
