@@ -88,4 +88,4 @@ def test_cli_viz_is_self_contained(real_ws: Path, tmp_path: Path) -> None:
 def test_cli_version() -> None:
     version = runner.invoke(app, ["--version"])
     assert version.exit_code == 0
-    assert "0.1.1" in version.output
+    assert "0.1.2" in version.output
