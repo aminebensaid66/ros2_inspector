@@ -62,21 +62,11 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
             edges.append({"data": d})
         return {"nodes": nodes, "edges": edges}
 
-    # ── comms / full: 3-level compound hierarchy ───────────────────────────
-    # Level 1: Package  (big circle)
-    # Level 2: ROS Node (medium circle, inside Package)
-    # Level 3: Topic / Service / Action / Interface (leaves, inside ROS Node)
-    #
-    # Topics/services go inside the ROS node that PUBLISHES / PROVIDES them.
-    # If no publisher exists they float as orphans (no parent).
-    # Interfaces go inside their package.
-
-    # Build: which ROS node is the publisher/provider of each comm element
-    publisher_of: dict[str, str] = {}  # topic_id / svc_id → ros_node_id
-    for src, dst, edata in sub.edges(data=True):
-        if edata.get("rel") in ("publishes", "provides") and dst not in publisher_of:
-            if sub.nodes[src].get("kind") == "Node":
-                publisher_of[dst] = src
+    # ── comms / full: package/node compound hierarchy ─────────────────────
+    # Packages contain source nodes. Communication entities stay global because
+    # topics, services, and actions are shared graph objects rather than being
+    # owned by whichever publisher/provider happened to be encountered first.
+    # Interfaces remain grouped under their defining package.
 
     seen_pkgs: set[str] = set()
     nodes = []
@@ -120,19 +110,6 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
             if pkg:
                 _inject_pkg(pkg)
                 data["parent"] = f"pkg:{pkg}"
-
-        elif kind in ("Topic", "Service", "Action"):
-            if nid in publisher_of:
-                data["parent"] = publisher_of[nid]  # inside publisher's ROS node
-            else:
-                # find the subscriber's package and put topic there
-                for src, _, edata in sub.in_edges(nid, data=True):
-                    if edata.get("rel") in ("subscribes", "calls"):
-                        pkg = str(sub.nodes[src].get("package", ""))
-                        if pkg:
-                            _inject_pkg(pkg)
-                            data["parent"] = f"pkg:{pkg}"
-                            break
 
         elif kind == "Interface":
             pkg = str(attrs.get("package", ""))

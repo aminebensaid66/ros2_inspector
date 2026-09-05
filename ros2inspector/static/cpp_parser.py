@@ -6,6 +6,7 @@ from pathlib import Path
 import tree_sitter_cpp
 from tree_sitter import Language, Node, Parser
 
+from ros2inspector.discovery.file_walker import iter_package_files
 from ros2inspector.model.schemas import (
     DYNAMIC_SENTINEL,
     CommunicationEndpoint,
@@ -63,9 +64,7 @@ _CPP_SUFFIXES = frozenset((".cpp", ".cxx", ".cc", ".hpp", ".h"))
 
 
 def _iter_cpp_files(root: Path) -> Iterator[Path]:
-    for f in root.rglob("*"):
-        if f.is_file() and f.suffix in _CPP_SUFFIXES:
-            yield f
+    yield from iter_package_files(root, suffixes=_CPP_SUFFIXES)
 
 
 def _extract_nodes(
@@ -84,6 +83,8 @@ def _extract_nodes(
 
         nd = NodeDefinition(
             name=name,
+            source_symbol=name,
+            declared_ros_name=_extract_declared_ros_name(class_node, source),
             package=package,
             language="cpp",
             file_path=str(file_path),
@@ -114,6 +115,22 @@ def _get_class_name(class_node: Node, source: bytes) -> str | None:
     if name_node is None:
         return None
     return source[name_node.start_byte : name_node.end_byte].decode("utf-8", errors="replace")
+
+
+_CPP_NODE_INIT_RE = re.compile(
+    r'(?:^|[:,])\s*(?:rclcpp(?:_lifecycle)?::)?(?:LifecycleNode|Node)'
+    r'\s*\(\s*"((?:[^"\\]|\\.)*)"',
+    re.MULTILINE,
+)
+
+
+def _extract_declared_ros_name(class_node: Node, source: bytes) -> str | None:
+    """Extract a literal node name from a C++ constructor initializer list."""
+    text = source[class_node.start_byte : class_node.end_byte].decode(
+        "utf-8", errors="replace"
+    )
+    match = _CPP_NODE_INIT_RE.search(text)
+    return match.group(1) if match else None
 
 
 def _get_rclcpp_action_kind(func_node: Node, source: bytes) -> str | None:
@@ -238,18 +255,19 @@ def _parse_cpp_template_arg(args_node: Node, source: bytes) -> str:
 
 
 def _cpp_type_to_ros(cpp_type: str) -> str:
-    """Convert 'std_msgs::msg::String' → 'std_msgs/String'."""
-    # A dependent template parameter is not a concrete ROS interface. Keeping
-    # it unknown prevents the graph from presenting an inference as fact.
-    if re.search(r"(?:^|::)(?:T|[A-Za-z_][A-Za-z0-9_]*T)(?:$|::)", cpp_type.strip()):
-        return "unknown"
+    """Convert a concrete ROS C++ interface type to ``pkg/Type``.
+
+    Bare identifiers may be template parameters or aliases and cannot be
+    resolved safely without semantic C++ analysis, so keep them unknown rather
+    than presenting them as explicit/high-confidence interface types.
+    """
     parts = [p.strip() for p in cpp_type.split("::") if p.strip()]
     for marker in ("msg", "srv", "action"):
         if marker in parts:
             idx = parts.index(marker)
             if idx > 0 and idx + 1 < len(parts):
                 return f"{parts[idx - 1]}/{parts[-1]}"
-    return parts[-1] if parts else cpp_type
+    return "unknown"
 
 
 def _resolve_method_name(func_node: Node, source: bytes) -> str:

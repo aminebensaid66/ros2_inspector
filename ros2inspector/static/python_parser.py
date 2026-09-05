@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 
+from ros2inspector.discovery.file_walker import iter_package_files
 from ros2inspector.model.schemas import (
     DYNAMIC_SENTINEL,
     CommunicationEndpoint,
@@ -14,7 +15,7 @@ _IFACE_MARKERS = (".msg", ".srv", ".action")
 
 def parse_python_nodes(package_path: Path, package_name: str) -> list[NodeDefinition]:
     nodes: list[NodeDefinition] = []
-    for py_file in package_path.rglob("*.py"):
+    for py_file in iter_package_files(package_path, suffixes={".py"}):
         try:
             source = py_file.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(py_file))

@@ -291,6 +291,8 @@ def rule_topic_connectivity(
     for nid, attrs in g.nodes(data=True):
         if attrs.get("kind") != "Topic":
             continue
+        if attrs.get("resolution") == "unresolved" and not cfg.get("include_unresolved", False):
+            continue
         topic_name: str = attrs.get("name", "")
         if topic_name in exclude:
             continue
@@ -384,6 +386,8 @@ def rule_service_connectivity(
     for nid, attrs in g.nodes(data=True):
         if attrs.get("kind") != "Service":
             continue
+        if attrs.get("resolution") == "unresolved" and not cfg.get("include_unresolved", False):
+            continue
         svc_name: str = attrs.get("name", "")
         in_edges = list(g.in_edges(nid, data=True))
         providers = [
@@ -431,6 +435,8 @@ def rule_action_connectivity(
 
     for nid, attrs in g.nodes(data=True):
         if attrs.get("kind") != "Action":
+            continue
+        if attrs.get("resolution") == "unresolved" and not cfg.get("include_unresolved", False):
             continue
         action_name: str = attrs.get("name", "")
         in_edges = list(g.in_edges(nid, data=True))

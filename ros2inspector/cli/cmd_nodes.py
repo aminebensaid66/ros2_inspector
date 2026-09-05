@@ -90,7 +90,8 @@ def nodes(
 
 def _render_table_str(node_list: list[NodeDefinition]) -> str:
     table = Table(title="ROS 2 Nodes", box=box.ROUNDED, show_lines=True)
-    table.add_column("Node Name", style="bold cyan", no_wrap=True)
+    table.add_column("ROS Name", style="bold cyan", no_wrap=True)
+    table.add_column("Source Symbol", style="dim", no_wrap=True)
     table.add_column("Package", style="magenta")
     table.add_column("Language", style="green")
     table.add_column("Publishers")
@@ -104,12 +105,15 @@ def _render_table_str(node_list: list[NodeDefinition]) -> str:
         return ", ".join(ep.name for ep in eps) if eps else "—"
 
     for nd in sorted(node_list, key=lambda n: (n.package, n.name)):
-        display_name = nd.name
+        ros_name = nd.declared_ros_name or nd.name
+        source_symbol = nd.source_symbol or nd.name
+        display_name = ros_name
         if nd.has_dynamic_names:
             display_name += " ⚠ dynamic"
 
         table.add_row(
             display_name,
+            source_symbol,
             nd.package,
             nd.language,
             _fmt(nd.publishers),
@@ -209,7 +213,12 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
 
     for nd in sorted(node_list, key=lambda n: (n.package, n.name)):
         nid = f"node:{nd.package}/{nd.name}"
-        title = f"[bold cyan]{nd.name}[/bold cyan]  [dim]{nd.package} · {nd.language}[/dim]"
+        ros_name = nd.declared_ros_name or nd.name
+        source_symbol = nd.source_symbol or nd.name
+        title = (
+            f"[bold cyan]{ros_name}[/bold cyan]  "
+            f"[dim]{source_symbol} · {nd.package} · {nd.language}[/dim]"
+        )
         if nd.has_dynamic_names:
             title += "  [yellow]⚠ dynamic[/yellow]"
 

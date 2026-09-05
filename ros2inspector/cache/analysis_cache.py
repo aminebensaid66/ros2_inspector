@@ -7,15 +7,18 @@ from typing import Any
 
 import diskcache
 
+from ros2inspector.discovery.file_walker import iter_package_files
 from ros2inspector.model.schemas import InterfaceDefinition, NodeDefinition
 
 _LOG = logging.getLogger(__name__)
 
 _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "ros2inspector"
 
-_SOURCE_SUFFIXES = frozenset((".py", ".cpp", ".hpp", ".h", ".msg", ".srv", ".action"))
+_SOURCE_SUFFIXES = frozenset(
+    (".py", ".cpp", ".cxx", ".cc", ".hpp", ".h", ".msg", ".srv", ".action")
+)
 
-_CACHE_VERSION = "v3-content-sha256"
+_CACHE_VERSION = "v4-pruned-content-sha256"
 _CACHE_SIZE_LIMIT = 256 * 1024 * 1024  # 256 MB
 
 
@@ -24,9 +27,7 @@ def _pkg_fingerprint(pkg_path: Path) -> str:
     h = hashlib.sha256()
     h.update(_CACHE_VERSION.encode())
     files: list[Path] = sorted(
-        f
-        for f in pkg_path.rglob("*")
-        if f.is_file() and (f.suffix in _SOURCE_SUFFIXES or f.name == "package.xml")
+        iter_package_files(pkg_path, suffixes=_SOURCE_SUFFIXES, names={"package.xml"})
     )
     for f in files:
         try:
@@ -53,7 +54,7 @@ class AnalysisCache:
         self._dir = cache_dir or _DEFAULT_CACHE_DIR
         self._cache: diskcache.Cache = diskcache.Cache(str(self._dir), size_limit=_CACHE_SIZE_LIMIT)
         # One-slot memoisation so a get() + set() pair on the same path only
-        # runs the rglob/stat fingerprint scan once instead of twice.
+        # runs the package walk/hash fingerprint once instead of twice.
         self._fp_cache: tuple[Path, str] | None = None
 
     def _fingerprint(self, pkg_path: Path) -> str:

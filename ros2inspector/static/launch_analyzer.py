@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from ros2inspector.discovery.file_walker import iter_package_files
+
 
 @dataclass
 class LaunchNode:
@@ -49,9 +51,7 @@ def find_launch_files(package_path: Path) -> list[Path]:
     found: set[Path] = set()
     # Directories whose contents are all considered launch files.
     launch_dirs = {package_path / d for d in _LAUNCH_DIR_NAMES}
-    for f in package_path.rglob("*"):
-        if not f.is_file() or f.suffix not in _LAUNCH_SUFFIXES:
-            continue
+    for f in iter_package_files(package_path, suffixes=_LAUNCH_SUFFIXES):
         # Always include files whose stem explicitly marks them as launch files
         # (e.g. bringup.launch.py, robot.launch.xml, nav.launch.yaml).
         if f.stem.endswith(".launch"):

@@ -72,6 +72,8 @@ def _iface_id(package: str, name: str) -> str:
 
 def _apply_remap(name: str, remaps: dict[str, str]) -> str:
     """Return the remapped topic/service/action name, normalising leading slash variants."""
+    if name == DYNAMIC_SENTINEL:
+        return name
     if name in remaps:
         return remaps[name]
     alt = f"/{name}" if not name.startswith("/") else name.lstrip("/")
@@ -80,7 +82,15 @@ def _apply_remap(name: str, remaps: dict[str, str]) -> str:
 
 def _apply_namespace(name: str, namespace: str | None) -> str:
     """Apply a launch namespace to a relative ROS name without rewriting absolute names."""
-    if not namespace or namespace in {"<unknown>", "<dynamic>"} or name.startswith("/"):
+    # Preserve unresolved names as unresolved. Turning ``<dynamic>`` into
+    # ``/robot/<dynamic>`` would make it look resolved and could merge unrelated
+    # endpoints that merely share the same launch namespace.
+    if (
+        name == DYNAMIC_SENTINEL
+        or not namespace
+        or namespace in {"<unknown>", "<dynamic>"}
+        or name.startswith("/")
+    ):
         return name
     ns = namespace.strip("/")
     return f"/{ns}/{name.lstrip('/')}" if ns else name
@@ -386,146 +396,88 @@ class UnifiedArchitectureModel:
             if pkg_id in g:
                 self._add_edge(g, nid, pkg_id, rel="defined_in")
 
-            # Match launch remaps by node name or executable name so we only apply
-            # remaps that were explicitly declared for this specific node instance.
-            pkg_remaps: dict[str, str] = {}
-            namespace: str | None = None
-            for ln in self._launch_remaps.get(nd.package, []):
-                names = {
-                    value
-                    for value in (
-                        nd.name,
-                        nd.source_symbol,
-                        nd.declared_ros_name,
-                        _normalise_symbol(nd.name),
-                    )
-                    if value
-                }
+            # A source definition may be launched more than once. Preserve every
+            # matching deployment and emit communication edges for each effective
+            # remap/namespace instead of silently using only the first instance.
+            names = {
+                value
+                for value in (
+                    nd.name,
+                    nd.source_symbol,
+                    nd.declared_ros_name,
+                    _normalise_symbol(nd.name),
+                )
+                if value
+            }
+            matches = [
+                ln
+                for ln in self._launch_remaps.get(nd.package, [])
                 if (
                     ln.name in names
                     or ln.executable in names
                     or _normalise_symbol(ln.executable) in names
-                ):
-                    pkg_remaps = ln.remaps
-                    namespace = ln.namespace
-                    g.nodes[nid]["deployment_name"] = ln.name or ln.executable
-                    g.nodes[nid]["namespace"] = ln.namespace
-                    g.nodes[nid]["launch_file"] = ln.source_file
-                    break
+                )
+            ]
+            if matches:
+                deployments = [
+                    {
+                        "name": ln.name or ln.executable,
+                        "namespace": ln.namespace,
+                        "launch_file": ln.source_file,
+                        "remaps": dict(ln.remaps),
+                    }
+                    for ln in matches
+                ]
+                g.nodes[nid]["deployments"] = deployments
+                # Keep the original singular attributes for backwards compatibility.
+                first = matches[0]
+                g.nodes[nid]["deployment_name"] = first.name or first.executable
+                g.nodes[nid]["namespace"] = first.namespace
+                g.nodes[nid]["launch_file"] = first.source_file
 
-            for index, ep in enumerate(nd.publishers):
-                actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                tid = _communication_id("Topic", actual, nid, "publisher", index)
-                self._upsert_comm_node(
-                    tid,
-                    kind="Topic",
-                    name=actual,
-                    type_key="msg_type",
-                    interface_type=ep.msg_type,
-                    unresolved=actual == DYNAMIC_SENTINEL,
-                )
-                self._add_edge(
-                    g,
-                    nid,
-                    tid,
-                    rel="publishes",
-                    **self._endpoint_edge_attrs(ep, actual),
-                )
+            contexts: list[tuple[dict[str, str], str | None, dict[str, Any], str]] = []
+            if matches:
+                for deployment_index, ln in enumerate(matches):
+                    deployment_name = ln.name or ln.executable
+                    contexts.append(
+                        (
+                            ln.remaps,
+                            ln.namespace,
+                            {
+                                "deployment_name": deployment_name,
+                                "namespace": ln.namespace,
+                                "launch_file": ln.source_file,
+                            },
+                            f"{nid}:deployment:{deployment_index}:{deployment_name}",
+                        )
+                    )
+            else:
+                contexts.append(({}, None, {}, nid))
 
-            for index, ep in enumerate(nd.subscriptions):
-                actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                tid = _communication_id("Topic", actual, nid, "subscription", index)
-                self._upsert_comm_node(
-                    tid,
-                    kind="Topic",
-                    name=actual,
-                    type_key="msg_type",
-                    interface_type=ep.msg_type,
-                    unresolved=actual == DYNAMIC_SENTINEL,
-                )
-                self._add_edge(
-                    g,
-                    nid,
-                    tid,
-                    rel="subscribes",
-                    **self._endpoint_edge_attrs(ep, actual),
-                )
-
-            for index, ep in enumerate(nd.services):
-                actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                sid = _communication_id("Service", actual, nid, "service", index)
-                self._upsert_comm_node(
-                    sid,
-                    kind="Service",
-                    name=actual,
-                    type_key="srv_type",
-                    interface_type=ep.msg_type,
-                    unresolved=actual == DYNAMIC_SENTINEL,
-                )
-                self._add_edge(
-                    g,
-                    nid,
-                    sid,
-                    rel="provides",
-                    **self._endpoint_edge_attrs(ep, actual),
-                )
-
-            for index, ep in enumerate(nd.clients):
-                actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                sid = _communication_id("Service", actual, nid, "client", index)
-                self._upsert_comm_node(
-                    sid,
-                    kind="Service",
-                    name=actual,
-                    type_key="srv_type",
-                    interface_type=ep.msg_type,
-                    unresolved=actual == DYNAMIC_SENTINEL,
-                )
-                self._add_edge(
-                    g,
-                    nid,
-                    sid,
-                    rel="calls",
-                    **self._endpoint_edge_attrs(ep, actual),
-                )
-
-            for index, ep in enumerate(nd.action_servers):
-                actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                aid = _communication_id("Action", actual, nid, "action_server", index)
-                self._upsert_comm_node(
-                    aid,
-                    kind="Action",
-                    name=actual,
-                    type_key="action_type",
-                    interface_type=ep.msg_type,
-                    unresolved=actual == DYNAMIC_SENTINEL,
-                )
-                self._add_edge(
-                    g,
-                    nid,
-                    aid,
-                    rel="provides",
-                    **self._endpoint_edge_attrs(ep, actual),
-                )
-
-            for index, ep in enumerate(nd.action_clients):
-                actual = _apply_namespace(_apply_remap(ep.name, pkg_remaps), namespace)
-                aid = _communication_id("Action", actual, nid, "action_client", index)
-                self._upsert_comm_node(
-                    aid,
-                    kind="Action",
-                    name=actual,
-                    type_key="action_type",
-                    interface_type=ep.msg_type,
-                    unresolved=actual == DYNAMIC_SENTINEL,
-                )
-                self._add_edge(
-                    g,
-                    nid,
-                    aid,
-                    rel="calls",
-                    **self._endpoint_edge_attrs(ep, actual),
-                )
+            endpoint_groups = (
+                (nd.publishers, "Topic", "publisher", "publishes", "msg_type"),
+                (nd.subscriptions, "Topic", "subscription", "subscribes", "msg_type"),
+                (nd.services, "Service", "service", "provides", "srv_type"),
+                (nd.clients, "Service", "client", "calls", "srv_type"),
+                (nd.action_servers, "Action", "action_server", "provides", "action_type"),
+                (nd.action_clients, "Action", "action_client", "calls", "action_type"),
+            )
+            for endpoints, kind, role, rel, type_key in endpoint_groups:
+                for index, ep in enumerate(endpoints):
+                    for remaps, namespace, deployment_attrs, scope_id in contexts:
+                        actual = _apply_namespace(_apply_remap(ep.name, remaps), namespace)
+                        comm_id = _communication_id(kind, actual, scope_id, role, index)
+                        self._upsert_comm_node(
+                            comm_id,
+                            kind=kind,
+                            name=actual,
+                            type_key=type_key,
+                            interface_type=ep.msg_type,
+                            unresolved=actual == DYNAMIC_SENTINEL,
+                        )
+                        edge_attrs = self._endpoint_edge_attrs(ep, actual)
+                        edge_attrs.update(deployment_attrs)
+                        self._add_edge(g, nid, comm_id, rel=rel, **edge_attrs)
 
         for iface in interfaces:
             iid = _iface_id(iface.package, iface.name)

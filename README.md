@@ -254,6 +254,17 @@ ros2inspector/
 
 The Unified Architecture Model is a `networkx.MultiDiGraph`. Graph nodes represent packages, ROS nodes, topics, services, actions, and interfaces. Edges carry relationships such as `depends_on`, `publishes`, `subscribes`, `provides`, `calls`, `defined_in`, and `uses_interface`.
 
+
+### Ignoring generated or vendor trees
+
+Package scans automatically prune common generated directories such as `build/`, `install/`, `log/`, `.git/`, virtual environments, `node_modules/`, and `__pycache__/`. For large package-local vendor or generated trees, add a `.ros2inspectorignore` file at the package root. It accepts simple shell-style glob patterns; a pattern ending in `/` prunes that entire subtree before traversal.
+
+```text
+vendor/
+third_party/generated/
+*.generated.py
+```
+
 ## Development
 
 ```bash
