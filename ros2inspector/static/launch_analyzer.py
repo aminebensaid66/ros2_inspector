@@ -74,6 +74,15 @@ def _contains_substitution(value: str) -> bool:
     return bool(_SUBSTITUTION_RE.search(value))
 
 
+def _include_target_string(value: object) -> tuple[str, bool]:
+    """Preserve literal include-path evidence even when it needs substitution."""
+    if value is None:
+        return UNKNOWN_SENTINEL, True
+    if not isinstance(value, str):
+        return DYNAMIC_SENTINEL, True
+    return value, _contains_substitution(value)
+
+
 # ── Python launch files ──────────────────────────────────────────────────────
 
 
@@ -198,6 +207,8 @@ def _extract_include_target(call: ast.Call) -> tuple[str | None, bool]:
                 break
     if node is None:
         return None, True
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return _include_target_string(node.value)
     value, unresolved = _python_string(node, required=True)
     return value, unresolved
 
@@ -277,7 +288,7 @@ def _analyze_xml_launch(path: Path) -> LaunchGraph:
             graph.unresolved_branches = True
 
     for elem in root.iter("include"):
-        target, unresolved = _xml_string(elem.get("file"), required=True)
+        target, unresolved = _include_target_string(elem.get("file"))
         if target:
             graph.includes.append(
                 LaunchInclude(
@@ -367,7 +378,7 @@ def _analyze_yaml_launch(path: Path) -> LaunchGraph:
             target_value: object = include_cfg
             if isinstance(include_cfg, dict):
                 target_value = include_cfg.get("file") or include_cfg.get("path")
-            target, unresolved = _yaml_string(target_value, required=True)
+            target, unresolved = _include_target_string(target_value)
             if target:
                 graph.includes.append(
                     LaunchInclude(

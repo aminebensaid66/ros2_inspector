@@ -36,7 +36,29 @@ def test_xml_launch_nodes():
 def test_xml_launch_includes():
     graph = analyze_launch_file(FIXTURE_DIR / "bringup.launch.xml")
     assert len(graph.includes) == 1
-    assert "extras.launch.xml" in graph.includes[0].target_file
+    include = graph.includes[0]
+    assert include.target_file == "$(find pkg_c)/launch/extras.launch.xml"
+    assert include.unresolved
+    assert graph.unresolved_branches
+
+
+def test_dynamic_include_paths_preserve_literal_evidence(tmp_path: Path):
+    target = "$(find pkg_c)/launch/extras.launch.xml"
+    launch_sources = {
+        "include.launch.py": f'IncludeLaunchDescription("{target}")\n',
+        "include.launch.xml": f'<launch><include file="{target}"/></launch>\n',
+        "include.launch.yaml": f"launch:\n  - include: '{target}'\n",
+    }
+
+    for filename, source in launch_sources.items():
+        launch_file = tmp_path / filename
+        launch_file.write_text(source, encoding="utf-8")
+        graph = analyze_launch_file(launch_file)
+
+        assert len(graph.includes) == 1
+        assert graph.includes[0].target_file == target
+        assert graph.includes[0].unresolved
+        assert graph.unresolved_branches
 
 
 def test_xml_launch_remaps():
