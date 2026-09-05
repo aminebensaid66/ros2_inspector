@@ -128,12 +128,23 @@ def test_multiple_launch_instances_emit_all_effective_topics(tmp_path: Path) -> 
     assert _topic_id("/rear/image") in model.graph
     node_id = _node_id("driver_pkg", "Camera")
     assert len(model.graph.nodes[node_id]["deployments"]) == 2
-    deployment_names = {
-        data.get("deployment_name")
-        for _, _, data in model.graph.out_edges(node_id, data=True)
+    deployment_ids = {
+        target
+        for _, target, data in model.graph.out_edges(node_id, data=True)
+        if data.get("rel") == "deploys_as"
+    }
+    assert len(deployment_ids) == 2
+    assert {model.graph.nodes[deployment_id]["name"] for deployment_id in deployment_ids} == {
+        "/front/front_camera",
+        "/rear/rear_camera",
+    }
+    published_topics = {
+        model.graph.nodes[target]["name"]
+        for deployment_id in deployment_ids
+        for _, target, data in model.graph.out_edges(deployment_id, data=True)
         if data.get("rel") == "publishes"
     }
-    assert deployment_names == {"front_camera", "rear_camera"}
+    assert published_topics == {"/front/image", "/rear/image"}
 
 
 def test_nodes_table_uses_ros_name_and_keeps_source_symbol() -> None:

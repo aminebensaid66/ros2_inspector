@@ -14,32 +14,41 @@ PyPI token is stored in the repository.
    - Workflow: `publish.yml`
    - Environment: `pypi`
 
-3. In GitHub, create an environment named `pypi`. Optional protection rules can require
-   approval before a package is uploaded.
+3. In GitHub, create an environment named `pypi`. Protection rules should require approval
+   before a package is uploaded.
 
 ## Release checklist
 
 1. Update `project.version` in `pyproject.toml`. This is the single source of truth for the
    installed `ros2inspector.__version__`.
-2. Refresh the lock file:
+2. Refresh and verify the lock file:
 
    ```bash
    uv lock
+   uv lock --check
    ```
 
 3. Run the checks locally:
 
    ```bash
    python -m pip install -e ".[dev]"
-   pytest
+   pytest -m "not requires_ros2"
    ruff check .
    mypy ros2inspector
    python -m pip install --upgrade build twine
    python -m build
-   python -m twine check dist/*
+   python -m twine check --strict dist/*
    ```
 
-4. Test the built wheel in a clean virtual environment. Do not test only the source tree:
+4. If ROS 2 Jazzy is available, run the static/runtime differential test:
+
+   ```bash
+   pytest -m requires_ros2 tests/integration/test_ros2_differential.py --no-cov
+   ```
+
+   GitHub CI runs this gate independently on every push and pull request.
+
+5. Test the built wheel in a clean virtual environment. Do not test only the source tree:
 
    ```bash
    python -m venv /tmp/ros2inspector-release-test
@@ -49,13 +58,13 @@ PyPI token is stored in the repository.
    /tmp/ros2inspector-release-test/bin/ros2inspector --help
    ```
 
-5. Commit and push the version change.
-6. Create a GitHub Release with a tag that exactly matches `v<project.version>`, for example
-   `v0.1.1`. The workflow rejects mismatched tags.
-7. Confirm the package on PyPI, then test the public installation:
+6. Commit and push the version change only after CI is green.
+7. Create a GitHub Release with a tag that exactly matches `v<project.version>`, for example
+   `v0.1.3`. The publish workflow rejects mismatched tags.
+8. Confirm the package on PyPI, then test the public installation:
 
    ```bash
-   pipx install ros2inspector
+   pipx install ros2inspector==0.1.3
    ros2inspector --version
    ```
 

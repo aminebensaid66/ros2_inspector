@@ -65,7 +65,8 @@ def rule_license(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[Pol
     severity = _sev(cfg.get("severity", "error"))
     violations: list[PolicyViolation] = []
     for pkg in uam.packages():
-        if not pkg.license:
+        licenses = pkg.licenses or ([pkg.license] if pkg.license else [])
+        if not licenses:
             violations.append(
                 PolicyViolation(
                     severity=severity,
@@ -75,14 +76,18 @@ def rule_license(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[Pol
                     affected_entities=[pkg.name],
                 )
             )
-        elif allowed and pkg.license not in allowed:
+            continue
+        disallowed = [
+            license_name for license_name in licenses if allowed and license_name not in allowed
+        ]
+        if disallowed:
             violations.append(
                 PolicyViolation(
                     severity=severity,
                     rule_type="license",
                     message=(
-                        f"Package '{pkg.name}' uses license '{pkg.license}' "
-                        f"which is not in allowed list: {allowed}"
+                        f"Package '{pkg.name}' uses disallowed license(s) {disallowed}; "
+                        f"allowed: {allowed}"
                     ),
                     policy_file=cfg.get("_source", "policy"),
                     affected_entities=[pkg.name],
@@ -356,6 +361,17 @@ def rule_node_isolation(
             continue
 
         comm_edges = [d for _, _, d in g.out_edges(nid, data=True) if d.get("rel") in _COMM_RELS]
+        deployments = [
+            target
+            for _, target, data in g.out_edges(nid, data=True)
+            if data.get("rel") == "deploys_as"
+        ]
+        for deployment_id in deployments:
+            comm_edges.extend(
+                data
+                for _, _, data in g.out_edges(deployment_id, data=True)
+                if data.get("rel") in _COMM_RELS
+            )
         if not comm_edges:
             violations.append(
                 PolicyViolation(

@@ -1,7 +1,7 @@
 import sys
 from io import StringIO
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import orjson
 import typer
@@ -130,75 +130,80 @@ def _render_table_str(node_list: list[NodeDefinition]) -> str:
     return buf.getvalue()
 
 
+def _actor_name(g: Any, actor_id: str) -> str:
+    attrs = g.nodes[actor_id]
+    if attrs.get("kind") == "Deployment":
+        return str(attrs.get("name", actor_id))
+    return str(attrs.get("declared_ros_name") or attrs.get("name", actor_id))
+
+
+def _communication_actors(
+    nd: NodeDefinition, uam: UnifiedArchitectureModel
+) -> tuple[str, list[str]]:
+    g = uam.graph
+    source_id = uam.node_graph_id(nd)
+    deployments = [
+        target
+        for _, target, data in g.out_edges(source_id, data=True)
+        if data.get("rel") == "deploys_as"
+    ]
+    return source_id, deployments or [source_id]
+
+
 def _node_with_connections(nd: NodeDefinition, uam: UnifiedArchitectureModel) -> dict[str, object]:
     g = uam.graph
-    nid = f"node:{nd.package}/{nd.name}"
+    source_id, actors = _communication_actors(nd, uam)
 
     connections: list[dict[str, object]] = []
-    for _, tid, edata in g.out_edges(nid, data=True):
-        tattr = g.nodes.get(tid, {})
-        kind = tattr.get("kind", "")
-        if kind not in ("Topic", "Service", "Action"):
-            continue
-        rel = edata.get("rel", "")
-        name = tattr.get("name", tid)
+    for actor_id in actors:
+        deployment = g.nodes[actor_id].get("name") if actor_id != source_id else None
+        for _, target_id, edge_data in g.out_edges(actor_id, data=True):
+            target = g.nodes.get(target_id, {})
+            kind = target.get("kind", "")
+            if kind not in ("Topic", "Service", "Action"):
+                continue
+            rel = edge_data.get("rel", "")
+            name = target.get("name", target_id)
 
-        if kind == "Topic":
-            msg_type = tattr.get("msg_type", "unknown")
-            other_pubs = [
-                g.nodes[s]["name"]
-                for s, _, d in g.in_edges(tid, data=True)
-                if d.get("rel") == "publishes" and s != nid
-            ]
-            other_subs = [
-                g.nodes[s]["name"]
-                for s, _, d in g.in_edges(tid, data=True)
-                if d.get("rel") == "subscribes" and s != nid
-            ]
-            connections.append(
-                {
-                    "kind": "topic",
-                    "name": name,
-                    "msg_type": msg_type,
-                    "role": rel,
-                    "other_publishers": other_pubs,
-                    "other_subscribers": other_subs,
-                }
-            )
-        elif kind == "Service":
-            srv_type = tattr.get("srv_type", "unknown")
-            callers = [
-                g.nodes[s]["name"]
-                for s, _, d in g.in_edges(tid, data=True)
-                if d.get("rel") == "calls" and s != nid
-            ]
-            connections.append(
-                {
-                    "kind": "service",
-                    "name": name,
-                    "srv_type": srv_type,
-                    "role": rel,
-                    "other_callers": callers,
-                }
-            )
-        elif kind == "Action":
-            action_type = tattr.get("action_type", "unknown")
-            clients = [
-                g.nodes[s]["name"]
-                for s, _, d in g.in_edges(tid, data=True)
-                if d.get("rel") == "calls" and s != nid
-            ]
-            connections.append(
-                {
-                    "kind": "action",
-                    "name": name,
-                    "action_type": action_type,
-                    "role": rel,
-                    "other_clients": clients,
-                }
-            )
+            item: dict[str, object] = {
+                "kind": kind.lower(),
+                "name": name,
+                "role": rel,
+            }
+            if deployment is not None:
+                item["deployment"] = deployment
+
+            if kind == "Topic":
+                item["msg_type"] = target.get("msg_type", "unknown")
+                item["other_publishers"] = [
+                    _actor_name(g, source)
+                    for source, _, data in g.in_edges(target_id, data=True)
+                    if data.get("rel") == "publishes" and source != actor_id
+                ]
+                item["other_subscribers"] = [
+                    _actor_name(g, source)
+                    for source, _, data in g.in_edges(target_id, data=True)
+                    if data.get("rel") == "subscribes" and source != actor_id
+                ]
+            elif kind == "Service":
+                item["srv_type"] = target.get("srv_type", "unknown")
+                item["other_callers"] = [
+                    _actor_name(g, source)
+                    for source, _, data in g.in_edges(target_id, data=True)
+                    if data.get("rel") == "calls" and source != actor_id
+                ]
+            else:
+                item["action_type"] = target.get("action_type", "unknown")
+                item["other_clients"] = [
+                    _actor_name(g, source)
+                    for source, _, data in g.in_edges(target_id, data=True)
+                    if data.get("rel") == "calls" and source != actor_id
+                ]
+            connections.append(item)
 
     result = nd.model_dump(mode="json")
+    source_attrs = g.nodes.get(source_id, {})
+    result["deployments"] = source_attrs.get("deployments", [])
     result["connections"] = connections
     return result
 
@@ -211,8 +216,8 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
     con = Console(file=buf, highlight=False)
     g = uam.graph
 
-    for nd in sorted(node_list, key=lambda n: (n.package, n.name)):
-        nid = f"node:{nd.package}/{nd.name}"
+    for nd in sorted(node_list, key=lambda n: (n.package, n.name, n.file_path or "")):
+        source_id, actors = _communication_actors(nd, uam)
         ros_name = nd.declared_ros_name or nd.name
         source_symbol = nd.source_symbol or nd.name
         title = (
@@ -223,48 +228,56 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
             title += "  [yellow]⚠ dynamic[/yellow]"
 
         rows: list[str] = []
-        for _, tid, edata in g.out_edges(nid, data=True):
-            tattr = g.nodes.get(tid, {})
-            kind = tattr.get("kind", "")
-            if kind not in ("Topic", "Service", "Action"):
-                continue
-            rel = edata.get("rel", "")
-            name = tattr.get("name", tid)
+        for actor_id in actors:
+            actor_name = _actor_name(g, actor_id)
+            deployment_prefix = (
+                f"[blue]{actor_name}[/blue]  " if actor_id != source_id else ""
+            )
+            for _, target_id, edge_data in g.out_edges(actor_id, data=True):
+                target = g.nodes.get(target_id, {})
+                kind = target.get("kind", "")
+                if kind not in ("Topic", "Service", "Action"):
+                    continue
+                rel = edge_data.get("rel", "")
+                name = target.get("name", target_id)
 
-            if kind == "Topic":
-                mtype = tattr.get("msg_type", "unknown")
-                icon = "→" if rel == "publishes" else "←"
-                other_pubs = [
-                    g.nodes[s]["name"]
-                    for s, _, d in g.in_edges(tid, data=True)
-                    if d.get("rel") == "publishes" and s != nid
-                ]
-                other_subs = [
-                    g.nodes[s]["name"]
-                    for s, _, d in g.in_edges(tid, data=True)
-                    if d.get("rel") == "subscribes" and s != nid
-                ]
-                conn = []
-                if other_pubs:
-                    conn.append(f"pub: {', '.join(other_pubs)}")
-                if other_subs:
-                    conn.append(f"sub: {', '.join(other_subs)}")
-                conn_str = f"  [dim]({'; '.join(conn)})[/dim]" if conn else ""
-                rows.append(f"  {icon} [green]{name}[/green]  [dim]{mtype}[/dim]{conn_str}")
-
-            elif kind == "Service":
-                stype = tattr.get("srv_type", "unknown")
-                icon = "⊕" if rel == "provides" else "⊙"
-                rows.append(
-                    f"  {icon} [yellow]{name}[/yellow]  [dim]{stype}[/dim]  [dim]service[/dim]"
-                )
-
-            elif kind == "Action":
-                atype = tattr.get("action_type", "unknown")
-                icon = "▶" if rel == "provides" else "▷"
-                rows.append(
-                    f"  {icon} [magenta]{name}[/magenta]  [dim]{atype}[/dim]  [dim]action[/dim]"
-                )
+                if kind == "Topic":
+                    msg_type = target.get("msg_type", "unknown")
+                    icon = "→" if rel == "publishes" else "←"
+                    other_pubs = [
+                        _actor_name(g, source)
+                        for source, _, data in g.in_edges(target_id, data=True)
+                        if data.get("rel") == "publishes" and source != actor_id
+                    ]
+                    other_subs = [
+                        _actor_name(g, source)
+                        for source, _, data in g.in_edges(target_id, data=True)
+                        if data.get("rel") == "subscribes" and source != actor_id
+                    ]
+                    peers = []
+                    if other_pubs:
+                        peers.append(f"pub: {', '.join(other_pubs)}")
+                    if other_subs:
+                        peers.append(f"sub: {', '.join(other_subs)}")
+                    peer_text = f"  [dim]({'; '.join(peers)})[/dim]" if peers else ""
+                    rows.append(
+                        f"  {deployment_prefix}{icon} [green]{name}[/green]  "
+                        f"[dim]{msg_type}[/dim]{peer_text}"
+                    )
+                elif kind == "Service":
+                    service_type = target.get("srv_type", "unknown")
+                    icon = "⊕" if rel == "provides" else "⊙"
+                    rows.append(
+                        f"  {deployment_prefix}{icon} [yellow]{name}[/yellow]  "
+                        f"[dim]{service_type}[/dim]  [dim]service[/dim]"
+                    )
+                else:
+                    action_type = target.get("action_type", "unknown")
+                    icon = "▶" if rel == "provides" else "▷"
+                    rows.append(
+                        f"  {deployment_prefix}{icon} [magenta]{name}[/magenta]  "
+                        f"[dim]{action_type}[/dim]  [dim]action[/dim]"
+                    )
 
         body = "\n".join(rows) if rows else "  [dim]no connections[/dim]"
         con.print(Panel(Text.from_markup(body), title=Text.from_markup(title), expand=False))

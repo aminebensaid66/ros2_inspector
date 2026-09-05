@@ -104,7 +104,8 @@ def _render_package(pkg: PackageMetadata, show_deps: bool) -> None:
     table.add_column("Value", no_wrap=False, overflow="fold")
 
     table.add_row("Type", pkg.package_type.value)
-    table.add_row("License", pkg.license or "[dim]missing[/dim]")
+    licenses = pkg.licenses or ([pkg.license] if pkg.license else [])
+    table.add_row("License", ", ".join(licenses) or "[dim]missing[/dim]")
     table.add_row("Description", pkg.description or "[dim]missing[/dim]")
     table.add_row("Maintainers", ", ".join(pkg.maintainers) or "[dim]missing[/dim]")
     table.add_row("Path", pkg.path)
@@ -115,5 +116,12 @@ def _render_package(pkg: PackageMetadata, show_deps: bool) -> None:
     if show_deps:
         for dep_type, dep_list in pkg.dependencies.items():
             table.add_row(f"deps:{dep_type.value}", ", ".join(dep_list))
+        for dep_type, dep_list in pkg.conditional_dependencies.items():
+            rendered = []
+            conditions = pkg.dependency_conditions.get(dep_type, {})
+            for dependency in dep_list:
+                condition = conditions.get(dependency, "")
+                rendered.append(f"{dependency} [{condition}]" if condition else dependency)
+            table.add_row(f"deps:{dep_type.value}?", ", ".join(rendered))
 
     console.print(table)

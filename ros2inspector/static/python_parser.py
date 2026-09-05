@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import ast
 from pathlib import Path
 
@@ -9,8 +11,12 @@ from ros2inspector.model.schemas import (
     NodeDefinition,
 )
 
-# Handled import module markers for interface type resolution
-_IFACE_MARKERS = (".msg", ".srv", ".action")
+_IFACE_MARKERS = ("msg", "srv", "action")
+_CANONICAL_NODE_BASES = {
+    "rclpy.node.Node",
+    "rclpy.lifecycle.LifecycleNode",
+    "rclpy_lifecycle.LifecycleNode",
+}
 
 
 def parse_python_nodes(package_path: Path, package_name: str) -> list[NodeDefinition]:
@@ -19,7 +25,7 @@ def parse_python_nodes(package_path: Path, package_name: str) -> list[NodeDefini
         try:
             source = py_file.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(py_file))
-        except (SyntaxError, UnicodeDecodeError):
+        except (SyntaxError, UnicodeDecodeError, OSError):
             continue
         visitor = _NodeVisitor(package_name, py_file)
         visitor.visit(tree)
@@ -33,29 +39,59 @@ class _NodeVisitor(ast.NodeVisitor):
         self.file_path = file_path
         self.nodes: list[NodeDefinition] = []
         self._current_node: NodeDefinition | None = None
-        # local name → "pkg/Type" resolved from msg/srv/action imports
-        self._imports: dict[str, str] = {}
-        # statically resolvable string constants: class attrs + self.attr assignments
+
+        # Local interface symbol -> canonical ``pkg/Type``.
+        self._iface_imports: dict[str, str] = {}
+        # Local module alias -> canonical module path, e.g. ``msg -> std_msgs.msg``.
+        self._module_aliases: dict[str, str] = {}
+        # Module roots proven imported without an alias, e.g. ``std_msgs``.
+        self._module_roots: set[str] = set()
+        # Bare class aliases proven to be ROS node bases.
+        self._node_base_aliases: set[str] = set()
+
+        # Statically resolvable string constants: class attrs + self.attr assignments.
         self._class_attrs: dict[str, str] = {}
 
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.asname:
+                self._module_aliases[alias.asname] = alias.name
+            else:
+                self._module_roots.add(alias.name.split(".", 1)[0])
+        self.generic_visit(node)
+
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        """Resolve msg/srv/action imports → {'MyMsg': 'my_pkg/MyMsg'}."""
-        if not node.module:
+        module = node.module
+        if not module:
             self.generic_visit(node)
             return
-        for marker in _IFACE_MARKERS:
-            if marker in node.module:
-                pkg = node.module.split(marker)[0]
-                for alias in node.names:
-                    local = alias.asname or alias.name
-                    self._imports[local] = f"{pkg}/{alias.name}"
-                break
+
+        parts = module.split(".")
+        if len(parts) >= 2 and parts[-1] in _IFACE_MARKERS:
+            package = ".".join(parts[:-1])
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                local = alias.asname or alias.name
+                self._iface_imports[local] = f"{package}/{alias.name}"
+
+        if module in {"rclpy.node", "rclpy.lifecycle", "rclpy_lifecycle"}:
+            for alias in node.names:
+                if alias.name in {"Node", "LifecycleNode"}:
+                    self._node_base_aliases.add(alias.asname or alias.name)
+
+        # ``from std_msgs import msg as smsg`` and ``from rclpy import node as rn``.
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            local = alias.asname or alias.name
+            self._module_aliases[local] = f"{module}.{alias.name}"
+
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if _inherits_from_node(node):
+        if self._inherits_from_ros_node(node):
             prev_attrs = self._class_attrs
-            # Pre-collect class-level string constants (e.g. TOPIC = '/chatter')
             class_attrs: dict[str, str] = {}
             for stmt in node.body:
                 if isinstance(stmt, ast.Assign):
@@ -87,7 +123,7 @@ class _NodeVisitor(ast.NodeVisitor):
             self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        """Track self.attr = 'string' so topic/service names are resolvable."""
+        """Track ``self.attr = 'literal'`` for resolvable communication names."""
         if self._current_node is not None:
             for target in node.targets:
                 if (
@@ -100,8 +136,26 @@ class _NodeVisitor(ast.NodeVisitor):
                     self._class_attrs[target.attr] = node.value.value
         self.generic_visit(node)
 
+    def _inherits_from_ros_node(self, cls: ast.ClassDef) -> bool:
+        for base in cls.bases:
+            raw = _get_attr_name(base)
+            if raw in self._node_base_aliases:
+                return True
+            canonical = self._canonical_name(raw)
+            if canonical in _CANONICAL_NODE_BASES:
+                return True
+        return False
+
+    def _canonical_name(self, raw: str) -> str:
+        if not raw:
+            return raw
+        head, dot, tail = raw.partition(".")
+        if head in self._module_aliases:
+            base = self._module_aliases[head]
+            return f"{base}.{tail}" if dot else base
+        return raw
+
     def _resolve_name(self, arg: ast.expr) -> str:
-        """Resolve a topic/service name: string literal, self.attr, or bare name."""
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
             return arg.value
         if (
@@ -115,13 +169,38 @@ class _NodeVisitor(ast.NodeVisitor):
         return DYNAMIC_SENTINEL
 
     def _pick_name(self, call: ast.Call, pos_index: int, *kwarg_names: str) -> str:
-        """Return the name from positional arg or keyword arg, resolved."""
         if pos_index < len(call.args):
             return self._resolve_name(call.args[pos_index])
         for kw in call.keywords:
             if kw.arg in kwarg_names:
                 return self._resolve_name(kw.value)
         return DYNAMIC_SENTINEL
+
+    def _extract_type_arg(self, call: ast.Call, index: int) -> str:
+        """Resolve only interface types whose import provenance is statically proven."""
+        if index >= len(call.args):
+            return "unknown"
+        arg = call.args[index]
+        if isinstance(arg, ast.Name):
+            return self._iface_imports.get(arg.id, "unknown")
+        if not isinstance(arg, ast.Attribute):
+            return "unknown"
+
+        raw = _get_attr_name(arg)
+        canonical = self._canonical_name(raw)
+        parts = canonical.split(".")
+        marker_index = next((i for i, part in enumerate(parts) if part in _IFACE_MARKERS), -1)
+        if marker_index <= 0 or marker_index + 1 >= len(parts):
+            return "unknown"
+
+        raw_root = raw.split(".", 1)[0]
+        provenance_known = raw_root in self._module_aliases or raw_root in self._module_roots
+        if not provenance_known:
+            return "unknown"
+
+        package = ".".join(parts[:marker_index])
+        interface_name = parts[-1]
+        return f"{package}/{interface_name}"
 
     def _endpoint(
         self,
@@ -131,16 +210,15 @@ class _NodeVisitor(ast.NodeVisitor):
         interface_type: str,
         evidence: str,
     ) -> CommunicationEndpoint:
+        explicit = interface_type != "unknown"
         return CommunicationEndpoint(
             name=name,
             msg_type=interface_type,
             file_path=str(self.file_path),
             line=node.lineno,
             evidence=evidence,
-            type_source="explicit" if interface_type != "unknown" else "unknown",
-            confidence=(
-                "high" if interface_type != "unknown" and name != DYNAMIC_SENTINEL else "low"
-            ),
+            type_source="explicit" if explicit else "unknown",
+            confidence="high" if explicit and name != DYNAMIC_SENTINEL else "low",
         )
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -156,8 +234,8 @@ class _NodeVisitor(ast.NodeVisitor):
                 self._current_node.declared_ros_name = ros_name
 
         if func_name in ("create_publisher", "create_subscription"):
-            msg_type = _extract_type_arg(node, 0, self._imports)
-            topic = self._pick_name(node, 1, "topic")
+            msg_type = self._extract_type_arg(node, 0)
+            topic = self._pick_name(node, 1, "topic", "topic_name")
             ep = self._endpoint(node, name=topic, interface_type=msg_type, evidence=func_name)
             if func_name == "create_publisher":
                 self._current_node.publishers.append(ep)
@@ -167,101 +245,65 @@ class _NodeVisitor(ast.NodeVisitor):
                 self._current_node.has_dynamic_names = True
 
         elif func_name == "create_service":
-            srv_type = _extract_type_arg(node, 0, self._imports)
+            srv_type = self._extract_type_arg(node, 0)
             name = self._pick_name(node, 1, "srv_name", "service_name")
             self._current_node.services.append(
-                self._endpoint(
-                    node,
-                    name=name,
-                    interface_type=srv_type,
-                    evidence=func_name,
-                )
+                self._endpoint(node, name=name, interface_type=srv_type, evidence=func_name)
             )
             if name == DYNAMIC_SENTINEL:
                 self._current_node.has_dynamic_names = True
 
         elif func_name == "create_client":
-            srv_type = _extract_type_arg(node, 0, self._imports)
+            srv_type = self._extract_type_arg(node, 0)
             name = self._pick_name(node, 1, "srv_name", "service_name")
             self._current_node.clients.append(
+                self._endpoint(node, name=name, interface_type=srv_type, evidence=func_name)
+            )
+            if name == DYNAMIC_SENTINEL:
+                self._current_node.has_dynamic_names = True
+
+        elif func_name in ("create_action_server", "ActionServer"):
+            type_idx = 0 if func_name == "create_action_server" else 1
+            name_idx = 1 if func_name == "create_action_server" else 2
+            action_type = self._extract_type_arg(node, type_idx)
+            name = self._pick_name(node, name_idx, "action_name")
+            self._current_node.action_servers.append(
                 self._endpoint(
                     node,
                     name=name,
-                    interface_type=srv_type,
+                    interface_type=action_type,
                     evidence=func_name,
                 )
             )
             if name == DYNAMIC_SENTINEL:
                 self._current_node.has_dynamic_names = True
 
-        elif func_name in ("create_action_server", "ActionServer"):
-            # create_action_server(type, name, ...)  vs  ActionServer(self, type, name, cb)
-            type_idx = 0 if func_name == "create_action_server" else 1
-            name_idx = 1 if func_name == "create_action_server" else 2
-            action_type = _extract_type_arg(node, type_idx, self._imports)
-            name = self._pick_name(node, name_idx, "action_name")
-            ep = self._endpoint(
-                node,
-                name=name,
-                interface_type=action_type,
-                evidence=func_name,
-            )
-            self._current_node.action_servers.append(ep)
-            if name == DYNAMIC_SENTINEL:
-                self._current_node.has_dynamic_names = True
-
         elif func_name in ("create_action_client", "ActionClient"):
-            # create_action_client(type, name, ...)  vs  ActionClient(self, type, name)
             type_idx = 0 if func_name == "create_action_client" else 1
             name_idx = 1 if func_name == "create_action_client" else 2
-            action_type = _extract_type_arg(node, type_idx, self._imports)
+            action_type = self._extract_type_arg(node, type_idx)
             name = self._pick_name(node, name_idx, "action_name")
-            ep = self._endpoint(
-                node,
-                name=name,
-                interface_type=action_type,
-                evidence=func_name,
+            self._current_node.action_clients.append(
+                self._endpoint(
+                    node,
+                    name=name,
+                    interface_type=action_type,
+                    evidence=func_name,
+                )
             )
-            self._current_node.action_clients.append(ep)
             if name == DYNAMIC_SENTINEL:
                 self._current_node.has_dynamic_names = True
 
         self.generic_visit(node)
 
 
-def _inherits_from_node(cls: ast.ClassDef) -> bool:
-    for base in cls.bases:
-        name = _get_attr_name(base)
-        if name in ("Node", "rclpy.node.Node", "LifecycleNode", "rclpy_lifecycle.LifecycleNode"):
-            return True
-    return False
-
-
 def _get_attr_name(node: ast.expr) -> str:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
-        return f"{_get_attr_name(node.value)}.{node.attr}"
+        base = _get_attr_name(node.value)
+        return f"{base}.{node.attr}" if base else node.attr
     return ""
-
-
-def _extract_type_arg(call: ast.Call, index: int, imports: dict[str, str]) -> str:
-    """Extract ROS interface type from the type argument at the given positional index."""
-    if index >= len(call.args):
-        return "unknown"
-    arg = call.args[index]
-    if isinstance(arg, ast.Name):
-        return imports.get(arg.id, arg.id)
-    if isinstance(arg, ast.Attribute):
-        full = _get_attr_name(arg)
-        parts = full.split(".")
-        for marker in ("msg", "srv", "action"):
-            if marker in parts:
-                idx = parts.index(marker)
-                if idx > 0 and idx + 1 < len(parts):
-                    return f"{parts[idx - 1]}/{parts[-1]}"
-        return full
-    return "unknown"
 
 
 def _literal_string(node: ast.expr) -> str | None:

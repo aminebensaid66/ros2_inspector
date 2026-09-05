@@ -111,6 +111,16 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
                 _inject_pkg(pkg)
                 data["parent"] = f"pkg:{pkg}"
 
+        elif kind == "Deployment":
+            source_node_id = attrs.get("source_node_id")
+            if isinstance(source_node_id, str) and source_node_id in sub:
+                data["parent"] = source_node_id
+            else:
+                pkg = str(attrs.get("package", ""))
+                if pkg:
+                    _inject_pkg(pkg)
+                    data["parent"] = f"pkg:{pkg}"
+
         elif kind == "Interface":
             pkg = str(attrs.get("package", ""))
             if pkg:
@@ -121,8 +131,8 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
 
     edges = []
     for i, (src, dst, attrs) in enumerate(sub.edges(data=True)):
-        # Skip defined_in / uses_interface — the compound nesting already encodes this
-        if attrs.get("rel") in ("defined_in", "uses_interface"):
+        # Skip structural edges already encoded by compound nesting.
+        if attrs.get("rel") in ("defined_in", "uses_interface", "deploys_as"):
             continue
         d = {"id": f"e{i}", "source": src, "target": dst}
         for k, v in attrs.items():

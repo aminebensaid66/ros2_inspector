@@ -9,8 +9,8 @@ import orjson
 
 from ros2inspector.model.uam import UnifiedArchitectureModel
 
-_COMMS_RELS = {"publishes", "subscribes", "provides", "calls"}
-_COMMS_KINDS = {"Node", "Topic", "Service", "Action"}
+_COMMS_RELS = {"publishes", "subscribes", "provides", "calls", "deploys_as"}
+_COMMS_KINDS = {"Node", "Deployment", "Topic", "Service", "Action"}
 _DEPS_KINDS = {"Package"}
 _DEPS_RELS = {"depends_on"}
 
@@ -98,6 +98,8 @@ def render_mermaid(
             lines.append(f'    {sid}>"{safe_name}"]')
         elif kind == "Node":
             lines.append(f'    {sid}("{safe_name}")')
+        elif kind == "Deployment":
+            lines.append(f'    {sid}[["{safe_name}"]]')
         elif kind == "Interface":
             lines.append(f'    {sid}[/"{safe_name}"/]')
         else:
@@ -117,6 +119,8 @@ def render_mermaid(
             lines.append(f"    {ssrc} -->|srv/act| {sdst}")
         elif rel == "calls":
             lines.append(f"    {ssrc} -.->|call| {sdst}")
+        elif rel == "deploys_as":
+            lines.append(f"    {ssrc} -->|deploys| {sdst}")
         else:
             lines.append(f"    {ssrc} --> {sdst}")
 
@@ -142,6 +146,8 @@ def render_dot(uam: UnifiedArchitectureModel, graph_type: str, package: str | No
             lines.append(f'    {sid} [label="{name}" shape=hexagon color=red];')
         elif kind == "Node":
             lines.append(f'    {sid} [label="{name}" shape=rectangle color=orange];')
+        elif kind == "Deployment":
+            lines.append(f'    {sid} [label="{name}" shape=component color=purple];')
         elif kind == "Interface":
             lines.append(f'    {sid} [label="{name}" shape=parallelogram];')
         else:

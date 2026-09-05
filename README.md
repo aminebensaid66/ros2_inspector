@@ -4,13 +4,15 @@
 
 `ros2inspector` scans supported Python, C++, interface, and launch-file patterns in a ROS 2 workspace. It builds an evidence-backed architecture graph, renders that graph in several formats, and enforces architecture policies in CI.
 
-This first release ships seven commands: `scan`, `packages`, `nodes`, `graph`, `viz`, `audit`, and `validate`.
+The current alpha ships seven commands: `scan`, `packages`, `nodes`, `graph`, `viz`, `audit`, and `validate`.
 
 **Website and documentation:** [ros2-inspector-theta.vercel.app](https://ros2-inspector-theta.vercel.app/)
 
 ## Features
 
 - Static node and endpoint discovery with Python AST and Tree-sitter C++ parsers
+- Separate source-node definitions and launch deployment instances in the architecture graph
+- Python `console_scripts`/entry-point mapping for evidence-based launch executable matching
 - `.msg`, `.srv`, and `.action` interface parsing and type resolution
 - Python, XML, and YAML launch-file analysis with per-node remapping
 - NetworkX Unified Architecture Model for packages, nodes, topics, services, actions, and interfaces
@@ -20,7 +22,7 @@ This first release ships seven commands: `scan`, `packages`, `nodes`, `graph`, `
 
 ## Analysis scope
 
-ROS 2 Inspector analyzes source files without executing or building the workspace. Unsupported or ambiguous constructs are reported through evidence, confidence, dynamic-name flags, or diagnostics rather than presented as complete architectural truth.
+ROS 2 Inspector analyzes source files without executing or building the workspace. Unsupported or ambiguous constructs are reported through evidence, confidence, dynamic-name flags, or diagnostics rather than presented as complete architectural truth. Launch substitutions and unresolved interface types remain explicitly unresolved instead of being guessed from similar names.
 
 ## Installation
 

@@ -67,7 +67,8 @@ def _render_table(packages: list[PackageMetadata], scores: dict[str, int]) -> No
 
     for pkg in sorted(packages, key=lambda p: p.name):
         maintainers = ", ".join(pkg.maintainers) if pkg.maintainers else "[dim]—[/dim]"
-        license_val = pkg.license or "[dim]—[/dim]"
+        licenses = pkg.licenses or ([pkg.license] if pkg.license else [])
+        license_val = ", ".join(licenses) or "[dim]—[/dim]"
         score = scores.get(pkg.name, 0)
         bar = health_bar(score, include_score=False)
         table.add_row(

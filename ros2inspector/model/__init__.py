@@ -1,4 +1,6 @@
 from .schemas import (
+    DYNAMIC_SENTINEL,
+    UNKNOWN_SENTINEL,
     DataSource,
     DepType,
     InterfaceDefinition,
@@ -12,6 +14,8 @@ from .schemas import (
 )
 
 __all__ = [
+    "DYNAMIC_SENTINEL",
+    "UNKNOWN_SENTINEL",
     "PackageType",
     "DepType",
     "DataSource",

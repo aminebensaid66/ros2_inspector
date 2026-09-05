@@ -28,7 +28,7 @@ def score_package(pkg: PackageMetadata) -> int:
     if pkg.description and len(pkg.description.strip()) > 5:
         score += _WEIGHTS["has_description"]
 
-    if pkg.license:
+    if pkg.licenses or pkg.license:
         score += _WEIGHTS["has_license"]
 
     maintainers_with_name = [m for m in pkg.maintainers if m.strip()]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ from ros2inspector.model.schemas import (
 from ros2inspector.static import (
     analyze_launch_file,
     find_launch_files,
+    find_python_entrypoints,
     parse_cpp_nodes,
     parse_interface_file,
     parse_package_xml,
@@ -30,6 +33,7 @@ from ros2inspector.static import (
     score_workspace,
 )
 from ros2inspector.static.launch_analyzer import LaunchGraph, LaunchNode
+from ros2inspector.static.python_entrypoints import PythonEntrypoint
 
 
 def _pkg_id(name: str) -> str:
@@ -37,7 +41,46 @@ def _pkg_id(name: str) -> str:
 
 
 def _node_id(package: str, name: str) -> str:
+    """Legacy source-node ID used when a package/symbol pair is unique."""
     return f"node:{package}/{name}"
+
+
+def _definition_key(nd: NodeDefinition) -> tuple[str, str, str, int]:
+    return (nd.package, nd.name, nd.file_path or "", nd.line or 0)
+
+
+def _definition_id(nd: NodeDefinition, duplicate_symbols: set[tuple[str, str]]) -> str:
+    """Return a stable source-definition ID without breaking unique legacy IDs."""
+    base = _node_id(nd.package, nd.name)
+    if (nd.package, nd.name) not in duplicate_symbols:
+        return base
+    provenance = f"{nd.file_path or ''}:{nd.line or 0}:{nd.source_symbol or nd.name}"
+    suffix = hashlib.sha1(provenance.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
+    return f"{base}@{suffix}"
+
+
+def _deployment_id(source_id: str, launch_node: LaunchNode, index: int) -> str:
+    raw = "|".join(
+        (
+            source_id,
+            launch_node.source_file or "",
+            launch_node.executable,
+            launch_node.name or "",
+            launch_node.namespace or "",
+            str(index),
+        )
+    )
+    suffix = hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+    return f"deployment:{suffix}"
+
+
+def _actor_display_name(graph: nx.MultiDiGraph, actor_id: str) -> str:
+    attrs = graph.nodes[actor_id]
+    if attrs.get("kind") == "Deployment":
+        return str(attrs.get("name", actor_id))
+    # Preserve the 0.1.x accessor contract for source-only nodes: callers of
+    # topics()/services()/actions() historically receive the source symbol.
+    return str(attrs.get("name", actor_id))
 
 
 def _topic_id(name: str) -> str:
@@ -106,6 +149,78 @@ def _normalise_symbol(name: str) -> str:
     return "".join(chars).strip("_")
 
 
+def _python_modules_for_file(file_path: str | None, package_path: Path) -> set[str]:
+    if not file_path:
+        return set()
+    try:
+        relative = Path(file_path).resolve().relative_to(package_path.resolve())
+    except (OSError, ValueError):
+        return set()
+    if relative.suffix != ".py":
+        return set()
+    parts = list(relative.with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    candidates: set[str] = set()
+    if parts:
+        candidates.add(".".join(parts))
+    if parts and parts[0] == "src" and len(parts) > 1:
+        candidates.add(".".join(parts[1:]))
+    return candidates
+
+
+def _entrypoint_matches_node(
+    entrypoint: PythonEntrypoint, nd: NodeDefinition, package_path: Path
+) -> bool:
+    if nd.language != "python":
+        return False
+    return entrypoint.module in _python_modules_for_file(nd.file_path, package_path)
+
+
+def _launch_matches_definition(
+    nd: NodeDefinition,
+    launch_node: LaunchNode,
+    package_path: Path,
+    entrypoints: dict[str, PythonEntrypoint],
+) -> bool:
+    # A discovered Python console-script is stronger evidence than either the
+    # source class name or the launch-time ROS name. If it exists, do not fall
+    # through to weaker heuristics for a different source module.
+    entrypoint = entrypoints.get(launch_node.executable)
+    if entrypoint is not None:
+        return _entrypoint_matches_node(entrypoint, nd, package_path)
+
+    # C++ executables and legacy Python packages without discoverable console-script
+    # metadata still benefit from conservative executable/symbol matching.
+    source_names = {nd.name, nd.source_symbol or nd.name, _normalise_symbol(nd.name)}
+    if (
+        launch_node.executable in source_names
+        or _normalise_symbol(launch_node.executable) in source_names
+    ):
+        return True
+
+    # Launch ``name=`` is runtime identity, not source identity. Use it only as
+    # a final fallback when no executable mapping was available, and compare it
+    # solely with a ROS name explicitly declared in the source.
+    return bool(
+        launch_node.name
+        and launch_node.name not in {"<unknown>", "<dynamic>"}
+        and nd.declared_ros_name
+        and launch_node.name == nd.declared_ros_name
+    )
+
+
+def _effective_deployment_name(nd: NodeDefinition, launch_node: LaunchNode) -> str:
+    if launch_node.namespace == "<dynamic>" or launch_node.name == "<dynamic>":
+        return DYNAMIC_SENTINEL
+    base = launch_node.name
+    if not base or base == "<unknown>":
+        base = nd.declared_ros_name
+    if not base:
+        return DYNAMIC_SENTINEL
+    return _apply_namespace(base, launch_node.namespace)
+
+
 class UnifiedArchitectureModel:
     def __init__(self) -> None:
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
@@ -115,7 +230,9 @@ class UnifiedArchitectureModel:
         self._diagnostics: list[dict[str, Any]] = []
         # package_name → list of LaunchNodes found in launch files (per-node remaps)
         self._launch_remaps: dict[str, list[LaunchNode]] = {}
-        self._launch_includes: list[dict[str, str]] = []
+        self._launch_includes: list[dict[str, Any]] = []
+        self._entrypoints: dict[str, dict[str, PythonEntrypoint]] = {}
+        self._node_graph_ids: dict[tuple[str, str, str, int], str] = {}
 
     # ── build ──────────────────────────────────────────────────────────────
 
@@ -177,6 +294,7 @@ class UnifiedArchitectureModel:
                 if _progress is not None and _task is not None:
                     _progress.update(_task, description=f"Parsing {pkg.name}...")
                 pkg_path = Path(pkg.path)
+                uam._entrypoints[pkg.name] = find_python_entrypoints(pkg_path)
 
                 cached = cache.get(pkg_path) if cache is not None else None
                 if cached is not None:
@@ -240,6 +358,7 @@ class UnifiedArchitectureModel:
             {
                 "source_file": include.source_file,
                 "target_file": include.target_file,
+                "unresolved": include.unresolved,
             }
             for include in launch_graph.includes
         )
@@ -377,8 +496,12 @@ class UnifiedArchitectureModel:
                             dep_type=dep_type.value,
                         )
 
+        symbol_counts = Counter((nd.package, nd.name) for nd in nodes)
+        duplicate_symbols = {key for key, count in symbol_counts.items() if count > 1}
+
         for nd in nodes:
-            nid = _node_id(nd.package, nd.name)
+            nid = _definition_id(nd, duplicate_symbols)
+            self._node_graph_ids[_definition_key(nd)] = nid
             g.add_node(
                 nid,
                 kind="Node",
@@ -396,63 +519,74 @@ class UnifiedArchitectureModel:
             if pkg_id in g:
                 self._add_edge(g, nid, pkg_id, rel="defined_in")
 
-            # A source definition may be launched more than once. Preserve every
-            # matching deployment and emit communication edges for each effective
-            # remap/namespace instead of silently using only the first instance.
-            names = {
-                value
-                for value in (
-                    nd.name,
-                    nd.source_symbol,
-                    nd.declared_ros_name,
-                    _normalise_symbol(nd.name),
-                )
-                if value
-            }
+            package_path = Path(pkg_map[nd.package].path)
             matches = [
-                ln
-                for ln in self._launch_remaps.get(nd.package, [])
-                if (
-                    ln.name in names
-                    or ln.executable in names
-                    or _normalise_symbol(ln.executable) in names
+                launch_node
+                for launch_node in self._launch_remaps.get(nd.package, [])
+                if _launch_matches_definition(
+                    nd,
+                    launch_node,
+                    package_path,
+                    self._entrypoints.get(nd.package, {}),
                 )
             ]
-            if matches:
-                deployments = [
-                    {
-                        "name": ln.name or ln.executable,
-                        "namespace": ln.namespace,
-                        "launch_file": ln.source_file,
-                        "remaps": dict(ln.remaps),
-                    }
-                    for ln in matches
-                ]
-                g.nodes[nid]["deployments"] = deployments
-                # Keep the original singular attributes for backwards compatibility.
-                first = matches[0]
-                g.nodes[nid]["deployment_name"] = first.name or first.executable
-                g.nodes[nid]["namespace"] = first.namespace
-                g.nodes[nid]["launch_file"] = first.source_file
 
-            contexts: list[tuple[dict[str, str], str | None, dict[str, Any], str]] = []
+            actors: list[tuple[str, dict[str, str], str | None, dict[str, Any]]] = []
             if matches:
-                for deployment_index, ln in enumerate(matches):
-                    deployment_name = ln.name or ln.executable
-                    contexts.append(
+                deployments: list[dict[str, Any]] = []
+                for deployment_index, launch_node in enumerate(matches):
+                    deployment_id = _deployment_id(nid, launch_node, deployment_index)
+                    effective_name = _effective_deployment_name(nd, launch_node)
+                    unresolved = effective_name == DYNAMIC_SENTINEL or launch_node.is_unresolved
+                    g.add_node(
+                        deployment_id,
+                        kind="Deployment",
+                        name=effective_name,
+                        package=nd.package,
+                        executable=launch_node.executable,
+                        deployment_name=launch_node.name or nd.declared_ros_name,
+                        namespace=launch_node.namespace,
+                        launch_file=launch_node.source_file,
+                        source_node_id=nid,
+                        source_symbol=nd.source_symbol or nd.name,
+                        resolution="unresolved" if unresolved else "known",
+                        unresolved_fields=list(launch_node.unresolved_fields),
+                    )
+                    self._add_edge(g, nid, deployment_id, rel="deploys_as")
+                    deployment_attrs = {
+                        "deployment_id": deployment_id,
+                        "deployment_name": effective_name,
+                        "namespace": launch_node.namespace,
+                        "launch_file": launch_node.source_file,
+                    }
+                    actors.append(
                         (
-                            ln.remaps,
-                            ln.namespace,
-                            {
-                                "deployment_name": deployment_name,
-                                "namespace": ln.namespace,
-                                "launch_file": ln.source_file,
-                            },
-                            f"{nid}:deployment:{deployment_index}:{deployment_name}",
+                            deployment_id,
+                            launch_node.remaps,
+                            launch_node.namespace,
+                            deployment_attrs,
                         )
                     )
+                    deployments.append(
+                        {
+                            "id": deployment_id,
+                            "name": effective_name,
+                            "launch_name": launch_node.name or "",
+                            "executable": launch_node.executable,
+                            "namespace": launch_node.namespace,
+                            "launch_file": launch_node.source_file,
+                            "remaps": dict(launch_node.remaps),
+                            "resolution": "unresolved" if unresolved else "known",
+                            "unresolved_fields": list(launch_node.unresolved_fields),
+                        }
+                    )
+                g.nodes[nid]["deployments"] = deployments
+                first = deployments[0]
+                g.nodes[nid]["deployment_name"] = first["launch_name"] or first["executable"]
+                g.nodes[nid]["namespace"] = first["namespace"]
+                g.nodes[nid]["launch_file"] = first["launch_file"]
             else:
-                contexts.append(({}, None, {}, nid))
+                actors.append((nid, {}, None, {}))
 
             endpoint_groups = (
                 (nd.publishers, "Topic", "publisher", "publishes", "msg_type"),
@@ -463,21 +597,21 @@ class UnifiedArchitectureModel:
                 (nd.action_clients, "Action", "action_client", "calls", "action_type"),
             )
             for endpoints, kind, role, rel, type_key in endpoint_groups:
-                for index, ep in enumerate(endpoints):
-                    for remaps, namespace, deployment_attrs, scope_id in contexts:
-                        actual = _apply_namespace(_apply_remap(ep.name, remaps), namespace)
-                        comm_id = _communication_id(kind, actual, scope_id, role, index)
+                for index, endpoint in enumerate(endpoints):
+                    for actor_id, remaps, namespace, deployment_attrs in actors:
+                        actual = _apply_namespace(_apply_remap(endpoint.name, remaps), namespace)
+                        comm_id = _communication_id(kind, actual, actor_id, role, index)
                         self._upsert_comm_node(
                             comm_id,
                             kind=kind,
                             name=actual,
                             type_key=type_key,
-                            interface_type=ep.msg_type,
+                            interface_type=endpoint.msg_type,
                             unresolved=actual == DYNAMIC_SENTINEL,
                         )
-                        edge_attrs = self._endpoint_edge_attrs(ep, actual)
+                        edge_attrs = self._endpoint_edge_attrs(endpoint, actual)
                         edge_attrs.update(deployment_attrs)
-                        self._add_edge(g, nid, comm_id, rel=rel, **edge_attrs)
+                        self._add_edge(g, actor_id, comm_id, rel=rel, **edge_attrs)
 
         for iface in interfaces:
             iid = _iface_id(iface.package, iface.name)
@@ -491,45 +625,8 @@ class UnifiedArchitectureModel:
             )
 
     def _resolve_interface_types(self, interfaces: list[InterfaceDefinition]) -> None:
-        # Group by lowercase name so we can detect ambiguous matches.  When two
-        # packages both define e.g. Status.msg, the bare-name lookup is unreliable
-        # and we leave the existing type annotation untouched.
-        iface_by_name: dict[str, list[InterfaceDefinition]] = {}
-        for iface in interfaces:
-            iface_by_name.setdefault(iface.name.lower(), []).append(iface)
-
+        """Link only source-proven interface types; never infer a type from an endpoint name."""
         g = self._graph
-        for nid, attrs in g.nodes(data=True):
-            kind = attrs.get("kind")
-            name: str = attrs.get("name", "")
-            bare = name.lstrip("/").split("/")[-1].lower()
-            candidates = iface_by_name.get(bare)
-            if not candidates or len(candidates) != 1:
-                # No match, or ambiguous (multiple packages define the same
-                # interface name) — skip rather than guess wrong.
-                continue
-            match = candidates[0]
-            resolved_type = f"{match.package}/{match.name}"
-
-            if kind == "Topic":
-                type_key, current = "msg_type", attrs.get("msg_type", "unknown")
-            elif kind == "Service":
-                type_key, current = "srv_type", attrs.get("srv_type", "unknown")
-            elif kind == "Action":
-                type_key, current = "action_type", attrs.get("action_type", "unknown")
-            else:
-                continue
-
-            # Heuristic name matching may fill an unknown type, but must never
-            # replace an explicit type extracted from source code.
-            if current != "unknown":
-                continue
-
-            g.nodes[nid][type_key] = resolved_type
-            g.nodes[nid]["type_source"] = "inferred_name_match"
-            g.nodes[nid]["confidence"] = "low"
-
-        # Add uses_interface edges from nodes to interfaces they communicate through
         comm_rels = {"publishes", "subscribes", "provides", "calls"}
         for src, dst, edge_data in list(g.edges(data=True)):
             if edge_data.get("rel") not in comm_rels:
@@ -543,16 +640,26 @@ class UnifiedArchitectureModel:
                 resolved = dst_attrs.get("srv_type")
             elif dst_kind == "Action":
                 resolved = dst_attrs.get("action_type")
-            if resolved and resolved != "unknown":
-                # resolved is "pkg/Name" — reconstruct the iface node id
-                parts = resolved.split("/", 1)
-                if len(parts) == 2:
-                    iid = _iface_id(parts[0], parts[1])
-                    if iid in g and not any(
-                        data.get("rel") == "uses_interface"
-                        for data in (g.get_edge_data(src, iid) or {}).values()
-                    ):
-                        self._add_edge(g, src, iid, rel="uses_interface")
+            if not resolved or resolved == "unknown":
+                continue
+
+            parts = resolved.split("/", 1)
+            if len(parts) != 2:
+                continue
+            iid = _iface_id(parts[0], parts[1])
+            if iid not in g:
+                continue
+
+            source_id = src
+            if g.nodes[src].get("kind") == "Deployment":
+                candidate = g.nodes[src].get("source_node_id")
+                if isinstance(candidate, str) and candidate in g:
+                    source_id = candidate
+            if not any(
+                data.get("rel") == "uses_interface"
+                for data in (g.get_edge_data(source_id, iid) or {}).values()
+            ):
+                self._add_edge(g, source_id, iid, rel="uses_interface")
 
     # ── accessors ──────────────────────────────────────────────────────────
 
@@ -561,6 +668,17 @@ class UnifiedArchitectureModel:
 
     def nodes(self) -> list[NodeDefinition]:
         return list(self._nodes)
+
+    def node_graph_id(self, node: NodeDefinition) -> str:
+        """Return the graph ID for one source definition, including collision disambiguation."""
+        return self._node_graph_ids.get(_definition_key(node), _node_id(node.package, node.name))
+
+    def deployments(self) -> list[dict[str, Any]]:
+        return [
+            {"id": node_id, **dict(attrs)}
+            for node_id, attrs in self._graph.nodes(data=True)
+            if attrs.get("kind") == "Deployment"
+        ]
 
     def interfaces(self) -> list[InterfaceDefinition]:
         return list(self._interfaces)
@@ -575,12 +693,12 @@ class UnifiedArchitectureModel:
             if attrs.get("kind") != "Topic":
                 continue
             publishers = [
-                g.nodes[s]["name"]
+                _actor_display_name(g, s)
                 for s, _, d in g.in_edges(nid, data=True)
                 if d.get("rel") == "publishes"
             ]
             subscribers = [
-                g.nodes[s]["name"]
+                _actor_display_name(g, s)
                 for s, _, d in g.in_edges(nid, data=True)
                 if d.get("rel") == "subscribes"
             ]
@@ -601,12 +719,12 @@ class UnifiedArchitectureModel:
             if attrs.get("kind") != "Service":
                 continue
             providers = [
-                g.nodes[s]["name"]
+                _actor_display_name(g, s)
                 for s, _, d in g.in_edges(nid, data=True)
                 if d.get("rel") == "provides"
             ]
             callers = [
-                g.nodes[s]["name"]
+                _actor_display_name(g, s)
                 for s, _, d in g.in_edges(nid, data=True)
                 if d.get("rel") == "calls"
             ]
@@ -627,12 +745,12 @@ class UnifiedArchitectureModel:
             if attrs.get("kind") != "Action":
                 continue
             servers = [
-                g.nodes[s]["name"]
+                _actor_display_name(g, s)
                 for s, _, d in g.in_edges(nid, data=True)
                 if d.get("rel") == "provides"
             ]
             clients = [
-                g.nodes[s]["name"]
+                _actor_display_name(g, s)
                 for s, _, d in g.in_edges(nid, data=True)
                 if d.get("rel") == "calls"
             ]
@@ -655,13 +773,14 @@ class UnifiedArchitectureModel:
                     "remaps": ln.remaps,
                     "namespace": ln.namespace,
                     "source_file": ln.source_file,
+                    "unresolved_fields": list(ln.unresolved_fields),
                 }
                 for ln in nodes
             ]
             for pkg, nodes in self._launch_remaps.items()
         }
 
-    def launch_includes(self) -> list[dict[str, str]]:
+    def launch_includes(self) -> list[dict[str, Any]]:
         return [dict(include) for include in self._launch_includes]
 
     def summary(self) -> dict[str, int]:
@@ -669,6 +788,7 @@ class UnifiedArchitectureModel:
         counts: dict[str, int] = {
             "packages": 0,
             "nodes": 0,
+            "deployments": 0,
             "topics": 0,
             "services": 0,
             "actions": 0,
@@ -677,6 +797,7 @@ class UnifiedArchitectureModel:
         kind_map = {
             "Package": "packages",
             "Node": "nodes",
+            "Deployment": "deployments",
             "Topic": "topics",
             "Service": "services",
             "Action": "actions",
@@ -692,6 +813,7 @@ class UnifiedArchitectureModel:
         return {
             "packages": [p.model_dump(mode="json") for p in self._packages],
             "nodes": [n.model_dump(mode="json") for n in self._nodes],
+            "deployments": self.deployments(),
             "interfaces": [i.model_dump(mode="json") for i in self._interfaces],
             "topics": self.topics(),
             "services": self.services(),

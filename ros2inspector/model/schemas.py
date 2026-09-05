@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from ros2inspector.utils.enums import StrEnum
 
 DYNAMIC_SENTINEL = "<dynamic>"
+UNKNOWN_SENTINEL = "<unknown>"
 
 
 class PackageType(StrEnum):
@@ -69,11 +70,14 @@ class PackageMetadata(BaseModel):
     package_type: PackageType = PackageType.UNKNOWN
     maintainers: list[str] = Field(default_factory=list)
     license: str | None = None
+    licenses: list[str] = Field(default_factory=list)
     description: str | None = None
     path: str
     is_overlay: bool = False
     health_score: int | None = None
     dependencies: dict[DepType, list[str]] = Field(default_factory=dict)
+    conditional_dependencies: dict[DepType, list[str]] = Field(default_factory=dict)
+    dependency_conditions: dict[DepType, dict[str, str]] = Field(default_factory=dict)
 
 
 class InterfaceDefinition(BaseModel):
