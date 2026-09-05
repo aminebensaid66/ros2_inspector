@@ -109,7 +109,12 @@ jobs:
           /tmp/ros2inspector-venv/bin/python -m pip install -e ".[dev]"
       - name: Compare static findings with live ROS graph
         shell: bash
+        env:
+          # ROS Jazzy ships pytest plugins tied to its system pytest version.
+          # The project venv may use a newer pytest, so load only the plugin
+          # required by this repository's pytest configuration.
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         run: |
           source /opt/ros/jazzy/setup.bash
-          /tmp/ros2inspector-venv/bin/python -m pytest \
+          /tmp/ros2inspector-venv/bin/python -m pytest -p pytest_cov.plugin \
             -m requires_ros2 tests/integration/test_ros2_differential.py --no-cov
