@@ -32,6 +32,7 @@ from ros2inspector.static import (
     parse_python_nodes,
     score_workspace,
 )
+from ros2inspector.static.cpp_parser import discover_workspace_node_bases
 from ros2inspector.static.launch_analyzer import LaunchGraph, LaunchNode
 from ros2inspector.static.python_entrypoints import PythonEntrypoint
 
@@ -267,6 +268,14 @@ class UnifiedArchitectureModel:
         all_interfaces: list[InterfaceDefinition] = []
 
         cache = AnalysisCache(cache_dir) if use_cache else None
+        cpp_package_paths = [Path(p.path) for p in packages]
+        cpp_bases = (
+            cache.get_cpp_bases(cpp_package_paths)
+            if cache is not None
+            else discover_workspace_node_bases(cpp_package_paths)
+        )
+        if cache is not None:
+            cache.set_context("|".join(sorted(cpp_bases)))
 
         _progress = None
         _task = None
@@ -301,7 +310,7 @@ class UnifiedArchitectureModel:
                     pkg_nodes, pkg_ifaces = cached
                 else:
                     pkg_nodes = parse_python_nodes(pkg_path, pkg.name) + parse_cpp_nodes(
-                        pkg_path, pkg.name
+                        pkg_path, pkg.name, cpp_bases
                     )
                     pkg_ifaces = [
                         parse_interface_file(f, pkg.name) for f in find_interface_files(pkg_path)
@@ -342,6 +351,17 @@ class UnifiedArchitectureModel:
             if _progress is not None:
                 _progress.stop()
 
+        for node in all_nodes:
+            if node.analysis_incomplete:
+                uam._diagnostics.append(
+                    {
+                        "severity": "warning",
+                        "code": "source_analysis_incomplete",
+                        "message": "; ".join(node.analysis_notes),
+                        "file": node.file_path,
+                        "entity": node.source_symbol or node.name,
+                    }
+                )
         uam._nodes = all_nodes
         uam._interfaces = all_interfaces
 
@@ -449,6 +469,7 @@ class UnifiedArchitectureModel:
     def _endpoint_edge_attrs(
         endpoint: CommunicationEndpoint,
         actual_name: str,
+        presence: str = "known",
     ) -> dict[str, Any]:
         return {
             "data_source": DataSource.STATIC.value,
@@ -458,7 +479,7 @@ class UnifiedArchitectureModel:
             "line": endpoint.line,
             "evidence": endpoint.evidence,
             "confidence": endpoint.confidence,
-            "resolution": "unresolved" if actual_name == DYNAMIC_SENTINEL else "known",
+            "resolution": "unresolved" if actual_name == DYNAMIC_SENTINEL else presence,
         }
 
     # ── graph construction ─────────────────────────────────────────────────
@@ -513,6 +534,8 @@ class UnifiedArchitectureModel:
                 file_path=nd.file_path,
                 line=nd.line,
                 has_dynamic_names=nd.has_dynamic_names,
+                analysis_incomplete=nd.analysis_incomplete,
+                analysis_notes=list(nd.analysis_notes),
             )
 
             pkg_id = _pkg_id(nd.package)
@@ -537,7 +560,11 @@ class UnifiedArchitectureModel:
                 for deployment_index, launch_node in enumerate(matches):
                     deployment_id = _deployment_id(nid, launch_node, deployment_index)
                     effective_name = _effective_deployment_name(nd, launch_node)
-                    unresolved = effective_name == DYNAMIC_SENTINEL or launch_node.is_unresolved
+                    resolution = (
+                        "unresolved"
+                        if effective_name == DYNAMIC_SENTINEL or launch_node.is_unresolved
+                        else launch_node.presence
+                    )
                     g.add_node(
                         deployment_id,
                         kind="Deployment",
@@ -549,8 +576,9 @@ class UnifiedArchitectureModel:
                         launch_file=launch_node.source_file,
                         source_node_id=nid,
                         source_symbol=nd.source_symbol or nd.name,
-                        resolution="unresolved" if unresolved else "known",
+                        resolution=resolution,
                         unresolved_fields=list(launch_node.unresolved_fields),
+                        conditions=list(launch_node.conditions),
                     )
                     self._add_edge(g, nid, deployment_id, rel="deploys_as")
                     deployment_attrs = {
@@ -558,6 +586,8 @@ class UnifiedArchitectureModel:
                         "deployment_name": effective_name,
                         "namespace": launch_node.namespace,
                         "launch_file": launch_node.source_file,
+                        "resolution": resolution,
+                        "conditions": list(launch_node.conditions),
                     }
                     actors.append(
                         (
@@ -576,7 +606,8 @@ class UnifiedArchitectureModel:
                             "namespace": launch_node.namespace,
                             "launch_file": launch_node.source_file,
                             "remaps": dict(launch_node.remaps),
-                            "resolution": "unresolved" if unresolved else "known",
+                            "resolution": resolution,
+                            "conditions": list(launch_node.conditions),
                             "unresolved_fields": list(launch_node.unresolved_fields),
                         }
                     )
@@ -609,8 +640,11 @@ class UnifiedArchitectureModel:
                             interface_type=endpoint.msg_type,
                             unresolved=actual == DYNAMIC_SENTINEL,
                         )
-                        edge_attrs = self._endpoint_edge_attrs(endpoint, actual)
-                        edge_attrs.update(deployment_attrs)
+                        presence = str(deployment_attrs.get("resolution", "known"))
+                        edge_attrs = self._endpoint_edge_attrs(endpoint, actual, presence)
+                        edge_attrs.update(
+                            {k: v for k, v in deployment_attrs.items() if k != "resolution"}
+                        )
                         self._add_edge(g, actor_id, comm_id, rel=rel, **edge_attrs)
 
         for iface in interfaces:

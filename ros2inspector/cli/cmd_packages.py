@@ -72,9 +72,11 @@ def packages(
         allowed = _FILTER_MAP[filter_type]
         packages_list = [p for p in packages_list if p.package_type in allowed]
 
-    if not packages_list:
+    if not packages_list and fmt == OutputFormat.TABLE:
         err_console.print(f"[yellow]No packages matching filter '{filter_type}'.[/yellow]")
         return
+
+    # Machine-readable success is always machine-readable, including the empty set.
 
     if sort_by == "score":
         packages_list = sorted(packages_list, key=lambda p: p.health_score or 0, reverse=True)

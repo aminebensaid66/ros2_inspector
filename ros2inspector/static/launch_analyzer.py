@@ -22,9 +22,16 @@ class LaunchNode:
     source_file: str | None = None
     unresolved_fields: list[str] = field(default_factory=list)
 
+    conditions: list[str] = field(default_factory=list)
+    presence: str = "known"
+
+    @property
+    def is_conditional(self) -> bool:
+        return self.presence == "conditional"
+
     @property
     def is_unresolved(self) -> bool:
-        return bool(self.unresolved_fields)
+        return self.presence == "unresolved" or bool(self.unresolved_fields)
 
 
 @dataclass
@@ -90,6 +97,8 @@ class _PythonLaunchVisitor(ast.NodeVisitor):
     def __init__(self, file_path: str) -> None:
         self.graph = LaunchGraph(source_file=file_path)
         self._assignments: dict[str, ast.expr] = {}
+        self._condition_stack: list[str] = []
+        self._node_calls: dict[int, LaunchNode] = {}
 
     def visit_Assign(self, node: ast.Assign) -> None:
         for target in node.targets:
@@ -102,7 +111,12 @@ class _PythonLaunchVisitor(ast.NodeVisitor):
 
         if func in ("Node", "launch_ros.actions.Node"):
             launch_node = _extract_python_node(node)
+            if self._condition_stack:
+                launch_node.conditions = [*self._condition_stack, *launch_node.conditions]
+                if launch_node.presence == "known":
+                    launch_node.presence = "conditional"
             self.graph.nodes.append(launch_node)
+            self._node_calls[id(node)] = launch_node
             if launch_node.is_unresolved:
                 self.graph.unresolved_branches = True
 
@@ -122,12 +136,20 @@ class _PythonLaunchVisitor(ast.NodeVisitor):
             if unresolved or not target:
                 self.graph.unresolved_branches = True
 
-        elif func in (
-            "OpaqueFunction",
-            "launch.actions.OpaqueFunction",
-            "GroupAction",
-            "launch.actions.GroupAction",
-        ):
+        elif func in ("GroupAction", "launch.actions.GroupAction"):
+            condition = next((kw.value for kw in node.keywords if kw.arg == "condition"), None)
+            rendered = ast.unparse(condition) if condition is not None else None
+            if rendered is not None:
+                self._condition_stack.append(rendered)
+            elif condition is not None:
+                self._condition_stack.append(DYNAMIC_SENTINEL)
+                self.graph.unresolved_branches = True
+            self.generic_visit(node)
+            if condition is not None:
+                self._condition_stack.pop()
+            return
+
+        elif func in ("OpaqueFunction", "launch.actions.OpaqueFunction"):
             self.graph.unresolved_branches = True
 
         self.generic_visit(node)
@@ -142,6 +164,32 @@ def _analyze_python_launch(path: Path) -> LaunchGraph:
 
     visitor = _PythonLaunchVisitor(str(path))
     visitor.visit(tree)
+
+    # GroupAction often refers to a Node or list assigned earlier. Propagate its
+    # condition through those AST references without executing launch code.
+    def propagate(expr: ast.AST, conditions: list[str], seen: set[int]) -> None:
+        if id(expr) in seen:
+            return
+        seen = seen | {id(expr)}
+        if isinstance(expr, ast.Name) and expr.id in visitor._assignments:
+            propagate(visitor._assignments[expr.id], conditions, seen)
+        record = visitor._node_calls.get(id(expr))
+        if record is not None:
+            record.conditions = list(dict.fromkeys([*record.conditions, *conditions]))
+            if record.conditions and record.presence == "known":
+                record.presence = "conditional"
+        for child in ast.iter_child_nodes(expr):
+            propagate(child, conditions, seen)
+
+    for expr in ast.walk(tree):
+        if not isinstance(expr, ast.Call) or _get_call_name(expr.func) not in (
+            "GroupAction",
+            "launch.actions.GroupAction",
+        ):
+            continue
+        condition = next((kw.value for kw in expr.keywords if kw.arg == "condition"), None)
+        if condition is not None:
+            propagate(expr, [ast.unparse(condition)], set())
     return visitor.graph
 
 
@@ -164,10 +212,8 @@ def _extract_python_node(call: ast.Call) -> LaunchNode:
         )
         if unresolved
     ]
-    if any(key in kwargs for key in ("condition", "arguments", "parameters")):
-        # These values can alter runtime deployment but are intentionally not executed.
-        if "condition" in kwargs:
-            unresolved_fields.append("condition")
+    condition = kwargs.get("condition")
+    conditions = [ast.unparse(condition)] if condition is not None else []
 
     return LaunchNode(
         executable=executable or UNKNOWN_SENTINEL,
@@ -176,6 +222,8 @@ def _extract_python_node(call: ast.Call) -> LaunchNode:
         remaps=remaps,
         namespace=namespace,
         unresolved_fields=unresolved_fields,
+        conditions=conditions,
+        presence="conditional" if conditions else "known",
     )
 
 
@@ -248,59 +296,70 @@ def _analyze_xml_launch(path: Path) -> LaunchGraph:
         if elem.get("if") is not None or elem.get("unless") is not None:
             graph.unresolved_branches = True
 
-    for elem in root.iter("node"):
-        executable, executable_unresolved = _xml_string(
-            elem.get("exec", elem.get("type")), required=True
-        )
-        package, package_unresolved = _xml_string(elem.get("pkg"), required=True)
-        name, name_unresolved = _xml_string(elem.get("name"), required=False)
-        namespace, namespace_unresolved = _xml_string(elem.get("ns"), required=False)
-        remaps: dict[str, str] = {}
-        remaps_unresolved = False
-        for remap in elem.findall("remap"):
-            src, src_unresolved = _xml_string(remap.get("from"), required=True)
-            dst, dst_unresolved = _xml_string(remap.get("to"), required=True)
-            remaps_unresolved = remaps_unresolved or src_unresolved or dst_unresolved
-            if src and dst:
-                remaps[src] = dst
+    def walk(elem: ET.Element, inherited: tuple[str, ...] = ()) -> None:
+        local = list(inherited)
+        if elem.get("if") is not None:
+            local.append(f"if:{elem.get('if')}")
+        if elem.get("unless") is not None:
+            local.append(f"unless:{elem.get('unless')}")
+        if elem.tag == "node":
+            _append_xml_node(elem, graph, local)
+        for child in elem:
+            walk(child, tuple(local))
 
-        unresolved_fields = [
-            field_name
-            for field_name, unresolved in (
-                ("executable", executable_unresolved),
-                ("package", package_unresolved),
-                ("name", name_unresolved),
-                ("namespace", namespace_unresolved),
-                ("remappings", remaps_unresolved),
-            )
-            if unresolved
-        ]
-        launch_node = LaunchNode(
-            executable=executable or UNKNOWN_SENTINEL,
-            package=package or UNKNOWN_SENTINEL,
-            name=name,
-            remaps=remaps,
-            namespace=namespace,
-            unresolved_fields=unresolved_fields,
-        )
-        graph.nodes.append(launch_node)
-        if launch_node.is_unresolved:
-            graph.unresolved_branches = True
+    walk(root)
 
     for elem in root.iter("include"):
         target, unresolved = _include_target_string(elem.get("file"))
         if target:
             graph.includes.append(
-                LaunchInclude(
-                    source_file=str(path),
-                    target_file=target,
-                    unresolved=unresolved,
-                )
+                LaunchInclude(source_file=str(path), target_file=target, unresolved=unresolved)
             )
         if unresolved:
             graph.unresolved_branches = True
-
     return graph
+
+
+def _append_xml_node(elem: ET.Element, graph: LaunchGraph, inherited: list[str]) -> None:
+    executable, executable_unresolved = _xml_string(
+        elem.get("exec", elem.get("type")), required=True
+    )
+    package, package_unresolved = _xml_string(elem.get("pkg"), required=True)
+    name, name_unresolved = _xml_string(elem.get("name"), required=False)
+    namespace, namespace_unresolved = _xml_string(elem.get("ns"), required=False)
+    remaps: dict[str, str] = {}
+    remaps_unresolved = False
+    for remap in elem.findall("remap"):
+        src, src_unresolved = _xml_string(remap.get("from"), required=True)
+        dst, dst_unresolved = _xml_string(remap.get("to"), required=True)
+        remaps_unresolved = remaps_unresolved or src_unresolved or dst_unresolved
+        if src and dst:
+            remaps[src] = dst
+
+    unresolved_fields = [
+        field_name
+        for field_name, unresolved in (
+            ("executable", executable_unresolved),
+            ("package", package_unresolved),
+            ("name", name_unresolved),
+            ("namespace", namespace_unresolved),
+            ("remappings", remaps_unresolved),
+        )
+        if unresolved
+    ]
+    launch_node = LaunchNode(
+        executable=executable or UNKNOWN_SENTINEL,
+        package=package or UNKNOWN_SENTINEL,
+        name=name,
+        remaps=remaps,
+        namespace=namespace,
+        unresolved_fields=unresolved_fields,
+        conditions=list(inherited),
+        presence="conditional" if inherited else "known",
+    )
+    graph.nodes.append(launch_node)
+    if launch_node.is_unresolved:
+        graph.unresolved_branches = True
 
 
 def _xml_string(value: str | None, *, required: bool) -> tuple[str | None, bool]:
@@ -331,15 +390,28 @@ def _analyze_yaml_launch(path: Path) -> LaunchGraph:
         graph.unresolved_branches = True
         return graph
 
-    for entry in entries:
+    def flatten(items: list[object], inherited: list[str]) -> list[tuple[object, list[str]]]:
+        result: list[tuple[object, list[str]]] = []
+        for item in items:
+            group = item.get("group") if isinstance(item, dict) else None
+            if isinstance(group, dict):
+                conditions = inherited + [f"{k}:{group[k]}" for k in ("if", "unless") if k in group]
+                children = group.get("children", group.get("actions", []))
+                if isinstance(children, list):
+                    result.extend(flatten(children, conditions))
+                else:
+                    graph.unresolved_branches = True
+            else:
+                result.append((item, inherited))
+        return result
+
+    for entry, inherited in flatten(entries, []):
         if not isinstance(entry, dict):
             graph.unresolved_branches = True
             continue
         node_cfg = entry.get("node")
         if isinstance(node_cfg, dict):
-            executable, executable_unresolved = _yaml_string(
-                node_cfg.get("exec"), required=True
-            )
+            executable, executable_unresolved = _yaml_string(node_cfg.get("exec"), required=True)
             package, package_unresolved = _yaml_string(node_cfg.get("pkg"), required=True)
             name, name_unresolved = _yaml_string(node_cfg.get("name"), required=False)
             namespace, namespace_unresolved = _yaml_string(
@@ -357,8 +429,9 @@ def _analyze_yaml_launch(path: Path) -> LaunchGraph:
                 )
                 if unresolved
             ]
-            if any(key in node_cfg for key in ("if", "unless")):
-                unresolved_fields.append("condition")
+            conditions = inherited + [
+                f"{key}:{node_cfg[key]}" for key in ("if", "unless") if key in node_cfg
+            ]
 
             launch_node = LaunchNode(
                 executable=executable or UNKNOWN_SENTINEL,
@@ -367,6 +440,8 @@ def _analyze_yaml_launch(path: Path) -> LaunchGraph:
                 remaps=remaps,
                 namespace=namespace,
                 unresolved_fields=unresolved_fields,
+                conditions=conditions,
+                presence="conditional" if conditions else "known",
             )
             graph.nodes.append(launch_node)
             if launch_node.is_unresolved:

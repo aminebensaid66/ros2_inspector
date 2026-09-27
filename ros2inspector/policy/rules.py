@@ -303,6 +303,12 @@ def rule_topic_connectivity(
             continue
 
         in_edges = list(g.in_edges(nid, data=True))
+        definite = [item for item in in_edges if item[2].get("resolution", "known") == "known"]
+        if not definite and in_edges:
+            continue
+        possible_publishers = any(d.get("rel") == "publishes" for _, _, d in in_edges)
+        possible_subscribers = any(d.get("rel") == "subscribes" for _, _, d in in_edges)
+        in_edges = definite
         pub_nodes = [
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "publishes"
         ]
@@ -310,7 +316,7 @@ def rule_topic_connectivity(
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "subscribes"
         ]
 
-        if flag_no_pub and sub_nodes and not pub_nodes:
+        if flag_no_pub and sub_nodes and not possible_publishers:
             violations.append(
                 PolicyViolation(
                     severity=sev_no_pub,
@@ -324,7 +330,7 @@ def rule_topic_connectivity(
                 )
             )
 
-        if flag_no_sub and pub_nodes and not sub_nodes:
+        if flag_no_sub and pub_nodes and not possible_subscribers:
             violations.append(
                 PolicyViolation(
                     severity=sev_no_sub,
@@ -357,10 +363,16 @@ def rule_node_isolation(
         if attrs.get("kind") != "Node":
             continue
         node_name: str = attrs.get("name", "")
+        if attrs.get("analysis_incomplete"):
+            continue
         if skip_dynamic and attrs.get("has_dynamic_names"):
             continue
 
-        comm_edges = [d for _, _, d in g.out_edges(nid, data=True) if d.get("rel") in _COMM_RELS]
+        comm_edges = [
+            d
+            for _, _, d in g.out_edges(nid, data=True)
+            if d.get("rel") in _COMM_RELS and d.get("resolution", "known") == "known"
+        ]
         deployments = [
             target
             for _, target, data in g.out_edges(nid, data=True)
@@ -370,8 +382,14 @@ def rule_node_isolation(
             comm_edges.extend(
                 data
                 for _, _, data in g.out_edges(deployment_id, data=True)
-                if data.get("rel") in _COMM_RELS
+                if data.get("rel") in _COMM_RELS and data.get("resolution", "known") == "known"
             )
+        if (
+            deployments
+            and not comm_edges
+            and any(g.nodes[d].get("resolution") != "known" for d in deployments)
+        ):
+            continue
         if not comm_edges:
             violations.append(
                 PolicyViolation(
@@ -406,11 +424,14 @@ def rule_service_connectivity(
             continue
         svc_name: str = attrs.get("name", "")
         in_edges = list(g.in_edges(nid, data=True))
+        possible_provider = any(d.get("rel") == "provides" for _, _, d in in_edges)
+        possible_caller = any(d.get("rel") == "calls" for _, _, d in in_edges)
+        in_edges = [e for e in in_edges if e[2].get("resolution", "known") == "known"]
         providers = [
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "provides"
         ]
         callers = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "calls"]
-        if providers and not callers:
+        if providers and not possible_caller:
             violations.append(
                 PolicyViolation(
                     severity=severity,
@@ -422,7 +443,7 @@ def rule_service_connectivity(
                     affected_entities=[svc_name],
                 )
             )
-        if callers and not providers:
+        if callers and not possible_provider:
             violations.append(
                 PolicyViolation(
                     severity=missing_provider_severity,
@@ -456,9 +477,15 @@ def rule_action_connectivity(
             continue
         action_name: str = attrs.get("name", "")
         in_edges = list(g.in_edges(nid, data=True))
+        definite = [item for item in in_edges if item[2].get("resolution", "known") == "known"]
+        if not definite and in_edges:
+            continue
+        possible_server = any(d.get("rel") == "provides" for _, _, d in in_edges)
+        possible_client = any(d.get("rel") == "calls" for _, _, d in in_edges)
+        in_edges = definite
         servers = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "provides"]
         clients = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "calls"]
-        if servers and not clients:
+        if servers and not possible_client:
             violations.append(
                 PolicyViolation(
                     severity=severity,
@@ -470,7 +497,7 @@ def rule_action_connectivity(
                     affected_entities=[action_name],
                 )
             )
-        if clients and not servers:
+        if clients and not possible_server:
             violations.append(
                 PolicyViolation(
                     severity=missing_server_severity,

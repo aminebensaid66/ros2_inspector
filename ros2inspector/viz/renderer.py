@@ -69,6 +69,7 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
     # Interfaces remain grouped under their defining package.
 
     seen_pkgs: set[str] = set()
+    seen_nodes: set[str] = set()
     nodes = []
 
     def _inject_pkg(pkg_name: str) -> None:
@@ -76,6 +77,7 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
         if pkg_id in seen_pkgs:
             return
         seen_pkgs.add(pkg_id)
+        seen_nodes.add(pkg_id)
         pkg_attrs = g.nodes.get(pkg_id, {})
         nodes.append(
             {
@@ -90,7 +92,12 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
         )
 
     for nid, attrs in sub.nodes(data=True):
+        if nid in seen_nodes:
+            continue
+        seen_nodes.add(nid)
         kind = attrs.get("kind", "")
+        if kind == "Package":
+            seen_pkgs.add(nid)
         raw_name = str(attrs.get("name", nid))
         # Preserve exact ROS names (including a leading slash). For very deep
         # names, keep the final two segments while retaining absolute-name form.
@@ -100,7 +107,7 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
             if body.count("/") > 1:
                 body = "/".join(body.rsplit("/", 2)[-2:])
                 short = f"/{body}" if raw_name.startswith("/") else body
-        data: dict[str, object] = {"id": nid, "label": short}
+        data: dict[str, object] = {"id": nid, "label": short, "name": raw_name}
         for k, v in attrs.items():
             if k != "name":
                 data[k] = _safe(v)
@@ -132,7 +139,7 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
     edges = []
     for i, (src, dst, attrs) in enumerate(sub.edges(data=True)):
         # Skip structural edges already encoded by compound nesting.
-        if attrs.get("rel") in ("defined_in", "uses_interface", "deploys_as"):
+        if attrs.get("rel") in ("defined_in", "deploys_as"):
             continue
         d = {"id": f"e{i}", "source": src, "target": dst}
         for k, v in attrs.items():
@@ -168,6 +175,12 @@ def generate_html(uam: UAM, workspace_root: Path) -> str:
         _TEMPLATE.replace("__CYTOSCAPE_SCRIPT_TAG__", _cytoscape_script_tag())
         .replace("__GRAPHS_JSON__", graphs_json)
         .replace("__SUMMARY_JSON__", summary_json)
+        .replace(
+            "__DIAGNOSTICS_JSON__",
+            json.dumps(uam.to_dict().get("diagnostics", []), separators=(",", ":")).replace(
+                "</", "<\\/"
+            ),
+        )
         .replace("__WORKSPACE__", workspace_html)
     )
 
@@ -274,6 +287,7 @@ select:focus{outline:none;border-color:#388bfd}
       <div class="sec-title">Node types</div>
       <label class="frow"><input type="checkbox" data-kind="Package"   checked><span class="sq" style="background:#1d3a6e;border:1px solid #3a86ff"></span>Package</label>
       <label class="frow"><input type="checkbox" data-kind="Node"      checked><span class="sq" style="background:#6e3a1d;border:1px solid #ff8c42"></span>ROS Node</label>
+      <label class="frow"><input type="checkbox" data-kind="Deployment" checked><span class="sq" style="border:1px solid #4cc9f0"></span>Deployment</label>
       <label class="frow"><input type="checkbox" data-kind="Topic"     checked><span class="dot" style="background:#06d6a0"></span>Topic</label>
       <label class="frow"><input type="checkbox" data-kind="Service"   checked><span class="dot" style="background:#c77dff"></span>Service</label>
       <label class="frow"><input type="checkbox" data-kind="Action"    checked><span class="dot" style="background:#f72585"></span>Action</label>
@@ -296,6 +310,8 @@ select:focus{outline:none;border-color:#388bfd}
       <div id="stats"></div>
     </div>
 
+    <details class="sec"><summary>Analysis diagnostics</summary><pre id="diagnostics" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px"></pre></details>
+
     <div id="det">
       <div class="det-title">Node details</div>
       <div id="det-empty">Click a node to inspect</div>
@@ -311,10 +327,12 @@ select:focus{outline:none;border-color:#388bfd}
 
 <script>
 const GRAPHS  = __GRAPHS_JSON__;
+const DIAGNOSTICS = __DIAGNOSTICS_JSON__;
 const SUMMARY = __SUMMARY_JSON__;
 
 // ── styles config ──────────────────────────────────────────────────────────
 const K = {
+  Deployment:{bg:'#16213e', border:'#4cc9f0', shape:'roundrectangle', tc:'#9be7ff'},
   Package:   {bg:'#0d2045', border:'#3a86ff', shape:'rectangle',      tc:'#90c0ff'},
   Node:      {bg:'#3d1f00', border:'#ff8c42', shape:'roundrectangle', tc:'#ffb380'},
   Topic:     {bg:'#003d2a', border:'#06d6a0', shape:'ellipse',        tc:'#7fffda'},
@@ -355,7 +373,7 @@ function mkStyle() {
         'text-valign':'top',
         'text-halign':'center',
         'font-size':'11px',
-        'font-weight':'700',
+        'font-weight':'bold',
         'color':'#58a6ff',
         'padding':'10px',
         'shape':'round-rectangle',
@@ -379,7 +397,7 @@ function mkStyle() {
         'text-valign':'top',
         'text-halign':'center',
         'font-size':'10px',
-        'font-weight':'700',
+        'font-weight':'bold',
         'color':'#ffb380',
         'padding':'6px',
         'text-margin-y':'9px',
@@ -416,6 +434,10 @@ function mkStyle() {
         'text-background-padding':'2px', color:'#c9d1d9',
       }
     },
+    { selector:'node[resolution="conditional"]', style:{'border-style':'dashed'} },
+    { selector:'node[resolution="unresolved"]', style:{'border-style':'dotted','border-width':3} },
+    { selector:'edge[resolution="conditional"]', style:{'line-style':'dashed','opacity':.62} },
+    { selector:'edge[resolution="unresolved"]', style:{'line-style':'dotted','opacity':.5} },
   ];
   // Leaf node colours per kind (Topics, Services, Actions, Interfaces)
   for(const [kind, v] of Object.entries(K)){
@@ -459,122 +481,45 @@ let cy, curGraph='deps', curLayout='breadthfirst';
 // Sizes derived from actual content. Packages row-packed by area so no
 // row has wasted whitespace from a rigid column grid.
 function runCompoundPreset(){
-  const LEAF_W   = 70;   // estimated leaf node width (px)
-  const LEAF_H   = 18;   // estimated leaf node height (px)
-  const LEAF_GAP = 6;    // gap between leaves on the arc
-  const NODE_PAD = 8;    // padding inside each ROS-node ellipse
-  const NODE_GAP = 18;   // gap between sibling node ellipses
-  const PKG_PAD  = 8;    // padding inside each package rectangle
-  const PKG_GAP  = 50;   // gap between packages
-  const PKG_LBL  = 18;   // vertical space reserved for package label
-  const DL_W     = 78;   // width of direct-leaf (orphan topic) column
-  const DL_H     = 22;   // row height for each direct leaf
-
-  // ── node geometry: circle radius so N leaves fit without overlap ──────
-  function nodeGeom(rn){
-    const leaves = rn.children();
-    const lc = leaves.length;
-    if(lc === 0) return {rn, leaves, lc, r:0, ew:70, eh:36};
-    const r  = Math.max(LEAF_H*2+10, (lc*(LEAF_W+LEAF_GAP))/(2*Math.PI));
-    const d  = r*2 + LEAF_W + NODE_PAD*2;
-    return {rn, leaves, lc, r, ew:d, eh:d};
-  }
-
-  // ── package geometry: tight grid of node ellipses + orphan leaf column ─
-  function pkgGeom(pkg){
-    const nms = pkg.children('[kind="Node"]').map(rn => nodeGeom(rn));
-    const dls = pkg.children('[kind!="Node"]:childless');
-    if(!nms.length && !dls.length) return {pkg, nms, dls, nodeRows:[], w:80, h:40+PKG_LBL};
-
-    const nc = Math.max(1, Math.ceil(Math.sqrt(nms.length)));
-    const nodeRows = [];
-    for(let i=0; i<nms.length; i+=nc){
-      const seg = nms.slice(i, i+nc);
-      nodeRows.push({ items:seg, h:Math.max(...seg.map(m=>m.eh)), ws:seg.map(m=>m.ew) });
-    }
-    const gridW = nodeRows.length
-      ? Math.max(...nodeRows.map(r=>r.ws.reduce((a,b)=>a+b,0)+(r.ws.length-1)*NODE_GAP))
-      : 0;
-    const gridH = nodeRows.reduce((s,r)=>s+r.h,0) + Math.max(0,nodeRows.length-1)*NODE_GAP;
-    const dlColW = dls.length ? DL_W+NODE_GAP : 0;
-    return {
-      pkg, nms, dls, nodeRows,
-      w: Math.max(gridW+dlColW, dls.length?DL_W:0) + PKG_PAD*2,
-      h: Math.max(gridH, dls.length*DL_H) + PKG_PAD*2 + PKG_LBL,
-    };
-  }
-
-  const pkgs = cy.nodes('[kind="Package"]:parent');
-  if(!pkgs.length){ cy.fit(15); return; }
-  const allMeta = pkgs.map(p => pkgGeom(p));
-
-  // ── row-pack: sort largest first, fill rows to target width ───────────
-  allMeta.sort((a,b) => (b.w*b.h)-(a.w*a.h));
-  const totalArea = allMeta.reduce((s,m)=>(s+(m.w+PKG_GAP)*(m.h+PKG_GAP)),0);
-  const targetW   = Math.sqrt(totalArea)*1.4;
-
-  const pkgRows = [];
-  let cur=[], curW=0;
-  allMeta.forEach(m=>{
-    if(cur.length && curW+m.w+PKG_GAP > targetW){ pkgRows.push(cur); cur=[]; curW=0; }
-    cur.push(m); curW+=m.w+PKG_GAP;
-  });
-  if(cur.length) pkgRows.push(cur);
-
-  // ── assign leaf positions ─────────────────────────────────────────────
   const positions = {};
-  let baseY = 0;
-
-  pkgRows.forEach(pkgRow => {
-    const pkgRowH = Math.max(...pkgRow.map(m=>m.h));
-    let baseX = 0;
-
-    pkgRow.forEach(pm => {
-      const ox = baseX + PKG_PAD;      // content left edge
-      const oy = baseY + PKG_PAD + PKG_LBL; // content top edge
-
-      // Position each node ellipse using per-nodeRow grid
-      let ny = oy;
-      pm.nodeRows.forEach(nr => {
-        let nx = ox;
-        nr.items.forEach(nm => {
-          const cx = nx + nm.ew/2;
-          const cy_ = ny + nr.h/2;
-          if(nm.lc === 0){
-            positions[nm.rn.id()] = {x:cx, y:cy_};
-          } else {
-            nm.leaves.forEach((leaf,li)=>{
-              const a = (2*Math.PI*li/nm.lc);
-              positions[leaf.id()] = {x: cx+nm.r*Math.cos(a), y: cy_+nm.r*Math.sin(a)};
-            });
-          }
-          nx += nm.ew + NODE_GAP;
-        });
-        ny += nr.h + NODE_GAP;
-      });
-
-      // Direct-leaf column: right of the node grid
-      const gridW = pm.nodeRows.length
-        ? Math.max(...pm.nodeRows.map(r=>r.ws.reduce((a,b)=>a+b,0)+(r.ws.length-1)*NODE_GAP))
-        : 0;
-      const dlX = ox + gridW + (pm.nodeRows.length ? NODE_GAP : 0) + DL_W/2;
-      pm.dls.forEach((leaf,li)=>{
-        positions[leaf.id()] = {x: dlX, y: oy + li*DL_H + DL_H/2};
-      });
-
-      baseX += pm.w + PKG_GAP;
-    });
-
-    baseY += pkgRowH + PKG_GAP;
+  const gap = 64;
+  const packages = cy.nodes('[kind="Package"]:parent').sort((a,b)=>a.id().localeCompare(b.id()));
+  const leafSize = n => {
+    const box = n.boundingBox({includeLabels:true,includeOverlays:false});
+    return {w:Math.max(120,box.w)+28,h:Math.max(32,box.h)+20};
+  };
+  const groups = packages.map(pkg => {
+    const leaves = pkg.descendants(':childless').sort((a,b)=>a.id().localeCompare(b.id()));
+    const sizes = leaves.map(leafSize);
+    const cellW = Math.max(160,...sizes.map(v=>v.w));
+    const cellH = Math.max(58,...sizes.map(v=>v.h));
+    const cols = Math.max(1,Math.ceil(Math.sqrt(leaves.length)));
+    const rows = Math.ceil(leaves.length/cols);
+    return {pkg,leaves,cellW,cellH,cols,w:cols*cellW+64,h:rows*cellH+94};
   });
-
-  cy.layout({
-    name:'preset',
-    positions: n => positions[n.id()],
-    animate:true, animationDuration:400,
-    fit:true, padding:15,
-    stop:afterLayout,
-  }).run();
+  const totalArea = groups.reduce((sum,g)=>sum+(g.w+gap)*(g.h+gap),0);
+  const targetW = Math.max(1200,Math.sqrt(totalArea)*1.5);
+  let x = 0, y = 0, rowH = 0;
+  groups.forEach(g=>{
+    if(x && x+g.w>targetW){x=0;y+=rowH+gap;rowH=0;}
+    g.leaves.forEach((n,i)=>{
+      positions[n.id()]={x:x+32+(i%g.cols+.5)*g.cellW,
+                         y:y+62+(Math.floor(i/g.cols)+.5)*g.cellH};
+    });
+    x+=g.w+gap;rowH=Math.max(rowH,g.h);
+  });
+  y+=rowH+gap;
+  // Global topics, services, actions and standalone packages have no package parent.
+  const globals = cy.nodes(':childless').filter(n=>!positions[n.id()])
+    .sort((a,b)=>a.id().localeCompare(b.id()));
+  const globalW=Math.max(180,...globals.map(n=>leafSize(n).w));
+  const globalH=Math.max(70,...globals.map(n=>leafSize(n).h));
+  const cols=Math.max(1,Math.ceil(Math.sqrt(globals.length)));
+  globals.forEach((n,i)=>{
+    positions[n.id()]={x:(i%cols+.5)*globalW,y:y+(Math.floor(i/cols)+.5)*globalH};
+  });
+  cy.layout({name:'preset',positions:n=>positions[n.id()]||n.position(),
+    animate:true,animationDuration:400,fit:true,padding:24,stop:afterLayout}).run();
 }
 
 // ── mathematical edge routing (runs after every layout) ────────────────────
@@ -667,7 +612,8 @@ function refreshStats(){
 }
 
 function afterLayout(){
-  cy.fit(48);
+  if(cy.nodes(':visible').length <= 80) cy.fit(48);
+  else { cy.fit(24); if(cy.zoom()<.22) cy.zoom({level:.22,renderedPosition:{x:cy.width()/2,y:cy.height()/2}}); }
   routeEdges();
 }
 
@@ -766,6 +712,7 @@ function showEdgeDetails(edge){
 
 // ── init ───────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded',()=>{
+  document.getElementById('diagnostics').textContent = DIAGNOSTICS.length ? DIAGNOSTICS.map(d=>d.message).join('\n\n') : 'No diagnostics recorded. Static analysis may still be incomplete.';
   cy=cytoscape({
     container:document.getElementById('cy'),
     style:mkStyle(),
@@ -813,7 +760,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     const q=e.target.value.trim().toLowerCase();
     if(!q){cy.elements().removeClass('faded');return;}
     cy.elements().addClass('faded');
-    const hits=cy.nodes().filter(n=>n.data('label').toLowerCase().includes(q));
+    const hits=cy.nodes().filter(n=>[n.data('label'),n.data('name'),n.id(),n.data('source_symbol'),n.data('package')].filter(Boolean).join(' ').toLowerCase().includes(q));
     hits.removeClass('faded');
     hits.neighborhood().removeClass('faded');
   });

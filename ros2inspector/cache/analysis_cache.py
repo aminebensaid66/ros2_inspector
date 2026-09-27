@@ -18,7 +18,7 @@ _SOURCE_SUFFIXES = frozenset(
     (".py", ".cpp", ".cxx", ".cc", ".hpp", ".h", ".msg", ".srv", ".action")
 )
 
-_CACHE_VERSION = "v5-pruned-content-sha256-metadata-digest-cache"
+_CACHE_VERSION = "v7-qualified-cpp-method-receivers"
 _CACHE_SIZE_LIMIT = 256 * 1024 * 1024
 _DIGEST_CACHE_SIZE_LIMIT = 128 * 1024 * 1024
 
@@ -77,7 +77,8 @@ def _pkg_fingerprint(pkg_path: Path, digest_cache: diskcache.Cache | None = None
 class AnalysisCache:
     """Disk-backed cache for per-package static parse results."""
 
-    def __init__(self, cache_dir: Path | None = None) -> None:
+    def __init__(self, cache_dir: Path | None = None, *, context: str = "") -> None:
+        self._context = context
         self._dir = cache_dir or _DEFAULT_CACHE_DIR
         self._cache: diskcache.Cache = diskcache.Cache(str(self._dir), size_limit=_CACHE_SIZE_LIMIT)
         self._digest_cache: diskcache.Cache = diskcache.Cache(
@@ -85,10 +86,32 @@ class AnalysisCache:
         )
         self._fp_cache: tuple[Path, str] | None = None
 
+    def get_cpp_bases(self, package_paths: list[Path]) -> set[str]:
+        """Cache the workspace inheritance index by source content fingerprints."""
+        from ros2inspector.static.cpp_parser import discover_workspace_node_bases
+
+        sources = tuple(
+            (str(path.resolve()), _pkg_fingerprint(path, self._digest_cache))
+            for path in package_paths
+        )
+        key = ("cpp-bases-v1", sources)
+        cached = self._cache.get(key)
+        if isinstance(cached, set):
+            return cached
+        bases = discover_workspace_node_bases(package_paths)
+        self._cache.set(key, bases)
+        return bases
+
+    def set_context(self, context: str) -> None:
+        self._context = context
+        self._fp_cache = None
+
     def _fingerprint(self, pkg_path: Path) -> str:
         if self._fp_cache is not None and self._fp_cache[0] == pkg_path:
             return self._fp_cache[1]
-        fingerprint = _pkg_fingerprint(pkg_path, self._digest_cache)
+        fingerprint = hashlib.sha256(
+            (_pkg_fingerprint(pkg_path, self._digest_cache) + self._context).encode()
+        ).hexdigest()
         self._fp_cache = (pkg_path, fingerprint)
         return fingerprint
 

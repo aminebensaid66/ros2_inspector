@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from ros2inspector import __version__
 from ros2inspector.cli.app import app
 from ros2inspector.model.uam import UAM
 
@@ -88,4 +89,4 @@ def test_cli_viz_is_self_contained(real_ws: Path, tmp_path: Path) -> None:
 def test_cli_version() -> None:
     version = runner.invoke(app, ["--version"])
     assert version.exit_code == 0
-    assert "0.1.3" in version.output
+    assert f"v{__version__}" in version.output

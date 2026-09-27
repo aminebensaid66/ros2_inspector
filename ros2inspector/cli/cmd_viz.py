@@ -5,6 +5,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
+from ros2inspector.cli._output import OutputWriteError, atomic_write_text
 from ros2inspector.cli._workspace import build_uam_or_exit
 from ros2inspector.discovery import find_workspace_root
 from ros2inspector.viz import generate_html
@@ -51,7 +52,11 @@ def viz(
 
     html = generate_html(uam, root)
     output = output.resolve()
-    output.write_text(html, encoding="utf-8")
+    try:
+        atomic_write_text(output, html)
+    except OutputWriteError as exc:
+        err_console.print(f"[red]Output error:[/red] {exc}")
+        raise typer.Exit(2) from exc
 
     err_console.print(f"[green]✓[/green] Saved to [bold]{output}[/bold]")
 

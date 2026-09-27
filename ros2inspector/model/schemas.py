@@ -62,6 +62,8 @@ class NodeDefinition(BaseModel):
     action_clients: list[CommunicationEndpoint] = Field(default_factory=list)
     source: DataSource = DataSource.STATIC
     has_dynamic_names: bool = False
+    analysis_incomplete: bool = False
+    analysis_notes: list[str] = Field(default_factory=list)
 
 
 class PackageMetadata(BaseModel):

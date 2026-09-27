@@ -5,6 +5,7 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
+from ros2inspector.cli._output import OutputWriteError, atomic_write_text
 from ros2inspector.cli._state import state
 from ros2inspector.cli._workspace import build_uam_or_exit
 from ros2inspector.discovery import find_workspace_root
@@ -71,7 +72,11 @@ def graph(
         text = render_json(uam, graph_type.value, package)
 
     if output:
-        output.write_text(text, encoding="utf-8")
+        try:
+            atomic_write_text(output, text)
+        except OutputWriteError as exc:
+            err_console.print(f"[red]Output error:[/red] {exc}")
+            raise typer.Exit(2) from exc
         err_console.print(f"[dim]Written to {output}[/dim]")
     else:
         sys.stdout.write(text)

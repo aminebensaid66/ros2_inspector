@@ -60,11 +60,11 @@ PyPI token is stored in the repository.
 
 6. Commit and push the version change only after CI is green.
 7. Create a GitHub Release with a tag that exactly matches `v<project.version>`, for example
-   `v0.1.3`. The publish workflow rejects mismatched tags.
+   `v0.1.4`. The publish workflow rejects mismatched tags.
 8. Confirm the package on PyPI, then test the public installation:
 
    ```bash
-   pipx install ros2inspector==0.1.3
+   pipx install ros2inspector==0.1.4
    ros2inspector --version
    ```
 

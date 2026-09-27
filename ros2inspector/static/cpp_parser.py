@@ -43,9 +43,12 @@ _RCLCPP_ACTION_FREE_FUNC_MAP: dict[str, str] = {
 }
 
 
-def parse_cpp_nodes(package_path: Path, package_name: str) -> list[NodeDefinition]:
+def parse_cpp_nodes(
+    package_path: Path, package_name: str, known_node_bases: set[str] | None = None
+) -> list[NodeDefinition]:
     parser = Parser(_CPP_LANG)
     nodes: list[NodeDefinition] = []
+    parsed: list[tuple[Path, bytes, Node]] = []
 
     for cpp_file in _iter_cpp_files(package_path):
         try:
@@ -54,9 +57,13 @@ def parse_cpp_nodes(package_path: Path, package_name: str) -> list[NodeDefinitio
         except Exception:
             continue
 
+        parsed.append((cpp_file, source, tree.root_node))
         for node_def in _extract_nodes(tree.root_node, source, package_name, cpp_file):
             nodes.append(node_def)
 
+    _discover_indirect_nodes(nodes, parsed, package_name, known_node_bases or set())
+    _attach_out_of_class_calls(nodes, parsed)
+    _discover_direct_node_objects(nodes, parsed, package_name)
     return nodes
 
 
@@ -83,7 +90,7 @@ def _extract_nodes(
 
         nd = NodeDefinition(
             name=name,
-            source_symbol=name,
+            source_symbol=_qualified_symbol(class_node, source, name),
             declared_ros_name=_extract_declared_ros_name(class_node, source),
             package=package,
             language="cpp",
@@ -118,7 +125,7 @@ def _get_class_name(class_node: Node, source: bytes) -> str | None:
 
 
 _CPP_NODE_INIT_RE = re.compile(
-    r'(?:^|[:,])\s*(?:rclcpp(?:_lifecycle)?::)?(?:LifecycleNode|Node)'
+    r"(?:^|[:,])\s*(?:rclcpp(?:_lifecycle)?::)?(?:LifecycleNode|Node)"
     r'\s*\(\s*"((?:[^"\\]|\\.)*)"',
     re.MULTILINE,
 )
@@ -126,9 +133,7 @@ _CPP_NODE_INIT_RE = re.compile(
 
 def _extract_declared_ros_name(class_node: Node, source: bytes) -> str | None:
     """Extract a literal node name from a C++ constructor initializer list."""
-    text = source[class_node.start_byte : class_node.end_byte].decode(
-        "utf-8", errors="replace"
-    )
+    text = source[class_node.start_byte : class_node.end_byte].decode("utf-8", errors="replace")
     match = _CPP_NODE_INIT_RE.search(text)
     return match.group(1) if match else None
 
@@ -144,28 +149,32 @@ def _get_rclcpp_action_kind(func_node: Node, source: bytes) -> str | None:
     "create_client" are generic identifiers.  We verify the rclcpp_action namespace
     by inspecting the raw text of the qualified_identifier node.
     """
-    target = func_node
-    if func_node.type == "template_function":
-        for child in func_node.children:
-            if child.type == "qualified_identifier":
-                target = child
-                break
-    if target.type != "qualified_identifier":
-        return None
-    full_text = source[target.start_byte : target.end_byte].decode("utf-8", errors="replace")
-    if _RCLCPP_ACTION_NS not in full_text:
-        return None
-    bare = full_text.rsplit("::", 1)[-1].strip()
-    return _RCLCPP_ACTION_FREE_FUNC_MAP.get(bare)
+    text = source[func_node.start_byte : func_node.end_byte].decode("utf-8", errors="replace")
+    match = re.match(r"^rclcpp_action::(create_server|create_client)\s*(?:<|$)", text)
+    return _RCLCPP_ACTION_FREE_FUNC_MAP.get(match.group(1)) if match else None
 
 
-def _collect_calls(node: Node, source: bytes, nd: NodeDefinition) -> None:
+def _collect_calls(
+    node: Node, source: bytes, nd: NodeDefinition, receiver: str | None = None
+) -> None:
     for call_node in _query_nodes(node, "call_expression"):
         func_node = call_node.child_by_field_name("function")
         if func_node is None:
             continue
 
         args_node = call_node.child_by_field_name("arguments")
+        if receiver is not None:
+            function_text = source[func_node.start_byte : func_node.end_byte].decode(
+                "utf-8", errors="replace"
+            )
+            args = args_node.named_children if args_node is not None else []
+            owner_text = source[args[0].start_byte : args[0].end_byte].decode() if args else ""
+            if not (
+                function_text.startswith(receiver + "->")
+                or function_text.startswith(receiver + ".")
+                or (_get_rclcpp_action_kind(func_node, source) and owner_text == receiver)
+            ):
+                continue
 
         # rclcpp_action free functions must be checked before the generic dispatch
         # because their bare names ("create_server", "create_client") would otherwise
@@ -232,6 +241,10 @@ def _collect_calls(node: Node, source: bytes, nd: NodeDefinition) -> None:
 def _extract_cpp_type(func_node: Node, source: bytes) -> str:
     """Extract the first template type arg from a templated call (create_publisher<T>)."""
     node_type = func_node.type
+    if node_type == "qualified_identifier":
+        name = func_node.child_by_field_name("name")
+        if name is not None:
+            return _extract_cpp_type(name, source)
     if node_type == "field_expression":
         for child in func_node.children:
             if child.type == "template_method":
@@ -282,7 +295,7 @@ def _resolve_method_name(func_node: Node, source: bytes) -> str:
 
     if node_type == "field_expression":
         # Recurse into the RHS of -> or .
-        for child in func_node.children:
+        for child in reversed(func_node.children):
             if child.type in ("template_method", "field_identifier", "identifier"):
                 return _resolve_method_name(child, source)
 
@@ -336,3 +349,189 @@ def _first_child_of_type(node: Node, child_type: str) -> Node | None:
         if child.type == child_type:
             return child
     return None
+
+
+_ENDPOINT_FIELDS = (
+    "publishers",
+    "subscriptions",
+    "services",
+    "clients",
+    "action_servers",
+    "action_clients",
+)
+
+
+def _qualified_symbol(node: Node, source: bytes, name: str) -> str:
+    scopes = []
+    parent = node.parent
+    while parent is not None:
+        if parent.type in ("namespace_definition", "class_specifier"):
+            ident = parent.child_by_field_name("name")
+            if ident is not None:
+                scopes.append(
+                    source[ident.start_byte : ident.end_byte].decode("utf-8", errors="replace")
+                )
+        parent = parent.parent
+    return "::".join([*reversed(scopes), name])
+
+
+def _class_records(
+    parsed: list[tuple[Path, bytes, Node]],
+) -> list[tuple[Node, bytes, Path, str, list[str]]]:
+    records = []
+    for path, source, root in parsed:
+        for cls in _query_nodes(root, "class_specifier"):
+            name = _get_class_name(cls, source)
+            base = _first_child_of_type(cls, "base_class_clause")
+            if name and base is not None:
+                text = source[base.start_byte : base.end_byte].decode("utf-8", errors="replace")
+                bases = re.findall(r"[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*", text)
+                records.append((cls, source, path, _qualified_symbol(cls, source, name), bases))
+    return records
+
+
+def _resolve_base(base: str, symbol: str, known: set[str]) -> bool:
+    scope = symbol.split("::")[:-1]
+    while scope:
+        if "::".join([*scope, base]) in known:
+            return True
+        scope.pop()
+    return base in known
+
+
+def discover_workspace_node_bases(package_paths: list[Path]) -> set[str]:
+    """Build a qualified inheritance index without attributing communication calls."""
+    parsed = []
+    parser = Parser(_CPP_LANG)
+    for path in package_paths:
+        for file in _iter_cpp_files(path):
+            try:
+                source = file.read_bytes()
+            except OSError:
+                continue
+            parsed.append((file, source, parser.parse(source).root_node))
+    known = {"rclcpp::Node", "rclcpp_lifecycle::LifecycleNode"}
+    records = _class_records(parsed)
+    while True:
+        additions = {
+            symbol
+            for _, _, _, symbol, bases in records
+            if any(_resolve_base(b, symbol, known) for b in bases)
+        }
+        if additions <= known:
+            return known
+        known.update(additions)
+
+
+def _discover_indirect_nodes(
+    nodes: list[NodeDefinition],
+    parsed: list[tuple[Path, bytes, Node]],
+    package: str,
+    known: set[str],
+) -> None:
+    known = set(known) | {"rclcpp::Node", "rclcpp_lifecycle::LifecycleNode"}
+    known.update(n.source_symbol or n.name for n in nodes)
+    records = _class_records(parsed)
+    seen = {(n.source_symbol, n.file_path) for n in nodes}
+    while True:
+        changed = False
+        for cls, source, path, symbol, bases in records:
+            if (symbol, str(path)) in seen or not any(
+                _resolve_base(b, symbol, known) for b in bases
+            ):
+                continue
+            nd = NodeDefinition(
+                name=symbol.split("::")[-1],
+                source_symbol=symbol,
+                declared_ros_name=_extract_declared_ros_name(cls, source),
+                package=package,
+                language="cpp",
+                file_path=str(path),
+                line=cls.start_point[0] + 1,
+            )
+            _collect_calls(cls, source, nd)
+            nodes.append(nd)
+            seen.add((symbol, str(path)))
+            known.add(symbol)
+            changed = True
+        if not changed:
+            break
+
+
+def _attach_out_of_class_calls(
+    nodes: list[NodeDefinition], parsed: list[tuple[Path, bytes, Node]]
+) -> None:
+    by_symbol: dict[str, list[NodeDefinition]] = {}
+    for nd in nodes:
+        by_symbol.setdefault(nd.source_symbol or nd.name, []).append(nd)
+    for path, source, root in parsed:
+        for fn in _query_nodes(root, "function_definition"):
+            declarator = fn.child_by_field_name("declarator")
+            if declarator is None:
+                continue
+            qualified = next(_query_nodes(declarator, "qualified_identifier"), None)
+            if qualified is None:
+                continue
+            text = source[qualified.start_byte : qualified.end_byte].decode(
+                "utf-8", errors="replace"
+            )
+            if "::" not in text:
+                continue
+            class_name = text.rsplit("::", 1)[0]
+            full = _qualified_symbol(fn, source, class_name)
+            candidates = by_symbol.get(full, by_symbol.get(class_name, []))
+            if len(candidates) != 1:
+                for nd in candidates:
+                    nd.analysis_incomplete = True
+                    nd.analysis_notes.append(f"Ambiguous method ownership in {path}")
+                continue
+            nd = candidates[0]
+            proxy = NodeDefinition(
+                name=nd.name, package=nd.package, language="cpp", file_path=str(path)
+            )
+            _collect_calls(fn, source, proxy)
+            for field in _ENDPOINT_FIELDS:
+                getattr(nd, field).extend(getattr(proxy, field))
+            nd.has_dynamic_names |= proxy.has_dynamic_names
+            if nd.declared_ros_name is None:
+                nd.declared_ros_name = _extract_declared_ros_name(fn, source)
+
+
+def _discover_direct_node_objects(
+    nodes: list[NodeDefinition], parsed: list[tuple[Path, bytes, Node]], package: str
+) -> None:
+    pattern = re.compile(r"^(?:rclcpp::Node::make_shared|std::make_shared\s*<\s*rclcpp::Node\s*>)$")
+    for path, source, root in parsed:
+        for call in _query_nodes(root, "call_expression"):
+            func = call.child_by_field_name("function")
+            if func is None or not pattern.match(
+                source[func.start_byte : func.end_byte].decode("utf-8", errors="replace")
+            ):
+                continue
+            parent = call.parent
+            if parent is None or parent.type != "init_declarator":
+                continue
+            var = parent.child_by_field_name("declarator")
+            if var is None or var.type != "identifier":
+                continue
+            receiver = source[var.start_byte : var.end_byte].decode()
+            owner = parent
+            while owner.parent is not None and owner.type != "function_definition":
+                owner = owner.parent
+            name = _extract_first_string_arg(call.child_by_field_name("arguments"), source)
+            nd = NodeDefinition(
+                name=name if name != DYNAMIC_SENTINEL else receiver,
+                source_symbol=f"{path.name}:{call.start_point[0] + 1}:{receiver}",
+                declared_ros_name=name if name != DYNAMIC_SENTINEL else None,
+                package=package,
+                language="cpp",
+                file_path=str(path),
+                line=call.start_point[0] + 1,
+                analysis_incomplete=True,
+                analysis_notes=[
+                    "Direct node: only calls through its local variable are attributed; "
+                    "aliases and helper ownership are unresolved."
+                ],
+            )
+            _collect_calls(owner, source, nd, receiver=receiver)
+            nodes.append(nd)

@@ -10,7 +10,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from ros2inspector.cli._output import OutputFormat
+from ros2inspector.cli._output import OutputFormat, OutputWriteError, atomic_write_text
 from ros2inspector.cli._state import state
 from ros2inspector.cli._workspace import build_uam_or_exit
 from ros2inspector.discovery import find_workspace_root
@@ -230,9 +230,7 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
         rows: list[str] = []
         for actor_id in actors:
             actor_name = _actor_name(g, actor_id)
-            deployment_prefix = (
-                f"[blue]{actor_name}[/blue]  " if actor_id != source_id else ""
-            )
+            deployment_prefix = f"[blue]{actor_name}[/blue]  " if actor_id != source_id else ""
             for _, target_id, edge_data in g.out_edges(actor_id, data=True):
                 target = g.nodes.get(target_id, {})
                 kind = target.get("kind", "")
@@ -287,7 +285,11 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
 
 def _write_or_print(text: str, output: Path | None, plain: bool = False) -> None:
     if output:
-        output.write_text(text, encoding="utf-8")
+        try:
+            atomic_write_text(output, text)
+        except OutputWriteError as exc:
+            err_console.print(f"[red]Output error:[/red] {exc}")
+            raise typer.Exit(2) from exc
         err_console.print(f"[dim]Written to {output}[/dim]")
     else:
         if plain:

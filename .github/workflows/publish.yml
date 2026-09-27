@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.13"]
+        python-version: ["3.10", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -69,9 +69,36 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  wheel-smoke:
+    name: Verify wheel (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
+      - name: Install wheel outside source tree
+        run: >-
+          python -c "import glob, subprocess, sys;
+          wheel=glob.glob('dist/ros2inspector-*.whl')[0];
+          subprocess.check_call([sys.executable, '-m', 'pip', 'install', wheel])"
+      - name: Check installed CLI
+        run: >-
+          python -c "import subprocess;
+          subprocess.check_call(['ros2inspector', '--version']);
+          subprocess.check_call(['ros2inspector', '--help'])"
+
   publish:
     name: Publish distributions
-    needs: build
+    needs: wheel-smoke
     runs-on: ubuntu-latest
     environment:
       name: pypi

@@ -283,6 +283,26 @@ The test suite uses fixture workspaces under `tests/fixtures/` and does not requ
 Maintainers should follow [`RELEASING.md`](RELEASING.md). Publishing is performed by
 GitHub Actions through PyPI Trusted Publishing when a GitHub Release is published.
 
+## Analysis and output guarantees
+
+Static analysis is deliberately conservative. Common C++ header/source separation,
+qualified out-of-class methods, indirect node inheritance, and direct
+`rclcpp::Node::make_shared`/`std::make_shared<rclcpp::Node>` construction are recognised
+when ownership is supported by source evidence. Ambiguous associations are retained as
+incomplete-analysis diagnostics instead of being guessed.
+
+Launch presence is represented as `known`, `conditional`, or `unresolved`. Conditional
+and unresolved deployments are preserved in JSON and HTML, but they do not satisfy
+definitive connectivity checks. Includes, substitutions, opaque Python launch logic, and
+other unsupported branches remain diagnostics; launch files are never executed.
+
+Grouped layout positions all displayed leaf entities, including shared communication
+entities and disconnected components. `uses_interface` relationships remain in the HTML
+payload and are controlled by the relationship filter rather than being discarded.
+
+For `nodes`, `graph`, and `viz`, output parent directories must already exist. File writes
+use a temporary sibling and atomic replacement; ordinary path/permission failures exit 2 without a traceback.
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
