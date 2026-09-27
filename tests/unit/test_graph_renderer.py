@@ -63,6 +63,21 @@ def test_json_full_is_valid(uam: UAM) -> None:
     assert "packages" in parsed or "nodes" in parsed
 
 
+@pytest.mark.parametrize("graph_type", ["full", "comms"])
+def test_json_communication_edges_refer_to_graph_nodes(uam: UAM, graph_type: str) -> None:
+    import orjson
+
+    parsed = orjson.loads(render_json(uam, graph_type))
+    graph = parsed["graph"] if graph_type == "full" else parsed
+    node_ids = {node["id"] for node in graph["nodes"]}
+    communication_edges = [
+        edge for edge in graph["edges"] if edge["rel"] in {"publishes", "subscribes"}
+    ]
+    assert communication_edges
+    assert all(edge["source"] in node_ids and edge["target"] in node_ids for edge in graph["edges"])
+    assert all(edge["data_source"] == "static" for edge in communication_edges)
+
+
 def test_mermaid_package_filter_includes_neighbors(uam: UAM) -> None:
     out = render_mermaid(uam, "deps", package="pkg_b")
     assert "pkg_b" in out

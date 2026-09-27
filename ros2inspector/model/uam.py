@@ -451,7 +451,7 @@ class UnifiedArchitectureModel:
         actual_name: str,
     ) -> dict[str, Any]:
         return {
-            "source": DataSource.STATIC.value,
+            "data_source": DataSource.STATIC.value,
             "remapped": actual_name != endpoint.name,
             "original_name": endpoint.name,
             "file_path": endpoint.file_path,
@@ -828,7 +828,7 @@ class UnifiedArchitectureModel:
                     for nid, attrs in self._graph.nodes(data=True)
                 ],
                 "edges": [
-                    {"source": s, "target": t, "key": key, **dict(d)}
+                    {**dict(d), "source": s, "target": t, "key": key}
                     for s, t, key, d in self._graph.edges(keys=True, data=True)
                 ],
             },

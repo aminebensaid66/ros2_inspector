@@ -177,7 +177,7 @@ def render_json(uam: UnifiedArchitectureModel, graph_type: str, package: str | N
                 for nid, attrs in sub.nodes(data=True)
             ],
             "edges": [
-                {"source": s, "target": t, "key": key, **dict(d)}
+                {**dict(d), "source": s, "target": t, "key": key}
                 for s, t, key, d in sub.edges(keys=True, data=True)
             ],
         }
