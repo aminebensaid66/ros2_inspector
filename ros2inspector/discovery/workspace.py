@@ -19,7 +19,7 @@ def _has_workspace_marker(path: Path) -> bool:
     return (path / "src").is_dir() or (path / "install" / "setup.bash").exists()
 
 
-def find_workspace_root(start: Path) -> Path:
+def find_workspace_root(start: Path, *, warn: bool = True) -> Path:
     """Find the nearest colcon workspace without requiring readable ancestors.
 
     The path supplied by the user must itself be accessible. Permission failures
@@ -40,9 +40,10 @@ def find_workspace_root(start: Path) -> Path:
         except PermissionError:
             break
 
-    print(
-        f"Warning: no ROS 2 workspace root found above '{start}'; using it as root.\n"
-        "  Ensure you are inside a workspace with a 'src/' directory.",
-        file=sys.stderr,
-    )
+    if warn:
+        print(
+            f"Warning: no ROS 2 workspace root found above '{start}'; using it as root.\n"
+            "  Ensure you are inside a workspace with a 'src/' directory.",
+            file=sys.stderr,
+        )
     return current

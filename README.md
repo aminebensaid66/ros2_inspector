@@ -156,9 +156,32 @@ Validates the workspace against a YAML policy file.
 ```bash
 ros2inspector --version
 ros2inspector --quiet scan
+ros2inspector --include-tests nodes
+ros2inspector --preset nav2 scan
+ros2inspector --factory-patterns factories.yaml scan
 ```
 
 `--version` prints the package version. `--quiet` suppresses diagnostic headers and progress output.
+Test source nodes are excluded by default; `--include-tests` adds them to architecture results.
+The `nav2` preset recognizes `TwistPublisher`, `TwistSubscriber`, and `SimpleActionServer` helpers.
+Custom C++ endpoint factories can be declared in YAML:
+
+```yaml
+factories:
+  - call: my_pkg::TopicPublisher
+    kind: publisher
+    name_arg: 1
+    msg_type: std_msgs/String
+```
+
+`name_arg` is the zero-based constructor argument containing a literal ROS name. Supported
+kinds are `publisher`, `subscription`, `service`, `client`, `action_server`, and `action_client`.
+Factory-derived endpoints retain source evidence and medium or low confidence.
+Literal Python and C++ parameter defaults can resolve endpoint names and are labeled
+`parameter_default`; launch parameter overrides and computed defaults remain unresolved.
+Literal Python `QoSProfile` settings and C++ `rclcpp::QoS(...)` settings are reported when
+available. The `qos_compatibility` rule reports only explicit reliability or durability
+mismatches; unknown QoS settings do not create findings.
 
 ## Output formats
 
@@ -214,7 +237,7 @@ rules:
     severity: warning
 ```
 
-Supported rule types are `health_threshold`, `license`, `naming`, `dependency`, `no_circular_deps`, `topic_connectivity`, `node_isolation`, `service_connectivity`, `action_connectivity`, `maintainer_required`, and `version_not_default`.
+Supported rule types are `health_threshold`, `license`, `naming`, `dependency`, `no_circular_deps`, `topic_connectivity`, `node_isolation`, `service_connectivity`, `action_connectivity`, `qos_compatibility`, `maintainer_required`, and `version_not_default`.
 
 ## CI integration
 

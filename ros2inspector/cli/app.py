@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -38,8 +39,20 @@ def main(
         bool,
         typer.Option("--quiet", "-q", help="Suppress diagnostic headers and progress output"),
     ] = False,
+    include_tests: Annotated[
+        bool, typer.Option("--include-tests", help="Include nodes defined in test sources")
+    ] = False,
+    factory_patterns: Annotated[
+        Path | None, typer.Option("--factory-patterns", help="YAML endpoint factory patterns")
+    ] = None,
+    preset: Annotated[
+        str | None, typer.Option("--preset", help="Endpoint factory preset (nav2)")
+    ] = None,
 ) -> None:
     state.quiet = quiet
+    state.include_tests = include_tests
+    state.factory_patterns = str(factory_patterns) if factory_patterns else None
+    state.preset = preset
 
 
 app.add_typer(cmd_scan.app, name="scan")

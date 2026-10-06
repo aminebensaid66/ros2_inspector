@@ -32,7 +32,7 @@ def scan(
     ] = OutputFormat.TABLE,
 ) -> None:
     """Scan a ROS 2 workspace and display a summary."""
-    root = find_workspace_root(path)
+    root = find_workspace_root(path, warn=not state.quiet)
     distro = get_ros_distro()
 
     # For machine-readable formats send the diagnostic header to stderr so stdout stays clean

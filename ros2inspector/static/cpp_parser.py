@@ -2,6 +2,7 @@ import re
 from collections import deque
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import tree_sitter_cpp
 from tree_sitter import Language, Node, Parser
@@ -12,6 +13,7 @@ from ros2inspector.model.schemas import (
     CommunicationEndpoint,
     DataSource,
     NodeDefinition,
+    QoSProfile,
 )
 
 _CPP_LANG = Language(tree_sitter_cpp.language())
@@ -44,7 +46,11 @@ _RCLCPP_ACTION_FREE_FUNC_MAP: dict[str, str] = {
 
 
 def parse_cpp_nodes(
-    package_path: Path, package_name: str, known_node_bases: set[str] | None = None
+    package_path: Path,
+    package_name: str,
+    known_node_bases: set[str] | None = None,
+    *,
+    factory_patterns: list[dict[str, Any]] | None = None,
 ) -> list[NodeDefinition]:
     parser = Parser(_CPP_LANG)
     nodes: list[NodeDefinition] = []
@@ -58,12 +64,16 @@ def parse_cpp_nodes(
             continue
 
         parsed.append((cpp_file, source, tree.root_node))
-        for node_def in _extract_nodes(tree.root_node, source, package_name, cpp_file):
+        for node_def in _extract_nodes(
+            tree.root_node, source, package_name, cpp_file, factory_patterns or []
+        ):
             nodes.append(node_def)
 
-    _discover_indirect_nodes(nodes, parsed, package_name, known_node_bases or set())
-    _attach_out_of_class_calls(nodes, parsed)
-    _discover_direct_node_objects(nodes, parsed, package_name)
+    _discover_indirect_nodes(
+        nodes, parsed, package_name, known_node_bases or set(), factory_patterns or []
+    )
+    _attach_out_of_class_calls(nodes, parsed, factory_patterns or [])
+    _discover_direct_node_objects(nodes, parsed, package_name, factory_patterns or [])
     return nodes
 
 
@@ -75,7 +85,11 @@ def _iter_cpp_files(root: Path) -> Iterator[Path]:
 
 
 def _extract_nodes(
-    root_node: Node, source: bytes, package: str, file_path: Path
+    root_node: Node,
+    source: bytes,
+    package: str,
+    file_path: Path,
+    factory_patterns: list[dict[str, Any]],
 ) -> list[NodeDefinition]:
     results: list[NodeDefinition] = []
 
@@ -100,7 +114,7 @@ def _extract_nodes(
         )
 
         # Walk the class body for create_* calls
-        _collect_calls(class_node, source, nd)
+        _collect_calls(class_node, source, nd, factory_patterns=factory_patterns)
         results.append(nd)
 
     return results
@@ -155,18 +169,23 @@ def _get_rclcpp_action_kind(func_node: Node, source: bytes) -> str | None:
 
 
 def _collect_calls(
-    node: Node, source: bytes, nd: NodeDefinition, receiver: str | None = None
+    node: Node,
+    source: bytes,
+    nd: NodeDefinition,
+    receiver: str | None = None,
+    factory_patterns: list[dict[str, Any]] | None = None,
 ) -> None:
+    parameter_names = _cpp_parameter_names(node, source)
     for call_node in _query_nodes(node, "call_expression"):
         func_node = call_node.child_by_field_name("function")
         if func_node is None:
             continue
 
         args_node = call_node.child_by_field_name("arguments")
+        function_text = source[func_node.start_byte : func_node.end_byte].decode(
+            "utf-8", errors="replace"
+        )
         if receiver is not None:
-            function_text = source[func_node.start_byte : func_node.end_byte].decode(
-                "utf-8", errors="replace"
-            )
             args = args_node.named_children if args_node is not None else []
             owner_text = source[args[0].start_byte : args[0].end_byte].decode() if args else ""
             if not (
@@ -176,23 +195,61 @@ def _collect_calls(
             ):
                 continue
 
+        for pattern in factory_patterns or []:
+            call_name = str(pattern["call"])
+            if not re.search(rf"(?<![\w:]){re.escape(call_name)}(?![\w:])", function_text):
+                continue
+            name, name_source = _cpp_name(
+                args_node, int(pattern["name_arg"]), source, parameter_names
+            )
+            msg_type = str(pattern.get("msg_type", "unknown"))
+            if msg_type == "unknown":
+                template = re.search(
+                    rf"{re.escape(call_name)}\s*<\s*([\w:]+)", function_text
+                )
+                if template:
+                    msg_type = _cpp_type_to_ros(template.group(1))
+            ep = CommunicationEndpoint(
+                name=name,
+                name_source=name_source,
+                msg_type=msg_type,
+                file_path=nd.file_path,
+                line=call_node.start_point[0] + 1,
+                evidence=function_text,
+                type_source="factory_pattern" if msg_type != "unknown" else "unknown",
+                confidence="medium" if name != DYNAMIC_SENTINEL else "low",
+            )
+            field = {
+                "publisher": "publishers",
+                "subscription": "subscriptions",
+                "service": "services",
+                "client": "clients",
+                "action_server": "action_servers",
+                "action_client": "action_clients",
+            }[str(pattern["kind"])]
+            getattr(nd, field).append(ep)
+            if name == DYNAMIC_SENTINEL:
+                nd.has_dynamic_names = True
+
         # rclcpp_action free functions must be checked before the generic dispatch
         # because their bare names ("create_server", "create_client") would otherwise
         # be missed entirely — _resolve_method_name returns "" for template_function
         # nodes whose child is a qualified_identifier rather than a bare identifier.
         action_kind = _get_rclcpp_action_kind(func_node, source)
         if action_kind is not None:
-            topic_name = _extract_first_string_arg(args_node, source)
+            topic_name, name_source = _cpp_name(args_node, 1, source, parameter_names)
             cpp_type = _extract_cpp_type(func_node, source)
             ep = CommunicationEndpoint(
                 name=topic_name,
+                name_source=name_source,
                 msg_type=cpp_type,
                 file_path=nd.file_path,
                 line=call_node.start_point[0] + 1,
                 evidence="rclcpp_action",
                 type_source="explicit" if cpp_type != "unknown" else "unknown",
                 confidence=(
-                    "high" if cpp_type != "unknown" and topic_name != DYNAMIC_SENTINEL else "low"
+                    "low" if cpp_type == "unknown" or topic_name == DYNAMIC_SENTINEL
+                    else "medium" if name_source == "parameter_default" else "high"
                 ),
             )
             if action_kind == "server":
@@ -207,18 +264,21 @@ def _collect_calls(
         if method_name not in _ALL_CREATE_CALLS:
             continue
 
-        topic_name = _extract_first_string_arg(args_node, source)
+        topic_name, name_source = _cpp_name(args_node, 0, source, parameter_names)
         cpp_type = _extract_cpp_type(func_node, source)
         ep = CommunicationEndpoint(
             name=topic_name,
+            name_source=name_source,
             msg_type=cpp_type,
             file_path=nd.file_path,
             line=call_node.start_point[0] + 1,
             evidence=method_name,
             type_source="explicit" if cpp_type != "unknown" else "unknown",
             confidence=(
-                "high" if cpp_type != "unknown" and topic_name != DYNAMIC_SENTINEL else "low"
+                "low" if cpp_type == "unknown" or topic_name == DYNAMIC_SENTINEL
+                else "medium" if name_source == "parameter_default" else "high"
             ),
+            qos=_extract_cpp_qos(call_node, source),
         )
 
         if method_name in _PUBLISHER_CALLS:
@@ -236,6 +296,23 @@ def _collect_calls(
 
         if topic_name == DYNAMIC_SENTINEL:
             nd.has_dynamic_names = True
+
+
+def _extract_cpp_qos(call_node: Node, source: bytes) -> QoSProfile | None:
+    text = source[call_node.start_byte : call_node.end_byte].decode("utf-8", errors="replace")
+    match = re.search(r"(?:rclcpp::)?QoS\s*\(\s*(\d+)\s*\)", text)
+    if not match:
+        return None
+    profile = QoSProfile(depth=int(match.group(1)), history="keep_last")
+    if ".best_effort()" in text:
+        profile.reliability = "best_effort"
+    elif ".reliable()" in text:
+        profile.reliability = "reliable"
+    if ".transient_local()" in text:
+        profile.durability = "transient_local"
+    elif ".durability_volatile()" in text:
+        profile.durability = "volatile"
+    return profile
 
 
 def _extract_cpp_type(func_node: Node, source: bytes) -> str:
@@ -334,6 +411,57 @@ def _extract_first_string_arg(args_node: Node | None, source: bytes) -> str:
     return DYNAMIC_SENTINEL
 
 
+def _extract_string_arg(args_node: Node | None, index: int, source: bytes) -> str:
+    if args_node is None or index >= len(args_node.named_children):
+        return DYNAMIC_SENTINEL
+    arg = args_node.named_children[index]
+    if arg.type != "string_literal":
+        return DYNAMIC_SENTINEL
+    content = _first_child_of_type(arg, "string_content")
+    if content is not None:
+        return source[content.start_byte : content.end_byte].decode("utf-8", errors="replace")
+    return source[arg.start_byte : arg.end_byte].decode("utf-8", errors="replace").strip('"')
+
+
+def _cpp_parameter_names(node: Node, source: bytes) -> dict[str, str]:
+    """Resolve local string variables read from literal parameter defaults."""
+    text = source[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+    defaults = dict(
+        re.findall(
+            r'declare_parameter(?:\s*<[^>]+>)?\s*\(\s*"([^"\\]+)"\s*,\s*"([^"\\]+)"',
+            text,
+        )
+    )
+    names: dict[str, str] = {}
+    for key, default in defaults.items():
+        escaped = re.escape(key)
+        for match in re.finditer(
+            rf'get_parameter\s*\(\s*"{escaped}"\s*,\s*([A-Za-z_]\w*)\s*\)', text
+        ):
+            names[match.group(1)] = default
+        for match in re.finditer(
+            rf'([A-Za-z_]\w*)\s*=\s*(?:this->)?get_parameter\s*\(\s*"{escaped}"\s*\)',
+            text,
+        ):
+            names[match.group(1)] = default
+    return names
+
+
+def _cpp_name(
+    args_node: Node | None, index: int, source: bytes, parameter_names: dict[str, str]
+) -> tuple[str, str]:
+    literal = _extract_string_arg(args_node, index, source)
+    if literal != DYNAMIC_SENTINEL:
+        return literal, "literal"
+    if args_node is not None and index < len(args_node.named_children):
+        arg = args_node.named_children[index]
+        raw = source[arg.start_byte : arg.end_byte].decode("utf-8", errors="replace")
+        variable = raw.strip().removeprefix("this->")
+        if variable in parameter_names:
+            return parameter_names[variable], "parameter_default"
+    return DYNAMIC_SENTINEL, "unresolved"
+
+
 def _query_nodes(root: Node, node_type: str) -> Iterator[Node]:
     """BFS yielding all descendant nodes of the given type."""
     queue: deque[Node] = deque(root.children)
@@ -428,6 +556,7 @@ def _discover_indirect_nodes(
     parsed: list[tuple[Path, bytes, Node]],
     package: str,
     known: set[str],
+    factory_patterns: list[dict[str, Any]],
 ) -> None:
     known = set(known) | {"rclcpp::Node", "rclcpp_lifecycle::LifecycleNode"}
     known.update(n.source_symbol or n.name for n in nodes)
@@ -449,7 +578,7 @@ def _discover_indirect_nodes(
                 file_path=str(path),
                 line=cls.start_point[0] + 1,
             )
-            _collect_calls(cls, source, nd)
+            _collect_calls(cls, source, nd, factory_patterns=factory_patterns)
             nodes.append(nd)
             seen.add((symbol, str(path)))
             known.add(symbol)
@@ -459,7 +588,9 @@ def _discover_indirect_nodes(
 
 
 def _attach_out_of_class_calls(
-    nodes: list[NodeDefinition], parsed: list[tuple[Path, bytes, Node]]
+    nodes: list[NodeDefinition],
+    parsed: list[tuple[Path, bytes, Node]],
+    factory_patterns: list[dict[str, Any]],
 ) -> None:
     by_symbol: dict[str, list[NodeDefinition]] = {}
     for nd in nodes:
@@ -489,7 +620,7 @@ def _attach_out_of_class_calls(
             proxy = NodeDefinition(
                 name=nd.name, package=nd.package, language="cpp", file_path=str(path)
             )
-            _collect_calls(fn, source, proxy)
+            _collect_calls(fn, source, proxy, factory_patterns=factory_patterns)
             for field in _ENDPOINT_FIELDS:
                 getattr(nd, field).extend(getattr(proxy, field))
             nd.has_dynamic_names |= proxy.has_dynamic_names
@@ -498,7 +629,10 @@ def _attach_out_of_class_calls(
 
 
 def _discover_direct_node_objects(
-    nodes: list[NodeDefinition], parsed: list[tuple[Path, bytes, Node]], package: str
+    nodes: list[NodeDefinition],
+    parsed: list[tuple[Path, bytes, Node]],
+    package: str,
+    factory_patterns: list[dict[str, Any]],
 ) -> None:
     pattern = re.compile(r"^(?:rclcpp::Node::make_shared|std::make_shared\s*<\s*rclcpp::Node\s*>)$")
     for path, source, root in parsed:
@@ -533,5 +667,5 @@ def _discover_direct_node_objects(
                     "aliases and helper ownership are unresolved."
                 ],
             )
-            _collect_calls(owner, source, nd, receiver=receiver)
+            _collect_calls(owner, source, nd, receiver=receiver, factory_patterns=factory_patterns)
             nodes.append(nd)

@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import NoReturn
 
 import typer
+import yaml
 from rich.console import Console
 
+from ros2inspector.cli._state import state
 from ros2inspector.discovery import (
     DuplicatePackageError,
     NoPackagesFoundError,
@@ -51,6 +53,16 @@ def build_uam_or_exit(
 ) -> UnifiedArchitectureModel:
     """Build the model and map user-actionable workspace failures to exit code 3."""
     try:
-        return UAM.build(root, use_cache=use_cache, show_progress=show_progress)
+        return UAM.build(
+            root,
+            use_cache=use_cache,
+            show_progress=show_progress,
+            include_tests=state.include_tests,
+            factory_patterns=Path(state.factory_patterns) if state.factory_patterns else None,
+            preset=state.preset,
+        )
     except WorkspaceAnalysisError as exc:
         _exit_workspace_error(exc)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        _err_console.print(f"[red]Configuration error:[/red] {exc}")
+        raise typer.Exit(2) from exc

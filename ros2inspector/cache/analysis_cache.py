@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,13 +13,15 @@ from ros2inspector.model.schemas import InterfaceDefinition, NodeDefinition
 
 _LOG = logging.getLogger(__name__)
 
-_DEFAULT_CACHE_DIR = Path.home() / ".cache" / "ros2inspector"
+_DEFAULT_CACHE_DIR = (
+    Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ros2inspector"
+)
 
 _SOURCE_SUFFIXES = frozenset(
     (".py", ".cpp", ".cxx", ".cc", ".hpp", ".h", ".msg", ".srv", ".action")
 )
 
-_CACHE_VERSION = "v7-qualified-cpp-method-receivers"
+_CACHE_VERSION = "v8-source-paths"
 _CACHE_SIZE_LIMIT = 256 * 1024 * 1024
 _DIGEST_CACHE_SIZE_LIMIT = 128 * 1024 * 1024
 
@@ -110,7 +113,11 @@ class AnalysisCache:
         if self._fp_cache is not None and self._fp_cache[0] == pkg_path:
             return self._fp_cache[1]
         fingerprint = hashlib.sha256(
-            (_pkg_fingerprint(pkg_path, self._digest_cache) + self._context).encode()
+            (
+                str(pkg_path.resolve())
+                + _pkg_fingerprint(pkg_path, self._digest_cache)
+                + self._context
+            ).encode()
         ).hexdigest()
         self._fp_cache = (pkg_path, fingerprint)
         return fingerprint

@@ -407,6 +407,58 @@ def rule_node_isolation(
     return violations
 
 
+def rule_qos_compatibility(
+    uam: UnifiedArchitectureModel, cfg: dict[str, Any]
+) -> list[PolicyViolation]:
+    """Report proven reliability or durability incompatibility on a topic."""
+    graph = uam.graph
+    severity = _sev(cfg.get("severity", "warning"))
+    findings: list[PolicyViolation] = []
+    for topic_id, attrs in graph.nodes(data=True):
+        if attrs.get("kind") != "Topic" or attrs.get("resolution") == "unresolved":
+            continue
+        edges = [
+            (source, data)
+            for source, _, data in graph.in_edges(topic_id, data=True)
+            if data.get("resolution", "known") == "known" and data.get("qos")
+        ]
+        publishers = [(source, data) for source, data in edges if data.get("rel") == "publishes"]
+        subscribers = [(source, data) for source, data in edges if data.get("rel") == "subscribes"]
+        for pub_id, pub in publishers:
+            for sub_id, sub in subscribers:
+                offered = pub["qos"]
+                requested = sub["qos"]
+                failures = []
+                if (
+                    offered.get("reliability") == "best_effort"
+                    and requested.get("reliability") == "reliable"
+                ):
+                    failures.append("reliability")
+                if (
+                    offered.get("durability") == "volatile"
+                    and requested.get("durability") == "transient_local"
+                ):
+                    failures.append("durability")
+                if not failures:
+                    continue
+                findings.append(
+                    PolicyViolation(
+                        severity=severity,
+                        rule_type="qos_compatibility",
+                        message=(
+                            f"Topic '{attrs.get('name')}' has incompatible {', '.join(failures)} "
+                            f"between publisher '{graph.nodes[pub_id].get('name')}' and "
+                            f"subscriber '{graph.nodes[sub_id].get('name')}'"
+                        ),
+                        policy_file=cfg.get("_source", "policy"),
+                        affected_entities=[str(attrs.get("name"))],
+                        file_path=sub.get("file_path"),
+                        line=sub.get("line"),
+                    )
+                )
+    return findings
+
+
 def rule_service_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
@@ -524,6 +576,7 @@ _RULE_RUNNERS = {
     "version_not_default": rule_version_not_default,
     "topic_connectivity": rule_topic_connectivity,
     "node_isolation": rule_node_isolation,
+    "qos_compatibility": rule_qos_compatibility,
     "service_connectivity": rule_service_connectivity,
     "action_connectivity": rule_action_connectivity,
 }

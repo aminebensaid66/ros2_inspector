@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from ros2inspector.cli._output import OutputWriteError, atomic_write_text
+from ros2inspector.cli._state import state
 from ros2inspector.cli._workspace import build_uam_or_exit
 from ros2inspector.discovery import find_workspace_root
 from ros2inspector.viz import generate_html
@@ -39,16 +40,18 @@ def viz(
       ros2inspector viz -C ~/my_ws -o graph.html
       ros2inspector viz --no-open
     """
-    root = find_workspace_root(path)
+    root = find_workspace_root(path, warn=not state.quiet)
 
-    err_console.print(f"[dim]Scanning {root}…[/dim]")
+    if not state.quiet:
+        err_console.print(f"[dim]Scanning {root}…[/dim]")
     uam = build_uam_or_exit(root, use_cache=not no_cache)
 
     s = uam.summary()
-    err_console.print(
-        f"[dim]Found {s['packages']} packages, {s['nodes']} nodes, "
-        f"{s['topics']} topics, {s['services']} services[/dim]"
-    )
+    if not state.quiet:
+        err_console.print(
+            f"[dim]Found {s['packages']} packages, {s['nodes']} nodes, "
+            f"{s['topics']} topics, {s['services']} services[/dim]"
+        )
 
     html = generate_html(uam, root)
     output = output.resolve()
@@ -58,7 +61,8 @@ def viz(
         err_console.print(f"[red]Output error:[/red] {exc}")
         raise typer.Exit(2) from exc
 
-    err_console.print(f"[green]✓[/green] Saved to [bold]{output}[/bold]")
+    if not state.quiet:
+        err_console.print(f"[green]✓[/green] Saved to [bold]{output}[/bold]")
 
     if open_browser:
         webbrowser.open(output.as_uri())

@@ -21,6 +21,7 @@ from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.policy.rules import (
     rule_action_connectivity,
     rule_node_isolation,
+    rule_qos_compatibility,
     rule_service_connectivity,
     rule_topic_connectivity,
 )
@@ -65,6 +66,7 @@ def _build_rules(exclude: list[str]) -> list[dict[str, Any]]:
             "skip_dynamic_names": True,
             "_source": "audit",
         },
+        {"type": "qos_compatibility", "severity": "warning", "_source": "audit"},
         {
             "type": "service_connectivity",
             "severity": "info",
@@ -81,6 +83,7 @@ def _build_rules(exclude: list[str]) -> list[dict[str, Any]]:
 _RUNNERS = {
     "topic_connectivity": rule_topic_connectivity,
     "node_isolation": rule_node_isolation,
+    "qos_compatibility": rule_qos_compatibility,
     "service_connectivity": rule_service_connectivity,
     "action_connectivity": rule_action_connectivity,
 }
@@ -88,6 +91,7 @@ _RUNNERS = {
 _SECTION_TITLES = {
     "topic_connectivity": "Topic Connectivity",
     "node_isolation": "Node Isolation",
+    "qos_compatibility": "QoS Compatibility",
     "service_connectivity": "Service Connectivity",
     "action_connectivity": "Action Connectivity",
 }
@@ -101,6 +105,7 @@ _SECTION_DESCRIPTIONS = {
         "Nodes with no detected publishers, subscribers, services, or action connections. "
         "May indicate misconfiguration or purely dynamic topic names."
     ),
+    "qos_compatibility": "Publisher and subscriber QoS settings that cannot communicate.",
     "service_connectivity": (
         "Services whose provider/client counterpart is missing in the analysed workspace. "
         "The counterpart may be external or not yet implemented."
@@ -161,7 +166,7 @@ def audit(
     extra_excludes = [t.strip() for t in exclude.split(",") if t.strip()]
     all_excludes = _DEFAULT_EXCLUDES + extra_excludes
 
-    root = find_workspace_root(path)
+    root = find_workspace_root(path, warn=not state.quiet)
 
     if not state.quiet:
         diag = console if fmt == OutputFormat.TABLE else err_console
@@ -176,6 +181,9 @@ def audit(
     for rule in rules:
         runner = _RUNNERS[rule["type"]]
         violations.extend(runner(uam, rule))
+    from ros2inspector.policy.engine import attach_source_locations
+
+    attach_source_locations(uam, violations)
 
     scores = {p.name: (p.health_score or 0) for p in uam.packages()}
     agg = workspace_aggregate_score(scores)
@@ -234,6 +242,7 @@ def _render_table(
     rule_order = [
         "topic_connectivity",
         "node_isolation",
+        "qos_compatibility",
         "service_connectivity",
         "action_connectivity",
     ]

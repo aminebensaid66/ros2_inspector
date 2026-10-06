@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ros2inspector.cli._output import OutputFormat, health_bar
+from ros2inspector.cli._state import state
 from ros2inspector.cli._workspace import load_packages_or_exit
 from ros2inspector.discovery import find_workspace_root
 from ros2inspector.model.schemas import PackageMetadata, PackageType
@@ -63,7 +64,7 @@ def packages(
         )
         raise typer.Exit(2)
 
-    root = find_workspace_root(path)
+    root = find_workspace_root(path, warn=not state.quiet)
     packages_list = load_packages_or_exit(root)
 
     _ = score_workspace(packages_list)

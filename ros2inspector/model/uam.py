@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from ros2inspector.static import (
     score_workspace,
 )
 from ros2inspector.static.cpp_parser import discover_workspace_node_bases
+from ros2inspector.static.factory_patterns import load_factory_patterns
 from ros2inspector.static.launch_analyzer import LaunchGraph, LaunchNode
 from ros2inspector.static.python_entrypoints import PythonEntrypoint
 
@@ -112,6 +114,14 @@ def _communication_id(
 
 def _iface_id(package: str, name: str) -> str:
     return f"iface:{package}/{name}"
+
+
+def _is_test_source(file_path: str | Path, package_path: Path) -> bool:
+    try:
+        relative = Path(file_path).resolve().relative_to(package_path.resolve())
+    except ValueError:
+        return False
+    return any(part in {"test", "tests", "gtest", "pytest"} for part in relative.parts[:-1])
 
 
 def _apply_remap(name: str, remaps: dict[str, str]) -> str:
@@ -244,6 +254,9 @@ class UnifiedArchitectureModel:
         use_cache: bool = True,
         cache_dir: Path | None = None,
         show_progress: bool = False,
+        include_tests: bool = False,
+        factory_patterns: Path | None = None,
+        preset: str | None = None,
     ) -> UnifiedArchitectureModel:
         uam = cls()
 
@@ -267,6 +280,7 @@ class UnifiedArchitectureModel:
         all_nodes: list[NodeDefinition] = []
         all_interfaces: list[InterfaceDefinition] = []
 
+        patterns = load_factory_patterns(factory_patterns, preset)
         cache = AnalysisCache(cache_dir) if use_cache else None
         cpp_package_paths = [Path(p.path) for p in packages]
         cpp_bases = (
@@ -275,7 +289,7 @@ class UnifiedArchitectureModel:
             else discover_workspace_node_bases(cpp_package_paths)
         )
         if cache is not None:
-            cache.set_context("|".join(sorted(cpp_bases)))
+            cache.set_context("|".join(sorted(cpp_bases)) + json.dumps(patterns, sort_keys=True))
 
         _progress = None
         _task = None
@@ -310,7 +324,7 @@ class UnifiedArchitectureModel:
                     pkg_nodes, pkg_ifaces = cached
                 else:
                     pkg_nodes = parse_python_nodes(pkg_path, pkg.name) + parse_cpp_nodes(
-                        pkg_path, pkg.name, cpp_bases
+                        pkg_path, pkg.name, cpp_bases, factory_patterns=patterns
                     )
                     pkg_ifaces = [
                         parse_interface_file(f, pkg.name) for f in find_interface_files(pkg_path)
@@ -318,12 +332,21 @@ class UnifiedArchitectureModel:
                     if cache is not None:
                         cache.set(pkg_path, pkg_nodes, pkg_ifaces)
 
-                all_nodes.extend(pkg_nodes)
+                if include_tests:
+                    all_nodes.extend(pkg_nodes)
+                else:
+                    all_nodes.extend(
+                        node
+                        for node in pkg_nodes
+                        if not node.file_path or not _is_test_source(node.file_path, pkg_path)
+                    )
                 all_interfaces.extend(pkg_ifaces)
 
                 # Collect launch records (not cached — fast to parse). Index by
                 # target package because bringup files commonly live elsewhere.
                 for lf in find_launch_files(pkg_path):
+                    if not include_tests and _is_test_source(lf, pkg_path):
+                        continue
                     try:
                         lg = analyze_launch_file(lf)
                         uam._record_launch_uncertainty(lg)
@@ -479,6 +502,7 @@ class UnifiedArchitectureModel:
             "line": endpoint.line,
             "evidence": endpoint.evidence,
             "confidence": endpoint.confidence,
+            "qos": endpoint.qos.model_dump(mode="json") if endpoint.qos else None,
             "resolution": "unresolved" if actual_name == DYNAMIC_SENTINEL else presence,
         }
 

@@ -38,12 +38,14 @@ class CommunicationEndpoint(BaseModel):
     """A single pub/sub/service/action endpoint with its name and interface type."""
 
     name: str
+    name_source: str = "literal"
     msg_type: str = "unknown"
     file_path: str | None = None
     line: int | None = None
     evidence: str | None = None
     type_source: str = "explicit"
     confidence: str = "high"
+    qos: QoSProfile | None = None
 
 
 class NodeDefinition(BaseModel):
@@ -102,6 +104,8 @@ class PolicyViolation(BaseModel):
     message: str
     policy_file: str
     policy_line: int | None = None
+    file_path: str | None = None
+    line: int | None = None
     affected_entities: list[str] = Field(default_factory=list)
 
 
