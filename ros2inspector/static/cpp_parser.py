@@ -174,8 +174,14 @@ def _collect_calls(
     nd: NodeDefinition,
     receiver: str | None = None,
     factory_patterns: list[dict[str, Any]] | None = None,
+    context: bytes | None = None,
 ) -> None:
-    parameter_names = _cpp_parameter_names(node, source)
+    parameter_names = _cpp_parameter_names(node, source, context)
+    aliases = dict(
+        re.findall(
+            r"using\s+(\w+)\s*=\s*([^;]+);", (context or source).decode("utf-8", errors="replace")
+        )
+    )
     for call_node in _query_nodes(node, "call_expression"):
         func_node = call_node.child_by_field_name("function")
         if func_node is None:
@@ -195,18 +201,23 @@ def _collect_calls(
             ):
                 continue
 
+        expanded_function = function_text
+        for _ in range(len(aliases)):
+            expanded_function = re.sub(
+                r"\b[A-Za-z_]\w*\b",
+                lambda match: aliases.get(match.group(), match.group()),
+                expanded_function,
+            )
         for pattern in factory_patterns or []:
             call_name = str(pattern["call"])
-            if not re.search(rf"(?<![\w:]){re.escape(call_name)}(?![\w:])", function_text):
+            if not re.search(rf"(?<![\w:]){re.escape(call_name)}(?![\w:])", expanded_function):
                 continue
             name, name_source = _cpp_name(
                 args_node, int(pattern["name_arg"]), source, parameter_names
             )
             msg_type = str(pattern.get("msg_type", "unknown"))
             if msg_type == "unknown":
-                template = re.search(
-                    rf"{re.escape(call_name)}\s*<\s*([\w:]+)", function_text
-                )
+                template = re.search(rf"{re.escape(call_name)}\s*<\s*([\w:]+)", expanded_function)
                 if template:
                     msg_type = _cpp_type_to_ros(template.group(1))
             ep = CommunicationEndpoint(
@@ -248,8 +259,11 @@ def _collect_calls(
                 evidence="rclcpp_action",
                 type_source="explicit" if cpp_type != "unknown" else "unknown",
                 confidence=(
-                    "low" if cpp_type == "unknown" or topic_name == DYNAMIC_SENTINEL
-                    else "medium" if name_source == "parameter_default" else "high"
+                    "low"
+                    if cpp_type == "unknown" or topic_name == DYNAMIC_SENTINEL
+                    else "medium"
+                    if name_source == "parameter_default"
+                    else "high"
                 ),
             )
             if action_kind == "server":
@@ -275,8 +289,11 @@ def _collect_calls(
             evidence=method_name,
             type_source="explicit" if cpp_type != "unknown" else "unknown",
             confidence=(
-                "low" if cpp_type == "unknown" or topic_name == DYNAMIC_SENTINEL
-                else "medium" if name_source == "parameter_default" else "high"
+                "low"
+                if cpp_type == "unknown" or topic_name == DYNAMIC_SENTINEL
+                else "medium"
+                if name_source == "parameter_default"
+                else "high"
             ),
             qos=_extract_cpp_qos(call_node, source),
         )
@@ -299,19 +316,51 @@ def _collect_calls(
 
 
 def _extract_cpp_qos(call_node: Node, source: bytes) -> QoSProfile | None:
-    text = source[call_node.start_byte : call_node.end_byte].decode("utf-8", errors="replace")
-    match = re.search(r"(?:rclcpp::)?QoS\s*\(\s*(\d+)\s*\)", text)
-    if not match:
+    args = call_node.child_by_field_name("arguments")
+    if args is None or len(args.named_children) < 2:
         return None
-    profile = QoSProfile(depth=int(match.group(1)), history="keep_last")
-    if ".best_effort()" in text:
-        profile.reliability = "best_effort"
-    elif ".reliable()" in text:
-        profile.reliability = "reliable"
-    if ".transient_local()" in text:
-        profile.durability = "transient_local"
-    elif ".durability_volatile()" in text:
-        profile.durability = "volatile"
+    arg = args.named_children[1]
+    text = source[arg.start_byte : arg.end_byte].decode("utf-8", errors="replace")
+    profile = QoSProfile(reliability="reliable", durability="volatile")
+    presets = {
+        "SensorDataQoS": (5, "best_effort", "volatile"),
+        "ParametersQoS": (1000, "reliable", "volatile"),
+        "ParameterEventsQoS": (1000, "reliable", "volatile"),
+        "ServicesQoS": (10, "reliable", "volatile"),
+        "SystemDefaultsQoS": (None, "system_default", "system_default"),
+    }
+    preset = next((v for k, v in presets.items() if re.search(rf"\b{k}\s*\(", text)), None)
+    depth = re.search(r"(?:QoS|KeepLast|keep_last)\s*\(\s*(\d+)\s*\)", text)
+    if text.strip().isdigit():
+        profile.depth = int(text.strip())
+        profile.history = "keep_last"
+    elif preset:
+        profile.depth, profile.reliability, profile.durability = preset
+        profile.history = "keep_last" if profile.depth is not None else "system_default"
+    elif depth:
+        profile.depth = int(depth.group(1))
+        profile.history = "keep_last"
+    elif re.search(r"KeepAll\s*\(", text):
+        profile.history = "keep_all"
+    else:
+        return None
+    for method, field, value in (
+        ("best_effort", "reliability", "best_effort"),
+        ("reliable", "reliability", "reliable"),
+        ("transient_local", "durability", "transient_local"),
+        ("durability_volatile", "durability", "volatile"),
+        ("keep_all", "history", "keep_all"),
+        ("liveliness_automatic", "liveliness", "automatic"),
+        ("liveliness_manual_by_topic", "liveliness", "manual_by_topic"),
+    ):
+        if re.search(rf"\.\s*{method}\s*\(\s*\)", text):
+            setattr(profile, field, value)
+    for policy in ("deadline", "liveliness_lease_duration"):
+        duration = re.search(
+            rf"\.\s*{policy}\s*\(\s*rclcpp::Duration\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)", text
+        )
+        if duration:
+            setattr(profile, policy, int(duration.group(1)) + int(duration.group(2)) / 1e9)
     return profile
 
 
@@ -423,20 +472,21 @@ def _extract_string_arg(args_node: Node | None, index: int, source: bytes) -> st
     return source[arg.start_byte : arg.end_byte].decode("utf-8", errors="replace").strip('"')
 
 
-def _cpp_parameter_names(node: Node, source: bytes) -> dict[str, str]:
+def _cpp_parameter_names(node: Node, source: bytes, context: bytes | None = None) -> dict[str, str]:
     """Resolve local string variables read from literal parameter defaults."""
     text = source[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+    declaration_text = context.decode("utf-8", errors="replace") if context else text
     defaults = dict(
         re.findall(
             r'declare_parameter(?:\s*<[^>]+>)?\s*\(\s*"([^"\\]+)"\s*,\s*"([^"\\]+)"',
-            text,
+            declaration_text,
         )
     )
     names: dict[str, str] = {}
     for key, default in defaults.items():
         escaped = re.escape(key)
         for match in re.finditer(
-            rf'get_parameter\s*\(\s*"{escaped}"\s*,\s*([A-Za-z_]\w*)\s*\)', text
+            rf'get_parameter\s*\(\s*"{escaped}"\s*,\s*(?:this->)?([A-Za-z_]\w*)\s*\)', text
         ):
             names[match.group(1)] = default
         for match in re.finditer(
@@ -595,6 +645,38 @@ def _attach_out_of_class_calls(
     by_symbol: dict[str, list[NodeDefinition]] = {}
     for nd in nodes:
         by_symbol.setdefault(nd.source_symbol or nd.name, []).append(nd)
+    contexts: dict[str, bytes] = {}
+    for _, source, root in parsed:
+        for cls in _query_nodes(root, "class_specifier"):
+            name = _get_class_name(cls, source)
+            if name:
+                symbol = _qualified_symbol(cls, source, name)
+                contexts[symbol] = contexts.get(symbol, b"") + source[cls.start_byte : cls.end_byte]
+        for fn in _query_nodes(root, "function_definition"):
+            decl = fn.child_by_field_name("declarator")
+            qualified = next(_query_nodes(decl, "qualified_identifier"), None) if decl else None
+            if qualified:
+                text = source[qualified.start_byte : qualified.end_byte].decode()
+                if "::" in text:
+                    symbol = _qualified_symbol(fn, source, text.rsplit("::", 1)[0])
+                    contexts[symbol] = (
+                        contexts.get(symbol, b"") + source[fn.start_byte : fn.end_byte]
+                    )
+    for nd in nodes:
+        context = contexts.get(nd.source_symbol or nd.name)
+        if context:
+            for field in _ENDPOINT_FIELDS:
+                getattr(nd, field).clear()
+            nd.has_dynamic_names = False
+            for _path, source, root in parsed:
+                for cls in _query_nodes(root, "class_specifier"):
+                    name = _get_class_name(cls, source)
+                    if name and _qualified_symbol(cls, source, name) == (
+                        nd.source_symbol or nd.name
+                    ):
+                        _collect_calls(
+                            cls, source, nd, factory_patterns=factory_patterns, context=context
+                        )
     for path, source, root in parsed:
         for fn in _query_nodes(root, "function_definition"):
             declarator = fn.child_by_field_name("declarator")
@@ -620,7 +702,13 @@ def _attach_out_of_class_calls(
             proxy = NodeDefinition(
                 name=nd.name, package=nd.package, language="cpp", file_path=str(path)
             )
-            _collect_calls(fn, source, proxy, factory_patterns=factory_patterns)
+            _collect_calls(
+                fn,
+                source,
+                proxy,
+                factory_patterns=factory_patterns,
+                context=contexts.get(nd.source_symbol or nd.name),
+            )
             for field in _ENDPOINT_FIELDS:
                 getattr(nd, field).extend(getattr(proxy, field))
             nd.has_dynamic_names |= proxy.has_dynamic_names

@@ -197,6 +197,8 @@ def _launch_matches_definition(
     # A discovered Python console-script is stronger evidence than either the
     # source class name or the launch-time ROS name. If it exists, do not fall
     # through to weaker heuristics for a different source module.
+    if launch_node.plugin is not None:
+        return launch_node.plugin == (nd.source_symbol or nd.name)
     entrypoint = entrypoints.get(launch_node.executable)
     if entrypoint is not None:
         return _entrypoint_matches_node(entrypoint, nd, package_path)
@@ -338,7 +340,8 @@ class UnifiedArchitectureModel:
                     all_nodes.extend(
                         node
                         for node in pkg_nodes
-                        if not node.file_path or not _is_test_source(node.file_path, pkg_path)
+                        if not pkg.name.endswith(("_tests", "system_tests"))
+                        and (not node.file_path or not _is_test_source(node.file_path, pkg_path))
                     )
                 all_interfaces.extend(pkg_ifaces)
 

@@ -24,6 +24,7 @@ class LaunchNode:
 
     conditions: list[str] = field(default_factory=list)
     presence: str = "known"
+    plugin: str | None = None
 
     @property
     def is_conditional(self) -> bool:
@@ -109,8 +110,14 @@ class _PythonLaunchVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         func = _get_call_name(node.func)
 
-        if func in ("Node", "launch_ros.actions.Node"):
-            launch_node = _extract_python_node(node)
+        if func in (
+            "Node",
+            "launch_ros.actions.Node",
+            "ComposableNode",
+            "launch_ros.descriptions.ComposableNode",
+        ):
+            composable = func.split(".")[-1] == "ComposableNode"
+            launch_node = _extract_python_node(node, composable=composable)
             if self._condition_stack:
                 launch_node.conditions = [*self._condition_stack, *launch_node.conditions]
                 if launch_node.presence == "known":
@@ -136,7 +143,14 @@ class _PythonLaunchVisitor(ast.NodeVisitor):
             if unresolved or not target:
                 self.graph.unresolved_branches = True
 
-        elif func in ("GroupAction", "launch.actions.GroupAction"):
+        elif func in (
+            "GroupAction",
+            "launch.actions.GroupAction",
+            "LoadComposableNodes",
+            "launch_ros.actions.LoadComposableNodes",
+            "ComposableNodeContainer",
+            "launch_ros.actions.ComposableNodeContainer",
+        ):
             condition = next((kw.value for kw in node.keywords if kw.arg == "condition"), None)
             rendered = ast.unparse(condition) if condition is not None else None
             if rendered is not None:
@@ -185,6 +199,10 @@ def _analyze_python_launch(path: Path) -> LaunchGraph:
         if not isinstance(expr, ast.Call) or _get_call_name(expr.func) not in (
             "GroupAction",
             "launch.actions.GroupAction",
+            "LoadComposableNodes",
+            "launch_ros.actions.LoadComposableNodes",
+            "ComposableNodeContainer",
+            "launch_ros.actions.ComposableNodeContainer",
         ):
             continue
         condition = next((kw.value for kw in expr.keywords if kw.arg == "condition"), None)
@@ -193,9 +211,11 @@ def _analyze_python_launch(path: Path) -> LaunchGraph:
     return visitor.graph
 
 
-def _extract_python_node(call: ast.Call) -> LaunchNode:
+def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchNode:
     kwargs = {kw.arg: kw.value for kw in call.keywords if kw.arg}
-    executable, executable_unresolved = _python_string(kwargs.get("executable"), required=True)
+    executable, executable_unresolved = _python_string(
+        kwargs.get("plugin" if composable else "executable"), required=True
+    )
     package, package_unresolved = _python_string(kwargs.get("package"), required=True)
     name, name_unresolved = _python_string(kwargs.get("name"), required=False)
     namespace, namespace_unresolved = _python_string(kwargs.get("namespace"), required=False)
@@ -216,6 +236,7 @@ def _extract_python_node(call: ast.Call) -> LaunchNode:
     conditions = [ast.unparse(condition)] if condition is not None else []
 
     return LaunchNode(
+        plugin=executable if composable else None,
         executable=executable or UNKNOWN_SENTINEL,
         package=package or UNKNOWN_SENTINEL,
         name=name,

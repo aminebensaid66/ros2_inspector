@@ -431,14 +431,25 @@ def rule_qos_compatibility(
                 failures = []
                 if (
                     offered.get("reliability") == "best_effort"
-                    and requested.get("reliability") == "reliable"
+                    and (requested.get("reliability") or "reliable") == "reliable"
                 ):
                     failures.append("reliability")
                 if (
-                    offered.get("durability") == "volatile"
+                    (offered.get("durability") or "volatile") == "volatile"
                     and requested.get("durability") == "transient_local"
                 ):
                     failures.append("durability")
+                for policy in ("deadline", "liveliness_lease_duration"):
+                    offer = offered.get(policy)
+                    request = requested.get(policy)
+                    if isinstance(offer, (int, float)) and isinstance(request, (int, float)):
+                        if offer > request:
+                            failures.append(policy)
+                if (
+                    offered.get("liveliness") == "automatic"
+                    and requested.get("liveliness") == "manual_by_topic"
+                ):
+                    failures.append("liveliness")
                 if not failures:
                     continue
                 findings.append(

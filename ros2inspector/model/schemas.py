@@ -32,6 +32,9 @@ class QoSProfile(BaseModel):
     durability: str | None = None
     history: str | None = None
     depth: int | None = None
+    deadline: float | None = None
+    liveliness: str | None = None
+    liveliness_lease_duration: float | None = None
 
 
 class CommunicationEndpoint(BaseModel):

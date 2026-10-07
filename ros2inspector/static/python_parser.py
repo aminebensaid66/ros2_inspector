@@ -291,13 +291,15 @@ class _NodeVisitor(ast.NodeVisitor):
             else next((kw.value for kw in call.keywords if kw.arg in {"qos_profile", "qos"}), None)
         )
         if isinstance(expr, ast.Constant) and isinstance(expr.value, int):
-            return QoSProfile(depth=expr.value, history="keep_last")
+            return QoSProfile(
+                depth=expr.value, history="keep_last", reliability="reliable", durability="volatile"
+            )
         if (
             not isinstance(expr, ast.Call)
             or _get_attr_name(expr.func).split(".")[-1] != "QoSProfile"
         ):
             return None
-        profile = QoSProfile()
+        profile = QoSProfile(reliability="reliable", durability="volatile")
         if (
             expr.args
             and isinstance(expr.args[0], ast.Constant)

@@ -49,6 +49,10 @@ def main(
         str | None, typer.Option("--preset", help="Endpoint factory preset (nav2)")
     ] = None,
 ) -> None:
+    if preset not in {None, "nav2"}:
+        raise typer.BadParameter(
+            f"unknown factory preset '{preset}'; supported: nav2", param_hint="--preset"
+        )
     state.quiet = quiet
     state.include_tests = include_tests
     state.factory_patterns = str(factory_patterns) if factory_patterns else None
