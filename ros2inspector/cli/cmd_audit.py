@@ -13,7 +13,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from ros2inspector.cli._output import OutputFormat, health_bar
+from ros2inspector import __version__
+from ros2inspector.cli._output import health_bar
 from ros2inspector.cli._state import state
 from ros2inspector.cli._workspace import build_uam_or_exit
 from ros2inspector.discovery import find_workspace_root
@@ -25,7 +26,17 @@ from ros2inspector.policy.rules import (
     rule_service_connectivity,
     rule_topic_connectivity,
 )
+from ros2inspector.policy.sarif import BaselineError, apply_baseline, load_baseline, to_sarif
 from ros2inspector.static import workspace_aggregate_score
+from ros2inspector.utils.enums import StrEnum
+
+
+class AuditFormat(StrEnum):
+    TABLE = "table"
+    JSON = "json"
+    YAML = "yaml"
+    SARIF = "sarif"
+
 
 app = typer.Typer(
     help="Run architecture quality audit without a policy file.",
@@ -120,8 +131,9 @@ _SECTION_DESCRIPTIONS = {
 def audit(
     path: Annotated[Path, typer.Argument(help="Workspace root (default: CWD)")] = Path("."),
     fmt: Annotated[
-        OutputFormat, typer.Option("--format", "-f", help="Output format: table|json|yaml")
-    ] = OutputFormat.TABLE,
+        AuditFormat,
+        typer.Option("--format", "-f", help="Output format: table|json|yaml|sarif"),
+    ] = AuditFormat.TABLE,
     fail_on: Annotated[
         str,
         typer.Option("--fail-on", help="Min severity for non-zero exit: error|warning|info"),
@@ -140,6 +152,13 @@ def audit(
     no_cache: Annotated[
         bool, typer.Option("--no-cache", help="Skip the incremental cache")
     ] = False,
+    baseline: Annotated[
+        Path | None,
+        typer.Option(
+            "--baseline",
+            help="Previous 'audit --format json' report; only findings not in it are reported",
+        ),
+    ] = None,
 ) -> None:
     """Run an architecture quality audit on the workspace.
 
@@ -158,10 +177,20 @@ def audit(
       ros2inspector audit --fail-on warning
       ros2inspector audit --exclude /my_debug_topic,/legacy_cmd
       ros2inspector audit --format json
+      ros2inspector audit --format sarif > audit.sarif
+      ros2inspector audit --baseline audit.json
     """
     if fail_on not in ("error", "warning", "info"):
         err_console.print("[red]Error:[/red] --fail-on must be error, warning, or info")
         raise typer.Exit(2)
+
+    baseline_prints: set[str] | None = None
+    if baseline is not None:
+        try:
+            baseline_prints = load_baseline(baseline)
+        except BaselineError as exc:
+            err_console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(2) from exc
 
     extra_excludes = [t.strip() for t in exclude.split(",") if t.strip()]
     all_excludes = _DEFAULT_EXCLUDES + extra_excludes
@@ -169,7 +198,7 @@ def audit(
     root = find_workspace_root(path, warn=not state.quiet)
 
     if not state.quiet:
-        diag = console if fmt == OutputFormat.TABLE else err_console
+        diag = console if fmt == AuditFormat.TABLE else err_console
         diag.print(
             f"\n[bold cyan]ROS2 Inspector[/bold cyan] — architecture audit [dim]{root}[/dim]\n"
         )
@@ -184,14 +213,19 @@ def audit(
     from ros2inspector.policy.engine import attach_source_locations
 
     attach_source_locations(uam, violations)
+    if baseline_prints is not None:
+        violations = apply_baseline(violations, baseline_prints)
 
     scores = {p.name: (p.health_score or 0) for p in uam.packages()}
     agg = workspace_aggregate_score(scores)
     summary_counts = uam.summary()
 
-    if fmt == OutputFormat.TABLE:
+    if fmt == AuditFormat.TABLE:
         _render_table(violations, agg, summary_counts)
-    elif fmt == OutputFormat.JSON:
+    elif fmt == AuditFormat.SARIF:
+        sarif = to_sarif(violations, __version__, root)
+        sys.stdout.write(orjson.dumps(sarif, option=orjson.OPT_INDENT_2).decode() + "\n")
+    elif fmt == AuditFormat.JSON:
         data = _build_data(violations, agg, summary_counts)
         sys.stdout.write(orjson.dumps(data, option=orjson.OPT_INDENT_2).decode() + "\n")
     else:
