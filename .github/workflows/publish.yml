@@ -113,3 +113,20 @@ jobs:
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  refresh-website:
+    name: Rebuild documentation website
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel deploy hook
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$VERCEL_DEPLOY_HOOK" ]; then
+            echo "VERCEL_DEPLOY_HOOK is not set; skipping website rebuild."
+            exit 0
+          fi
+          # Give the PyPI JSON API time to serve the new release before the site reads it.
+          sleep 60
+          curl --fail --silent --show-error -X POST "$VERCEL_DEPLOY_HOOK"

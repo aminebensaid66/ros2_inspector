@@ -17,6 +17,18 @@ PyPI token is stored in the repository.
 3. In GitHub, create an environment named `pypi`. Protection rules should require approval
    before a package is uploaded.
 
+## One-time website setup
+
+The documentation website reads the latest version from PyPI when it builds. To rebuild it
+automatically after each release:
+
+1. In the Vercel project for the website, open **Settings → Git → Deploy Hooks** and create a
+   hook for the production branch (`release/v0.1.0`).
+2. In this repository, add the hook URL as an Actions secret named `VERCEL_DEPLOY_HOOK`.
+
+The `refresh-website` job in `publish.yml` calls the hook after a successful PyPI upload. If the
+secret is not set, the job is skipped without failing the release.
+
 ## Release checklist
 
 1. Update `project.version` in `pyproject.toml`. This is the single source of truth for the
