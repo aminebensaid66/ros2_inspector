@@ -317,16 +317,22 @@ def _analyze_xml_launch(path: Path) -> LaunchGraph:
         if elem.get("if") is not None or elem.get("unless") is not None:
             graph.unresolved_branches = True
 
-    def walk(elem: ET.Element, inherited: tuple[str, ...] = ()) -> None:
+    def walk(
+        elem: ET.Element, inherited: tuple[str, ...] = (), container_ns: str | None = None
+    ) -> None:
         local = list(inherited)
+        if elem.tag == "node_container" and elem.get("namespace", elem.get("ns")):
+            container_ns = elem.get("namespace", elem.get("ns"))
         if elem.get("if") is not None:
             local.append(f"if:{elem.get('if')}")
         if elem.get("unless") is not None:
             local.append(f"unless:{elem.get('unless')}")
         if elem.tag == "node":
             _append_xml_node(elem, graph, local)
+        elif elem.tag == "composable_node":
+            _append_xml_node(elem, graph, local, composable=True, container_ns=container_ns)
         for child in elem:
-            walk(child, tuple(local))
+            walk(child, tuple(local), container_ns)
 
     walk(root)
 
@@ -341,13 +347,23 @@ def _analyze_xml_launch(path: Path) -> LaunchGraph:
     return graph
 
 
-def _append_xml_node(elem: ET.Element, graph: LaunchGraph, inherited: list[str]) -> None:
+def _append_xml_node(
+    elem: ET.Element,
+    graph: LaunchGraph,
+    inherited: list[str],
+    *,
+    composable: bool = False,
+    container_ns: str | None = None,
+) -> None:
     executable, executable_unresolved = _xml_string(
-        elem.get("exec", elem.get("type")), required=True
+        elem.get("plugin") if composable else elem.get("exec", elem.get("type")), required=True
     )
     package, package_unresolved = _xml_string(elem.get("pkg"), required=True)
     name, name_unresolved = _xml_string(elem.get("name"), required=False)
-    namespace, namespace_unresolved = _xml_string(elem.get("ns"), required=False)
+    namespace, namespace_unresolved = _xml_string(
+        (elem.get("namespace", elem.get("ns")) or container_ns) if composable else elem.get("ns"),
+        required=False,
+    )
     remaps: dict[str, str] = {}
     remaps_unresolved = False
     for remap in elem.findall("remap"):
@@ -369,6 +385,7 @@ def _append_xml_node(elem: ET.Element, graph: LaunchGraph, inherited: list[str])
         if unresolved
     ]
     launch_node = LaunchNode(
+        plugin=executable if composable else None,
         executable=executable or UNKNOWN_SENTINEL,
         package=package or UNKNOWN_SENTINEL,
         name=name,

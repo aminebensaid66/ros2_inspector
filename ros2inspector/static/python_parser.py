@@ -12,6 +12,20 @@ from ros2inspector.model.schemas import (
     QoSProfile,
 )
 
+# (depth, reliability, durability) of the profiles shipped in rclpy.qos.
+_QOS_PRESETS = {
+    "qos_profile_sensor_data": (5, "best_effort", "volatile"),
+    "qos_profile_services_default": (10, "reliable", "volatile"),
+    "qos_profile_parameters": (1000, "reliable", "volatile"),
+    "qos_profile_parameter_events": (1000, "reliable", "volatile"),
+    "qos_profile_action_status_default": (1, "reliable", "transient_local"),
+    "sensor_data": (5, "best_effort", "volatile"),
+    "services_default": (10, "reliable", "volatile"),
+    "parameters": (1000, "reliable", "volatile"),
+    "parameter_events": (1000, "reliable", "volatile"),
+    "action_status_default": (1, "reliable", "transient_local"),
+}
+
 _IFACE_MARKERS = ("msg", "srv", "action")
 _CANONICAL_NODE_BASES = {
     "rclpy.node.Node",
@@ -294,6 +308,9 @@ class _NodeVisitor(ast.NodeVisitor):
             return QoSProfile(
                 depth=expr.value, history="keep_last", reliability="reliable", durability="volatile"
             )
+        preset = _qos_preset(expr)
+        if preset is not None:
+            return preset
         if (
             not isinstance(expr, ast.Call)
             or _get_attr_name(expr.func).split(".")[-1] != "QoSProfile"
@@ -433,4 +450,29 @@ def _is_super_init(node: ast.expr) -> bool:
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Name)
         and node.value.func.id == "super"
+    )
+
+
+def _qos_preset(expr: ast.expr | None) -> QoSProfile | None:
+    """Resolve ``qos_profile_sensor_data`` and ``QoSPresetProfiles.SENSOR_DATA.value``."""
+    if expr is None:
+        return None
+    if isinstance(expr, ast.Attribute) and expr.attr == "value":
+        inner = expr.value
+        if isinstance(inner, ast.Attribute) and "QoSPresetProfiles" in _get_attr_name(inner):
+            key = inner.attr.lower()
+            if key in _QOS_PRESETS and not key.startswith("qos_profile"):
+                return _preset_profile(key)
+        return None
+    if isinstance(expr, (ast.Name, ast.Attribute)):
+        name = _get_attr_name(expr).split(".")[-1]
+        if name.startswith("qos_profile") and name in _QOS_PRESETS:
+            return _preset_profile(name)
+    return None
+
+
+def _preset_profile(key: str) -> QoSProfile:
+    depth, reliability, durability = _QOS_PRESETS[key]
+    return QoSProfile(
+        depth=depth, history="keep_last", reliability=reliability, durability=durability
     )
