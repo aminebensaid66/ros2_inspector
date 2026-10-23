@@ -544,6 +544,8 @@ function addPkg(){
 
 function delPkg(id){
   if(S.packages.length<=1){ showToast('Cannot delete the last package.','err'); return; }
+  const victim=S.packages.find(p=>p.id===id);
+  if(victim&&victim.nodes.length&&!confirm(`Delete package "${victim.pkg_name}" and its ${victim.nodes.length} node(s) from the design? Files already generated on disk are not touched.`)) return;
   S.packages=S.packages.filter(p=>p.id!==id);
   if(S.activePkg===id){
     S.activePkg=S.packages[0].id;
@@ -614,7 +616,17 @@ function updT(side,tid,field,value){
   const nd=p.nodes.find(n=>n.id===S.sel); if(!nd) return;
   const arr=side==='pub'?nd.publishers:nd.subscribers;
   const t=arr.find(x=>x.id===tid);
-  if(t){ t[field]=value; renderAll(); }
+  if(!t) return;
+  t[field]=value;
+  if(side==='pub'){
+    // A wire means "same topic": keep the subscribers it feeds in step with the publisher.
+    for(const e of p.edges.filter(x=>x.fn===nd.id&&x.ft===tid)){
+      const tn=p.nodes.find(n=>n.id===e.tn);
+      const sub=tn&&tn.subscribers.find(x=>x.id===e.tt);
+      if(sub) sub[field]=value;
+    }
+  }
+  renderAll();
 }
 
 function addEndpoint(kind){
@@ -676,7 +688,11 @@ document.addEventListener('mousemove',e=>{
     const cr=CV.getBoundingClientRect();
     const p=pkg();
     const nd=p&&p.nodes.find(n=>n.id===dNode);
-    if(nd){ nd.x=e.clientX-cr.left-dOX; nd.y=e.clientY-cr.top-dOY; renderAll(); }
+    if(nd){
+      nd.x=Math.max(0,Math.round(e.clientX-cr.left-dOX));
+      nd.y=Math.max(0,Math.round(e.clientY-cr.top-dOY));
+      renderAll();
+    }
   }
   if(eDrag){
     const cr=CV.getBoundingClientRect();
@@ -738,9 +754,45 @@ function showToast(msg,type){
   showToast._t=setTimeout(()=>{ TOAST.className=''; },5000);
 }
 
+// ── server errors ─────────────────────────────────────────────────────────
+// Turn "packages.0.nodes.1.label" into "my_package › talker › label".
+function prettyPath(path,state){
+  const parts=String(path).split('.');
+  const out=[]; let cur=state;
+  for(let i=0;i<parts.length;i++){
+    const key=parts[i];
+    if(cur&&Array.isArray(cur)&&/^\d+$/.test(key)){
+      cur=cur[Number(key)];
+      const label=cur&&(cur.pkg_name||cur.label||cur.name);
+      out.push(label?String(label):'#'+(Number(key)+1));
+    } else if(cur&&typeof cur==='object'&&key in cur){
+      cur=cur[key];
+      if(!Array.isArray(cur)) out.push(key);
+    } else {
+      out.push(key);
+    }
+  }
+  return out.join(' › ');
+}
+
+function errorText(data,state){
+  const fields=(data&&data.fields)||[];
+  if(fields.length) return fields.map(x=>`${prettyPath(x.path,state)}: ${x.message}`).join('; ');
+  return (data&&data.error)||'Request failed.';
+}
+
+function snapshot(){
+  return {version:1, nid:S.nid, tid:S.tid, pid:S.pid, activePkg:S.activePkg, packages:S.packages};
+}
+let lastSaved='';
+function markSaved(){ lastSaved=JSON.stringify(snapshot()); }
+window.addEventListener('beforeunload',e=>{
+  if(JSON.stringify(snapshot())!==lastSaved){ e.preventDefault(); e.returnValue=''; }
+});
+
 // ── save ──────────────────────────────────────────────────────────────────
 async function saveState(){
-  const state={version:1, nid:S.nid, tid:S.tid, pid:S.pid, activePkg:S.activePkg, packages:S.packages};
+  const state=snapshot();
   const sv=document.getElementById('sv');
   sv.disabled=true; sv.textContent='⏳ Saving…';
   try{
@@ -749,11 +801,10 @@ async function saveState(){
       headers:{'Content-Type':'application/json','X-ROS2Inspector-Token':SESSION_TOKEN},
       body:JSON.stringify(state),
     });
-    if(res.ok) showToast('💾 Design saved.','ok');
+    if(res.ok){ markSaved(); showToast('💾 Design saved.','ok'); }
     else {
-      const data=await res.json();
-      const detail=(data.fields||[]).map(x=>`${x.path}: ${x.message}`).join('; ');
-      showToast(`✗ ${detail||data.error||'Save failed.'}`,'err');
+      const data=await res.json().catch(()=>({error:`HTTP ${res.status}`}));
+      showToast(`✗ ${errorText(data,state)}`,'err');
     }
   }catch(err){
     showToast(`✗ ${err.message}`,'err');
@@ -771,7 +822,7 @@ GB.addEventListener('click',async()=>{
     showToast(`✗ ${bad.length} wire(s) in ${[...new Set(bad)].join(', ')} no longer match (shown in red). Fix or remove them first.`,'err');
     return;
   }
-  const payload={version:1, nid:S.nid, tid:S.tid, pid:S.pid, activePkg:S.activePkg, packages:S.packages};
+  const payload=snapshot();
   GB.disabled=true; GB.textContent='⏳ Generating…';
   try{
     const res=await fetch('/generate',{
@@ -779,16 +830,16 @@ GB.addEventListener('click',async()=>{
       headers:{'Content-Type':'application/json','X-ROS2Inspector-Token':SESSION_TOKEN},
       body:JSON.stringify(payload),
     });
-    const data=await res.json();
+    const data=await res.json().catch(()=>({error:`HTTP ${res.status}`}));
     if(res.ok){
+      markSaved();
       const kept=data.kept_modified||[];
       const written=(data.packages||[]).reduce((n,r)=>n+r.written.length,0);
       showToast(kept.length
         ? `✓ ${written} file(s) written → ${data.output_dir}. Kept your edits in ${kept.length} file(s): ${kept.join(', ')}`
         : `✓ ${written} file(s) written, ${data.files.length-written} unchanged → ${data.output_dir}`,'ok');
     } else {
-      const detail=(data.fields||[]).map(x=>`${x.path}: ${x.message}`).join('; ');
-      showToast(`✗ ${detail||data.error}`,'err');
+      showToast(`✗ ${errorText(data,payload)}`,'err');
     }
   }catch(err){
     showToast(`✗ ${err.message}`,'err');
@@ -802,6 +853,7 @@ document.getElementById('an').addEventListener('click', addNode);
 document.getElementById('sv').addEventListener('click', saveState);
 document.addEventListener('keydown', e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==='s'){ e.preventDefault(); saveState(); }
+  else if(e.key==='Escape'&&S.sel) closeSB();
 });
 
 // ── init ──────────────────────────────────────────────────────────────────
@@ -848,6 +900,7 @@ for(const [id,list] of [['dl-msg',MSGS],['dl-srv',SRVS],['dl-action',ACTIONS]]){
     PN.value='my_package';
   }
   renderAll();
+  markSaved();
 })();
 </script>
 </body>

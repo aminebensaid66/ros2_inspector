@@ -39,9 +39,13 @@ def design(
       ros2inspector design -o ~/my_ws/src
       ros2inspector design --port 9000 --no-open
     """
+    output_dir = output.expanduser().resolve()
+    if output_dir.exists() and not output_dir.is_dir():
+        console.print(f"[red]Error:[/red] output path is not a directory: {output_dir}")
+        raise typer.Exit(2)
     run_design_server(
         port=port,
-        output_dir=output.resolve(),
+        output_dir=output_dir,
         open_browser=open_browser,
         console=console,
     )

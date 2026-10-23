@@ -142,7 +142,7 @@ def _check_kind(endpoints: list[EndpointSpec], expected: InterfaceKind, group: s
 
 
 class NodeSpec(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
 
     id: str = Field(min_length=1, max_length=128, pattern=_ID_RE.pattern)
     label: str = Field(min_length=1, max_length=128)
@@ -256,9 +256,9 @@ class DesignState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     version: int = 1
-    nid: int = 1
-    tid: int = 1
-    pid: int = 1
+    nid: int = Field(default=1, ge=0)
+    tid: int = Field(default=1, ge=0)
+    pid: int = Field(default=1, ge=0)
     activePkg: str | None = None
     packages: list[PackageSpec] = Field(default_factory=list)
 

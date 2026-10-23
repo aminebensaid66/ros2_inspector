@@ -243,7 +243,8 @@ def watch(
 
     After the first run only new and resolved findings are printed. Editing the policy
     file reloads it. On Ctrl+C (or with --once) the exit code reflects the last run:
-    0 clean, 1 findings at or above --fail-on, 2 bad policy, 3 analysis/workspace error.
+    0 clean, 1 findings at or above --fail-on, 2 bad policy, 3 analysis/workspace error,
+    130 stopped before the first run finished.
 
     Examples:
       ros2inspector watch --audit
@@ -284,7 +285,7 @@ def watch(
     console.print(f"[dim]Policy: {policy_label}  |  interval: {interval:g}s[/dim]")
     console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
 
-    last = RunResult(error="interrupted before the first run")
+    last: RunResult | None = None
     try:
         prev_snap = _snapshot(root, extra)
         console.print("[dim]Initial scan…[/dim]")
@@ -316,4 +317,6 @@ def watch(
             last = _run_once(root, rules, no_cache, previous=last, verbose=verbose)
     except KeyboardInterrupt:
         console.print("\n[dim]Stopped.[/dim]")
+    if last is None:
+        raise typer.Exit(130)
     raise typer.Exit(_exit_code(last, fail_on))

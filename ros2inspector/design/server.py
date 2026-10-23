@@ -28,6 +28,9 @@ from ros2inspector.design.ui import build_html
 
 STATE_FILE = ".ros2inspector_design.json"
 _MAX_REQUEST_BYTES = 1024 * 1024
+# The server is single-threaded on purpose (generation must not race), so a client that
+# opens a connection and never sends a request must not block it forever.
+_REQUEST_TIMEOUT_SECONDS = 30
 
 
 def _rename_plan(
@@ -210,6 +213,7 @@ def _make_handler(
         _out = output_dir
         _con = console
         _token = session_token
+        timeout = _REQUEST_TIMEOUT_SECONDS
 
         def _security_headers(self) -> None:
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -245,7 +249,7 @@ def _make_handler(
             if not self._host_is_local():
                 self._respond(403, {"error": "Foreign Host rejected"})
                 return
-            if self.path not in ("/", ""):
+            if urlsplit(self.path).path not in ("/", ""):
                 self.send_response(404)
                 self._security_headers()
                 self.end_headers()
@@ -270,7 +274,7 @@ def _make_handler(
                     pass
 
         def _do_post(self) -> None:
-            if self.path not in ("/generate", "/save"):
+            if urlsplit(self.path).path not in ("/generate", "/save"):
                 self._respond(404, {"error": "Not found"})
                 return
             if not self._request_is_local():
@@ -305,7 +309,7 @@ def _make_handler(
                 self._respond(422, _validation_response(exc))
                 return
             payload = state.model_dump(by_alias=True)
-            if self.path == "/save":
+            if urlsplit(self.path).path == "/save":
                 self._handle_save(payload)
             else:
                 self._handle_generate(payload, state.packages)
@@ -466,6 +470,11 @@ def run_design_server(
         console.print("\n[bold]ROS2 Inspector[/bold] — [cyan]Package Designer[/cyan]")
     console.print(f"  [dim]Server:[/dim]     [bold]{url}[/bold]")
     console.print(f"  [dim]Output dir:[/dim] [dim]{output_dir}[/dim]")
+    if (output_dir / "src").is_dir() and not (output_dir / "package.xml").exists():
+        console.print(
+            f"  [yellow]Hint:[/yellow] {output_dir} looks like a workspace root; colcon only "
+            f"finds packages under [bold]{output_dir / 'src'}[/bold] (use -o to choose it)."
+        )
     console.print("  [dim]Press [bold]Ctrl+C[/bold] to stop[/dim]\n")
 
     if open_browser:
