@@ -7,12 +7,16 @@ from rich.console import Console
 from ros2inspector import __version__
 from ros2inspector.cli import (
     cmd_audit,
+    cmd_design,
+    cmd_docs,
+    cmd_doctor,
     cmd_graph,
     cmd_nodes,
     cmd_packages,
     cmd_scan,
     cmd_validate,
     cmd_viz,
+    cmd_watch,
 )
 from ros2inspector.cli._state import state
 
@@ -66,6 +70,11 @@ app.add_typer(cmd_graph.app, name="graph")
 app.add_typer(cmd_viz.app, name="viz")
 app.add_typer(cmd_audit.app, name="audit")
 app.add_typer(cmd_validate.app, name="validate")
+# Leaf commands are registered directly so their usage line has no phantom "COMMAND [ARGS]".
+app.command("docs")(cmd_docs.docs)
+app.command("doctor")(cmd_doctor.doctor)
+app.command("watch")(cmd_watch.watch)
+app.command("design")(cmd_design.design)
 
 
 def run() -> None:

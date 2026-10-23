@@ -4,7 +4,7 @@
 
 `ros2inspector` scans supported Python, C++, interface, and launch-file patterns in a ROS 2 workspace. It builds an evidence-backed architecture graph, renders that graph in several formats, and enforces architecture policies in CI.
 
-The current alpha ships seven commands: `scan`, `packages`, `nodes`, `graph`, `viz`, `audit`, and `validate`.
+The current alpha ships eleven commands: `scan`, `packages`, `nodes`, `graph`, `viz`, `audit`, `validate`, `docs`, `watch`, `doctor`, and `design`.
 
 **Website and documentation:** [ros2-inspector-theta.vercel.app](https://ros2-inspector-theta.vercel.app/)
 
@@ -151,6 +151,40 @@ ros2inspector validate [PATH] --policy FILE [--fail-on error|warning|info] [--fo
 
 Validates the workspace against a YAML policy file.
 
+### `docs`
+
+```bash
+ros2inspector docs [PATH | -C PATH] [-o DIR] [--format markdown|html] [--force] [--no-cache]
+```
+
+Writes architecture documentation: an index with summary, package and node tables, and one page per package with dependencies and endpoints. Markdown output includes Mermaid dependency and communication diagrams. Output defaults to `<workspace>/ros2inspector_docs`. Pages for removed packages are deleted on the next run, Markdown and HTML pages can share one directory, and the command refuses to write into a non-empty directory it did not create unless `--force` is given. Set `SOURCE_DATE_EPOCH` for reproducible output.
+
+### `watch`
+
+```bash
+ros2inspector watch [PATH | -C PATH] [--policy FILE | --audit] [-i SECONDS] [--fail-on error|warning|info] [--once] [--verbose] [--no-cache]
+```
+
+Re-runs policy validation (or the built-in audit with `--audit`) whenever a source, interface, launch, config or build file changes. After the first run it prints only new and resolved findings. Editing the policy file reloads it. The default policy is `<workspace>/ros2inspector_policy.yaml`. `--once` runs a single validation for scripts. Exit codes: `0` clean, `1` findings at or above `--fail-on`, `2` invalid policy, `3` workspace or analysis error, `130` stopped before the first run finished.
+
+### `doctor`
+
+```bash
+ros2inspector doctor [PATH | -C PATH] [--json]
+```
+
+Read-only diagnostics: versions, workspace and source roots, package count, unparsable or duplicate `package.xml` files, `ROS_DISTRO`, required modules, the bundled visualization asset and whether the cache is writable. Exits `1` when any check fails; warnings are informational.
+
+### `design`
+
+```bash
+ros2inspector design [-o DIR] [-p PORT] [--open|--no-open]
+```
+
+Opens a local browser-based package designer (bound to `127.0.0.1`, protected by a per-session token). Add packages and nodes, give them publishers, subscribers, services, clients and action servers or clients, wire publishers to subscribers, then **Generate** to write ready-to-build `ament_python` packages into `DIR` (use your workspace's `src/`). The design is saved in `DIR/.ros2inspector_design.json`.
+
+Regenerating is safe: a file is rewritten only if you have not edited it since the last generation, files you added are never touched, and renaming a package moves its directory. Directories that were not created by the designer are never modified.
+
 ## Global options
 
 ```bash
@@ -265,7 +299,8 @@ Relevant exit codes:
 
 ```text
 ros2inspector/
-├── cli/           # scan, packages, nodes, graph, viz, audit, validate
+├── cli/           # scan, packages, nodes, graph, viz, audit, validate, docs, watch, doctor, design
+├── design/        # package designer: models, code generator, local server and UI
 ├── discovery/     # workspace, package, and interface discovery
 ├── static/        # Python, C++, interface, launch, package, and health parsers
 ├── model/         # Pydantic schemas and the NetworkX UAM
@@ -300,6 +335,14 @@ mypy ros2inspector/
 ```
 
 The test suite uses fixture workspaces under `tests/fixtures/` and does not require a live ROS 2 environment.
+
+Headless-browser tests for the designer and the generated HTML pages need Playwright:
+
+```bash
+pip install -e ".[dev,browser]"
+python -m playwright install chromium
+ROS2INSPECTOR_SCREENSHOT_DIR=screenshots pytest tests/browser -m browser --no-cov
+```
 
 ## Publishing
 

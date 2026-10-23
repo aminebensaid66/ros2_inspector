@@ -34,6 +34,7 @@ dependencies = [
     "tree-sitter>=0.22",
     "tree-sitter-cpp>=0.22",
     "diskcache>=5.6",
+    "jinja2>=3.1",
 ]
 
 [project.urls]
@@ -49,6 +50,8 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+# Headless-browser UI tests: pip install -e '.[dev,browser]' && playwright install chromium
+browser = ["playwright>=1.44"]
 
 [project.scripts]
 ros2inspector = "ros2inspector.cli.app:run"
@@ -65,6 +68,7 @@ testpaths = ["tests"]
 markers = [
     "requires_ros2: marks tests that need a live ROS 2 environment",
     "integration: marks portable full-pipeline integration tests",
+    "browser: headless-browser UI tests (need Playwright and Chromium)",
 ]
 addopts = "--cov=ros2inspector --cov-report=term-missing"
 
@@ -78,6 +82,9 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.per-file-ignores]
 # This file embeds HTML/CSS/JS templates where long lines are unavoidable.
 "ros2inspector/viz/renderer.py" = ["E501"]
+"ros2inspector/design/ui.py" = ["E501"]
+"ros2inspector/design/codegen.py" = ["E501"]
+"ros2inspector/cli/cmd_docs.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.10"

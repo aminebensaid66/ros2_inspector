@@ -107,3 +107,10 @@ def test_mermaid_full_graph_has_all_kinds(uam: UAM) -> None:
     # Full graph must reference both package and comms nodes
     assert "pkg_a" in out
     assert "chatter" in out.lower()
+
+
+def test_mermaid_labels_escape_html_and_quotes() -> None:
+    from ros2inspector.graph.renderer import _mermaid_label
+
+    assert _mermaid_label("<dynamic>") == "#lt;dynamic#gt;"
+    assert _mermaid_label('say "hi" #1') == "say #quot;hi#quot; #35;1"

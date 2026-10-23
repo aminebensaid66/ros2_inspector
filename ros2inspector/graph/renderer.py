@@ -28,6 +28,17 @@ def _slugify(text: str) -> str:
     return f"{base}_{suffix}"
 
 
+def _mermaid_label(text: str) -> str:
+    """Escape a label for a quoted Mermaid node.
+
+    Mermaid renders labels as HTML, so ``<dynamic>`` would vanish as an unknown tag; its
+    entity codes (``#lt;``) keep the text visible. Quotes would end the label early.
+    """
+    return (
+        text.replace("#", "#35;").replace('"', "#quot;").replace("<", "#lt;").replace(">", "#gt;")
+    )
+
+
 def _subgraph(
     uam: UnifiedArchitectureModel,
     graph_type: str,
@@ -86,7 +97,7 @@ def render_mermaid(
         sid = _slugify(nid)
         name = attrs.get("name", nid)
         kind = attrs.get("kind", "")
-        safe_name = name.replace('"', "'")
+        safe_name = _mermaid_label(str(name))
 
         if kind == "Package":
             lines.append(f'    {sid}["{safe_name}"]')
