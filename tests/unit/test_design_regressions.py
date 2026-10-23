@@ -283,13 +283,34 @@ def _instantiate(source: str) -> types.ModuleType:
 
 def test_node_named_like_message_does_not_shadow_it(ros_stubs: dict[str, Any]) -> None:
     node = NodeSpec.model_validate(
-        _node("n1", "string", publishers=[_endpoint("t1", "/chatter", "std_msgs/String")])
+        _node("n1", "image", publishers=[_endpoint("t1", "/camera", "my_msgs/Image")])
     )
     source = render_node(node)
-    assert "class StringNode(Node)" in source
+    assert "class ImageNode(Node)" in source
     _instantiate(source)
     cls, topic = ros_stubs["publishers"][0]
-    assert (cls.__module__, cls.__name__, topic) == ("std_msgs.msg", "String", "/chatter")
+    assert (cls.__module__, cls.__name__, topic) == ("my_msgs.msg", "Image", "/camera")
+
+
+@pytest.mark.parametrize("label", ["string", "logging", "time", "rclpy", "launch", "typing"])
+def test_node_labels_that_shadow_python_modules_are_rejected(label: str) -> None:
+    # string.py next to the other node files breaks 'import logging' inside rclpy as soon
+    # as any node file of the package is run directly (seen on ROS 2 Jazzy).
+    with pytest.raises(ValidationError, match="shadows the Python module"):
+        NodeSpec.model_validate(_node("n1", label))
+
+
+def test_node_label_equal_to_used_interface_package_is_rejected() -> None:
+    package = _pkg(
+        "p1",
+        "demo_pkg",
+        [
+            _node("n1", "my_msgs"),
+            _node("n2", "talker", publishers=[_endpoint("t1", "/a", "my_msgs/Image")]),
+        ],
+    )
+    with pytest.raises(ValidationError, match="interface package"):
+        PackageSpec.model_validate(package)
 
 
 def test_node_named_node_does_not_shadow_rclpy_node(ros_stubs: dict[str, Any]) -> None:

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from ros2inspector.design.codegen import (
     generate_package_result,
@@ -24,7 +25,12 @@ from ros2inspector.design.codegen import (
     render_node,
     render_package,
 )
-from ros2inspector.design.models import KNOWN_INTERFACES, NodeSpec, PackageSpec
+from ros2inspector.design.models import (
+    KNOWN_INTERFACES,
+    RESERVED_NODE_LABELS,
+    NodeSpec,
+    PackageSpec,
+)
 from ros2inspector.model.uam import UAM
 from ros2inspector.static.package_xml import parse_package_xml
 
@@ -214,6 +220,12 @@ def test_every_known_interface_runs_with_a_shadowing_node_label(
     # A label whose PascalCase equals the type name is the worst case for shadowing.
     label = "".join("_" + c.lower() if c.isupper() else c for c in type_name).lstrip("_")
     label = label.replace("2", "_2").replace("__", "_")
+    if label in RESERVED_NODE_LABELS:
+        # e.g. 'string' (std_msgs/String): rejected outright because string.py would shadow
+        # the stdlib module; the class-shadowing case is covered by the other interfaces.
+        with pytest.raises(ValidationError):
+            NodeSpec.model_validate(_node(label))
+        return
     groups = {
         "msg": ("publishers", "subscribers"),
         "srv": ("services", "clients"),
@@ -250,7 +262,7 @@ def test_every_known_interface_runs_with_a_shadowing_node_label(
 
 @pytest.mark.parametrize(
     "label",
-    ["node", "main", "string", "action_server", "action_client", "rclpy", "image", "twist"],
+    ["node", "main", "action_server", "action_client", "image", "twist", "header", "odometry"],
 )
 def test_colliding_labels_still_bind_rclpy_and_interfaces(ros: dict[str, Any], label: str) -> None:
     node = NodeSpec.model_validate(

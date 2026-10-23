@@ -86,6 +86,15 @@ RESERVED_PACKAGE_NAMES = frozenset(
 )
 
 
+# A node becomes <label>.py next to its siblings. Running any node file directly puts that
+# directory first on sys.path, so a label equal to a module Python or rclpy imports
+# (string.py, logging.py, ...) breaks every node in the package.
+RESERVED_NODE_LABELS = frozenset(
+    {"rclpy", "rclcpp", "launch", "launch_ros", "setuptools", "ament_index_python"}
+    | set(sys.stdlib_module_names)
+)
+
+
 def split_interface(value: str) -> tuple[str, InterfaceKind | None, str]:
     """Return (package, explicit kind or None, type name) for a validated interface string."""
     match = _INTERFACE_RE.fullmatch(value)
@@ -158,7 +167,13 @@ class NodeSpec(BaseModel):
     @field_validator("label")
     @classmethod
     def validate_label(cls, value: str) -> str:
-        return _check_identifier(value, "node name")
+        _check_identifier(value, "node name")
+        if value in RESERVED_NODE_LABELS:
+            raise ValueError(
+                f"node name {value!r} would create {value}.py, which shadows the Python module "
+                f"'{value}' when a node file is run directly; choose another name"
+            )
+        return value
 
     @model_validator(mode="after")
     def validate_endpoints(self) -> NodeSpec:
@@ -224,6 +239,25 @@ class PackageSpec(BaseModel):
             raise ValueError("node ids must be unique within a package")
         if self.pkg_name in names:
             raise ValueError("a node must not have the same name as its package")
+        interface_packages = {
+            split_interface(endpoint.interface_type)[0]
+            for node in self.nodes
+            for group in (
+                node.publishers,
+                node.subscribers,
+                node.services,
+                node.clients,
+                node.action_servers,
+                node.action_clients,
+            )
+            for endpoint in group
+        }
+        for label in names:
+            if label in interface_packages:
+                raise ValueError(
+                    f"node name {label!r} is also an interface package used here; "
+                    f"{label}.py would shadow it"
+                )
         self._validate_edges()
         return self
 

@@ -32,14 +32,14 @@ def _package() -> PackageSpec:
         base.update(groups)
         return base
 
-    topic = {"name": "/design_chatter", "msgType": "std_msgs/String"}
+    topic = {"name": "/design_chatter", "msgType": "std_msgs/Header"}
     return PackageSpec.model_validate(
         {
             "id": "p1",
             "pkg_name": "designed_demo",
-            # 'string' is the label most likely to shadow std_msgs.msg.String.
+            # 'header' is a label whose class name would shadow std_msgs.msg.Header.
             "nodes": [
-                node("n1", "string", publishers=[{"id": "t1", **topic}]),
+                node("n1", "header", publishers=[{"id": "t1", **topic}]),
                 node("n2", "listener", subscribers=[{"id": "t2", **topic}]),
             ],
             "edges": [{"id": "e1", "fn": "n1", "ft": "t1", "tn": "n2", "tt": "t2"}],
@@ -59,11 +59,11 @@ def test_generated_nodes_join_the_live_graph(tmp_path: Path) -> None:
         for topic in UAM.build(ws, use_cache=False).topics()
         if topic["name"] == "/design_chatter"
     )
-    assert static_topic["msg_type"] == "std_msgs/String"
+    assert static_topic["msg_type"] == "std_msgs/Header"
 
     processes = [
         subprocess.Popen([sys.executable, str(module_dir / f"{name}.py")], env=dict(os.environ))
-        for name in ("string", "listener")
+        for name in ("header", "listener")
     ]
     observer = None
     try:
@@ -78,11 +78,11 @@ def test_generated_nodes_join_the_live_graph(tmp_path: Path) -> None:
             names = {name for name, _ in observer.get_node_names_and_namespaces()}
             publishers = observer.get_publishers_info_by_topic("/design_chatter")
             subscribers = observer.get_subscriptions_info_by_topic("/design_chatter")
-            if {"string", "listener"} <= names and publishers and subscribers:
+            if {"header", "listener"} <= names and publishers and subscribers:
                 break
-        assert {"string", "listener"} <= names
-        assert {info.topic_type for info in publishers} == {"std_msgs/msg/String"}
-        assert {info.topic_type for info in subscribers} == {"std_msgs/msg/String"}
+        assert {"header", "listener"} <= names
+        assert {info.topic_type for info in publishers} == {"std_msgs/msg/Header"}
+        assert {info.topic_type for info in subscribers} == {"std_msgs/msg/Header"}
         assert all(process.poll() is None for process in processes), "a generated node crashed"
     finally:
         if observer is not None:
@@ -114,7 +114,7 @@ def test_generated_package_builds_with_colcon(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     install = ws / "install" / "designed_demo"
-    for executable in ("string", "listener"):
+    for executable in ("header", "listener"):
         assert (install / "lib" / "designed_demo" / executable).is_file()
     assert (install / "share" / "designed_demo" / "launch" / "launch.py").is_file()
     assert (install / "share" / "designed_demo" / "package.xml").is_file()
