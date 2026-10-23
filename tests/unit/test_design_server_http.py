@@ -367,7 +367,31 @@ def test_run_design_server_resumes_saved_state(
     text = console.export_text()
     assert "resuming 1 package(s)" in text
     assert "Design server stopped" in text
-    assert "demo_pkg" in captured["handler"]._html
+    assert "demo_pkg" in captured["handler"]._page()
+    assert captured["port"] == 0
+
+
+def test_page_reload_shows_the_last_saved_design(tmp_path: Path) -> None:
+    """The page is rendered per request, so reloading after Save never shows stale state."""
+    from ros2inspector.design.server import _load_state
+
+    handler = _make_handler(
+        lambda: build_html(_load_state(tmp_path), session_token=TOKEN),
+        tmp_path,
+        Console(quiet=True),
+        session_token=TOKEN,
+    )
+    httpd = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+    ).start()
+    try:
+        assert b"renamed_pkg" not in _call(httpd, "GET", "/")[2]
+        assert _post(httpd, "/save", _state(_pkg("renamed_pkg")))[0] == 200
+        assert b"renamed_pkg" in _call(httpd, "GET", "/")[2]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 def test_run_design_server_hints_at_src_for_workspace_roots(

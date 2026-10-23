@@ -9,6 +9,7 @@ import threading
 import traceback
 import uuid
 import webbrowser
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -203,13 +204,14 @@ def _merge_generated_names(payload: dict[str, Any], old_state: dict[str, Any] | 
 
 
 def _make_handler(
-    html: str,
+    html: str | Callable[[], str],
     output_dir: Path,
     console: Console,
     session_token: str = "",
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
-        _html = html
+        # A callable re-renders the page per request, so a reload shows the last saved design.
+        _page = staticmethod(html) if callable(html) else staticmethod(lambda: html)
         _out = output_dir
         _con = console
         _token = session_token
@@ -254,7 +256,7 @@ def _make_handler(
                 self._security_headers()
                 self.end_headers()
                 return
-            body = self._html.encode("utf-8")
+            body = self._page().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -441,6 +443,19 @@ def bind_server(port: int, handler: type[BaseHTTPRequestHandler]) -> HTTPServer:
         return HTTPServer(("127.0.0.1", 0), handler)
 
 
+def create_design_server(
+    port: int, output_dir: Path, console: Console, *, session_token: str | None = None
+) -> HTTPServer:
+    """Bind the designer on 127.0.0.1 without serving yet (the caller runs serve_forever)."""
+    token = session_token or secrets.token_urlsafe(32)
+    interfaces = known_interfaces_json()
+
+    def render_page() -> str:
+        return build_html(_load_state(output_dir), session_token=token, interfaces=interfaces)
+
+    return bind_server(port, _make_handler(render_page, output_dir, console, session_token=token))
+
+
 def run_design_server(
     port: int,
     output_dir: Path,
@@ -449,12 +464,7 @@ def run_design_server(
 ) -> None:
     output_dir = output_dir.expanduser().resolve()
     initial_state = _load_state(output_dir, console)
-    session_token = secrets.token_urlsafe(32)
-    html = build_html(
-        initial_state, session_token=session_token, interfaces=known_interfaces_json()
-    )
-    handler = _make_handler(html, output_dir, console, session_token=session_token)
-    server = bind_server(port, handler)
+    server = create_design_server(port, output_dir, console)
     actual_port = int(server.server_address[1])
     if port and actual_port != port:
         console.print(f"[yellow]Port {port} is in use, using {actual_port} instead.[/yellow]")

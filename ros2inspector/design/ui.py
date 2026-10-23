@@ -13,6 +13,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ROS2 Inspector — Package Designer</title>
+<link rel="icon" href="data:,">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d9;
@@ -387,12 +388,26 @@ function renderNodes(){
     }
     el.style.left=node.x+'px'; el.style.top=node.y+'px';
     el.classList.toggle('sel',node.id===S.sel);
-    el.innerHTML=nodeHTML(node);
-    el.querySelector('.nh').addEventListener('mousedown',e=>onNDown(e,node.id));
-    el.querySelector('.ndel').addEventListener('click',e=>{ e.stopPropagation(); delNode(node.id); });
-    el.addEventListener('click',()=>selNode(node.id));
+    // Only rebuild a card when its content changed: dragging re-renders on every mouse move,
+    // and replacing the DOM under the pointer would swallow the user's next click.
+    const html=nodeHTML(node);
+    if(el._html!==html){
+      el.innerHTML=html; el._html=html;
+      el.querySelector('.nh').addEventListener('mousedown',e=>onNDown(e,node.id));
+      el.querySelector('.ndel').addEventListener('click',e=>{ e.stopPropagation(); delNode(node.id); });
+    }
   }
 }
+
+// Select on mouseup (delegated): a field's change event fires on blur, between mousedown and
+// mouseup, and may re-render the card being clicked, which would cancel a 'click'.
+CV.addEventListener('mouseup',e=>{
+  if(eDrag||!e.target.closest) return;
+  const el=e.target.closest('.node');
+  if(!el||e.target.closest('.ndel')) return;
+  const id=el.id.slice(2);
+  if(S.sel!==id) selNode(id);
+});
 
 function nodeHTML(nd){
   const subs=nd.subscribers.map(s=>`
@@ -580,12 +595,26 @@ function delNode(id){
   renderAll();
 }
 
+// Approximate rendered card height, used to place new nodes without overlap.
+function cardHeight(n){
+  return NH+CH+Math.max(1,n.publishers.length,n.subscribers.length)*RH+36;
+}
+
+function freeSpot(p){
+  for(let i=0;i<300;i++){
+    const x=60+(i%3)*360, y=60+Math.floor(i/3)*240;
+    const clash=p.nodes.some(n=>x<n.x+NW+40&&n.x<x+NW+40&&y<n.y+cardHeight(n)+30&&n.y<y+NH+CH+RH+66);
+    if(!clash) return {x,y};
+  }
+  return {x:60,y:60};
+}
+
 function addNode(){
   const p=pkg(); if(!p) return;
   const id=String(S.nid++);
-  const off=p.nodes.length;
+  const spot=freeSpot(p);
   p.nodes.push({id, label:'node_'+id,
-    x:60+(off%3)*320, y:60+Math.floor(off/3)*200,
+    x:spot.x, y:spot.y,
     publishers:[], subscribers:[], services:[], clients:[], action_servers:[], action_clients:[]});
   selNode(id); renderAll(); renderSB();
 }
