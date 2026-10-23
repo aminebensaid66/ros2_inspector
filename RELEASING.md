@@ -72,11 +72,11 @@ secret is not set, the job is skipped without failing the release.
 
 6. Commit and push the version change only after CI is green.
 7. Create a GitHub Release with a tag that exactly matches `v<project.version>`, for example
-   `v0.1.4`. The publish workflow rejects mismatched tags.
+   `v0.1.5`. The publish workflow rejects mismatched tags.
 8. Confirm the package on PyPI, then test the public installation:
 
    ```bash
-   pipx install ros2inspector==0.1.4
+   pipx install ros2inspector==0.1.5
    ros2inspector --version
    ```
 
