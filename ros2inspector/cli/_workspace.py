@@ -45,6 +45,23 @@ def load_packages_or_exit(root: Path) -> list[PackageMetadata]:
     return packages
 
 
+def build_uam(
+    root: Path,
+    *,
+    use_cache: bool,
+    show_progress: bool = False,
+) -> UnifiedArchitectureModel:
+    """Build the model with the global CLI options (tests, factory patterns, preset)."""
+    return UAM.build(
+        root,
+        use_cache=use_cache,
+        show_progress=show_progress,
+        include_tests=state.include_tests,
+        factory_patterns=Path(state.factory_patterns) if state.factory_patterns else None,
+        preset=state.preset,
+    )
+
+
 def build_uam_or_exit(
     root: Path,
     *,
@@ -53,16 +70,24 @@ def build_uam_or_exit(
 ) -> UnifiedArchitectureModel:
     """Build the model and map user-actionable workspace failures to exit code 3."""
     try:
-        return UAM.build(
-            root,
-            use_cache=use_cache,
-            show_progress=show_progress,
-            include_tests=state.include_tests,
-            factory_patterns=Path(state.factory_patterns) if state.factory_patterns else None,
-            preset=state.preset,
-        )
+        return build_uam(root, use_cache=use_cache, show_progress=show_progress)
     except WorkspaceAnalysisError as exc:
         _exit_workspace_error(exc)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         _err_console.print(f"[red]Configuration error:[/red] {exc}")
         raise typer.Exit(2) from exc
+
+
+def pick_path(argument: Path | None, option: Path | None) -> Path:
+    """Accept the workspace either as a positional PATH or as ``-C/--path``.
+
+    ``scan``/``audit``/``validate`` take a positional path while ``nodes``/``graph``/``viz``
+    take ``-C``; the newer commands accept both so either habit works.
+    """
+    if argument is not None and option is not None:
+        if argument.expanduser().resolve() != option.expanduser().resolve():
+            _err_console.print(
+                f"[red]Error:[/red] got two different workspace paths: '{argument}' and '{option}'"
+            )
+            raise typer.Exit(2)
+    return (argument or option or Path(".")).expanduser()
