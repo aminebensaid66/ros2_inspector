@@ -17,7 +17,12 @@ from ros2inspector.cli._state import state
 from ros2inspector.cli._workspace import build_uam_or_exit, pick_path
 from ros2inspector.discovery import find_workspace_root, get_ros_distro
 from ros2inspector.graph.renderer import render_mermaid
-from ros2inspector.model.schemas import NodeDefinition, PackageMetadata
+from ros2inspector.model.schemas import (
+    DYNAMIC_SENTINEL,
+    UNKNOWN_SENTINEL,
+    NodeDefinition,
+    PackageMetadata,
+)
 from ros2inspector.static import workspace_aggregate_score
 from ros2inspector.utils.enums import StrEnum
 
@@ -79,7 +84,7 @@ _INDEX_MD = """\
 | Node | Package | Language | Publishers | Subscriptions | Action Servers | Action Clients |
 |---|---|---|---|---|---|---|
 {% for nd in nodes | sort(attribute='name') -%}
-| {{ nd.name | md }}{% if nd.has_dynamic_names %} ⚠{% endif %} | {{ nd.package | md }} | {{ nd.language }} | {{ nd.publishers | names | md }} | {{ nd.subscriptions | names | md }} | {{ nd.action_servers | names | md }} | {{ nd.action_clients | names | md }} |
+| {{ nd | rosname | md }}{% if nd.has_dynamic_names %} ⚠{% endif %} | {{ nd.package | md }} | {{ nd.language }} | {{ nd.publishers | names | md }} | {{ nd.subscriptions | names | md }} | {{ nd.action_servers | names | md }} | {{ nd.action_clients | names | md }} |
 {% endfor %}
 """
 
@@ -123,9 +128,10 @@ _PKG_MD = """\
 
 {% if pkg_nodes -%}
 {% for nd in pkg_nodes %}
-### {{ nd.name | code }}
+### {{ nd | rosname | code }}
 
-- **Language:** {{ nd.language }}
+{% if nd.source_symbol and nd.source_symbol != (nd | rosname) %}- **Class:** {{ nd.source_symbol | code }}
+{% endif %}- **Language:** {{ nd.language }}
 {% if nd.file_path %}- **File:** {{ (nd.file_path | rel) | code }}{% if nd.line %} line {{ nd.line }}{% endif %}
 {% endif %}{% if nd.has_dynamic_names %}- **⚠ Dynamic topic names detected**
 {% endif %}
@@ -194,7 +200,7 @@ _INDEX_HTML = """\
   <tr><th>Node</th><th>Package</th><th>Language</th><th>Publishers</th><th>Subscriptions</th><th>Action Servers</th><th>Action Clients</th></tr>
   {% for nd in nodes | sort(attribute='name') %}
   <tr>
-    <td>{{ nd.name }}{% if nd.has_dynamic_names %} ⚠{% endif %}</td>
+    <td>{{ nd | rosname }}{% if nd.has_dynamic_names %} ⚠{% endif %}</td>
     <td>{{ nd.package }}</td>
     <td>{{ nd.language }}</td>
     <td>{{ nd.publishers | names }}</td>
@@ -241,8 +247,9 @@ _PKG_HTML = """\
 {% if pkg_nodes %}
 <h2>Nodes</h2>
 {% for nd in pkg_nodes %}
-<h3><code>{{ nd.name }}</code></h3>
+<h3><code>{{ nd | rosname }}</code></h3>
 <table>
+  {% if nd.source_symbol and nd.source_symbol != (nd | rosname) %}<tr><th>Class</th><td><code>{{ nd.source_symbol }}</code></td></tr>{% endif %}
   <tr><th>Language</th><td>{{ nd.language }}</td></tr>
   {% if nd.file_path %}<tr><th>File</th><td><code>{{ nd.file_path | rel }}{% if nd.line %}:{{ nd.line }}{% endif %}</code></td></tr>{% endif %}
   {% if nd.has_dynamic_names %}<tr><th>⚠ Dynamic</th><td>Topic names computed at runtime</td></tr>{% endif %}
@@ -288,6 +295,14 @@ def _md_code(value: object) -> str:
     fence = "`" * (longest + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _ros_name(node: NodeDefinition) -> str:
+    """The node's ROS name when it is known statically, else the analyser's name for it."""
+    declared = node.declared_ros_name
+    if declared and declared not in (DYNAMIC_SENTINEL, UNKNOWN_SENTINEL):
+        return declared
+    return node.name
 
 
 def _names(endpoints: list[Any]) -> str:
@@ -447,6 +462,7 @@ def render_docs(
         mdtext=_md_text,
         code=_md_code,
         names=_names,
+        rosname=_ros_name,
         rel=rel,
     )
     page = page_names(packages)

@@ -610,3 +610,14 @@ def test_cache_invalidates_on_content_change_with_same_size_and_mtime(tmp_path: 
         os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         cache.set_context("")  # drop the one-slot memo, as a new run would
         assert cache._fingerprint(pkg) != before
+
+
+def test_docs_show_ros_node_names_and_class(ws: Path) -> None:
+    assert _docs(str(ws)).exit_code == 0
+    assert _docs(str(ws), "-f", "html").exit_code == 0
+    out = ws / "ros2inspector_docs"
+    md = (out / "packages" / "pkg_a.md").read_text()
+    assert "### `talker`" in md and "**Class:** `TalkerNode`" in md
+    assert "| talker | pkg\\_a |" in (out / "index.md").read_text()
+    html = (out / "packages" / "pkg_a.html").read_text()
+    assert "<h3><code>talker</code></h3>" in html and "<code>TalkerNode</code>" in html
