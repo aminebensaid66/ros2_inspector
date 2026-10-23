@@ -42,6 +42,30 @@ jobs:
       - name: Run tests
         run: pytest -m "not requires_ros2"
 
+  browser:
+    name: Browser UI tests (designer, docs, viz)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev,browser]"
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Run browser tests
+        env:
+          ROS2INSPECTOR_SCREENSHOT_DIR: screenshots
+        run: pytest tests/browser -m browser --no-cov
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-screenshots
+          path: screenshots/
+          if-no-files-found: ignore
+
   package:
     name: Build distributions
     runs-on: ubuntu-latest
@@ -88,7 +112,11 @@ jobs:
         run: >-
           python -c "import subprocess;
           subprocess.check_call(['ros2inspector', '--version']);
-          subprocess.check_call(['ros2inspector', '--help'])"
+          subprocess.check_call(['ros2inspector', '--help']);
+          [subprocess.check_call(['ros2inspector', c, '--help']) for c in ('design', 'docs', 'doctor', 'watch')];
+          from ros2inspector.design.ui import build_html;
+          assert 'Package Designer' in build_html();
+          subprocess.run(['ros2inspector', 'doctor', '--json'], check=False)"
 
   ros2-runtime:
     name: ROS 2 static/runtime differential
@@ -117,4 +145,5 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           /tmp/ros2inspector-venv/bin/python -m pytest -p pytest_cov.plugin \
-            -m requires_ros2 tests/integration/test_ros2_differential.py --no-cov
+            -m requires_ros2 tests/integration/test_ros2_differential.py \
+            tests/integration/test_design_ros2_runtime.py --no-cov
