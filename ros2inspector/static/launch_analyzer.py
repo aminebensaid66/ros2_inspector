@@ -321,8 +321,8 @@ def _analyze_xml_launch(path: Path) -> LaunchGraph:
         elem: ET.Element, inherited: tuple[str, ...] = (), container_ns: str | None = None
     ) -> None:
         local = list(inherited)
-        if elem.tag == "node_container" and elem.get("namespace", elem.get("ns")):
-            container_ns = elem.get("namespace", elem.get("ns"))
+        if elem.tag == "node_container":
+            container_ns = elem.get("namespace") or elem.get("ns") or container_ns
         if elem.get("if") is not None:
             local.append(f"if:{elem.get('if')}")
         if elem.get("unless") is not None:
