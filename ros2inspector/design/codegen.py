@@ -403,7 +403,9 @@ def render_node(node: NodeSpec) -> str:
         action_servers=groups["action_servers"],
         action_clients=groups["action_clients"],
     )
-    # Exactly one blank line between methods, whichever optional sections were rendered.
+    # Whichever optional sections were rendered: at most two blank lines anywhere (before
+    # top-level definitions) and exactly one between methods, as ament_flake8 requires.
+    source = re.sub(r"\n{4,}", "\n\n\n", source)
     return re.sub(r"\n{3,}(    def )", r"\n\n\1", source)
 
 

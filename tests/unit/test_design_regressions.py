@@ -688,3 +688,29 @@ def test_show_connections_names_service_and_action_peers(tmp_path: Path) -> None
     assert any("(server: server_node)" in line for line in reset_lines), reset_lines
     assert any("(client: client_node)" in line for line in fib_lines), fib_lines
     assert any("(server: server_node)" in line for line in fib_lines), fib_lines
+
+
+@pytest.mark.parametrize("mask", range(64))
+def test_every_endpoint_combination_has_flake8_blank_lines(mask: int) -> None:
+    """Each subset of endpoint kinds renders with PEP 8 blank lines (E301-E303)."""
+    from ros2inspector.design.codegen import render_node
+    from ros2inspector.design.models import NodeSpec
+
+    groups = {
+        "publishers": ("/out", "std_msgs/String"),
+        "subscribers": ("/in", "std_msgs/String"),
+        "services": ("/srv", "std_srvs/Trigger"),
+        "clients": ("/cli", "std_srvs/Trigger"),
+        "action_servers": ("/act", "example_interfaces/Fibonacci"),
+        "action_clients": ("/goal", "example_interfaces/Fibonacci"),
+    }
+    node: dict[str, Any] = {"id": "n", "label": "combo"}
+    for bit, (group, (name, msg_type)) in enumerate(groups.items()):
+        if mask & (1 << bit):
+            node[group] = [{"id": f"e{bit}", "name": name, "msgType": msg_type}]
+    source = render_node(NodeSpec.model_validate(node))
+    assert "\n\n\n\n" not in source  # E303: never more than two blank lines
+    assert "\n\n\n    " not in source  # E303: one blank line between methods
+    assert "\n\nclass " not in source.replace("\n\n\nclass ", "")  # E302 before class
+    assert "\n\ndef main" not in source.replace("\n\n\ndef main", "")  # E302 before main
+    compile(source, "combo.py", "exec")
