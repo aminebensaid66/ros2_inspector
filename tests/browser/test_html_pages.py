@@ -51,17 +51,19 @@ def test_docs_package_page_lists_endpoints_and_links_back(
 
 
 @pytest.mark.parametrize("width", [375, 768])
-def test_docs_pages_fit_small_screens(page: Page, workspace: Path, width: int, shot: Any) -> None:
+@pytest.mark.parametrize("page_path", ["index.html", "packages/pkg_a.html"])
+def test_docs_pages_fit_small_screens(
+    page: Page, workspace: Path, width: int, page_path: str, shot: Any
+) -> None:
     out = _docs_html(workspace)
     page.set_viewport_size({"width": width, "height": 800})
-    page.goto((out / "packages" / "pkg_a.html").as_uri())
+    page.goto((out / page_path).as_uri())
     overflow = page.evaluate(
         "document.documentElement.scrollWidth - document.documentElement.clientWidth"
     )
-    shot(page, f"docs-03-package-{width}px")
-    # Long endpoint names may wrap inside tables, but the page itself must not scroll sideways
-    # by more than a few pixels of table border.
-    assert overflow <= 24, overflow
+    shot(page, f"docs-03-{page_path.replace('/', '-')}-{width}px")
+    # Wide tables scroll inside their own container; the page never scrolls sideways.
+    assert overflow == 0, overflow
 
 
 def test_docs_page_cannot_run_script_from_package_xml(page: Page, workspace: Path) -> None:
