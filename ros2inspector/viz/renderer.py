@@ -492,6 +492,10 @@ function mkStyle() {
       'line-style':v.dash?'dashed':'solid',
     }});
   }
+  // Flat layouts only: what a package (or node) contains. Structure, not data flow.
+  s.push({selector:'edge[rel="contains"]', style:{
+    'line-color':'#484f58','line-style':'dotted',width:1,'target-arrow-shape':'none',
+  }});
   return s;
 }
 
@@ -596,7 +600,8 @@ function afterLayout(){
 }
 
 // Only the Grouped layout understands package/node nesting. Other layouts place children
-// freely and Cytoscape stretches the containers around them, so they get a flat graph.
+// freely and Cytoscape stretches the containers around them, so they get a flat graph in
+// which each container is a plain node linked to its children (see addGraph).
 function setGrouping(grouped){
   if(grouped===isGrouped) return;
   isGrouped=grouped;
@@ -636,12 +641,15 @@ function loadGraph(g){
 
 function addGraph(g, grouped){
   const d=GRAPHS[g];
-  const parents=new Set(d.nodes.map(n=>n.data.parent).filter(Boolean));
-  const nodes=grouped ? d.nodes : d.nodes
-    .filter(n=>!parents.has(n.data.id))
-    .map(n=>{ const data=Object.assign({},n.data); delete data.parent; return {data}; });
-  const kept=new Set(nodes.map(n=>n.data.id));
-  cy.add([...nodes,...d.edges.filter(e=>kept.has(e.data.source)&&kept.has(e.data.target))]);
+  if(grouped){ cy.add([...d.nodes,...d.edges]); }
+  else {
+    // Flat: containers (packages, nodes with deployments) become ordinary nodes linked to
+    // what they contain, so packages and their dependency edges stay in every layout.
+    const nodes=d.nodes.map(n=>{ const data=Object.assign({},n.data); delete data.parent; return {data}; });
+    const contains=d.nodes.filter(n=>n.data.parent).map(n=>({data:{
+      id:`contains:${n.data.id}`, source:n.data.parent, target:n.data.id, rel:'contains'}}));
+    cy.add([...nodes,...d.edges,...contains]);
+  }
   // Edges between packages are drawn a little heavier (by attribute, so it works flat too).
   cy.edges().forEach(e=>{
     const sp=e.source().data('package'), tp=e.target().data('package');

@@ -131,6 +131,10 @@ _OUTSIDE = """() => { const e = cy.extent();
     return b.x2 < e.x1 || b.x1 > e.x2 || b.y2 < e.y1 || b.y1 > e.y2; }).length; }"""
 
 
+_PACKAGES_AND_DEPS = """() => [cy.nodes('[kind="Package"]').length,
+  cy.edges('[rel="depends_on"]').length, cy.nodes().length]"""
+
+
 @pytest.mark.parametrize("layout", ["cose", "breadthfirst", "circle", "concentric", "grid"])
 def test_viz_free_layouts_are_flat_overlap_free_and_in_view(
     page: Page, workspace: Path, layout: str
@@ -139,9 +143,13 @@ def test_viz_free_layouts_are_flat_overlap_free_and_in_view(
     page.click('.tab[data-g="full"]')
     _settle(page)
     assert page.evaluate("cy.nodes(':parent').length") > 0  # Grouped keeps the packages
+    grouped = page.evaluate(_PACKAGES_AND_DEPS)
     page.select_option("#lay-sel", layout)
     _settle(page)
     assert page.evaluate("cy.nodes(':parent').length") == 0
+    # Flat, but nothing is dropped: packages stay (linked to their nodes), deps included.
+    assert page.evaluate(_PACKAGES_AND_DEPS) == grouped
+    assert page.evaluate("cy.edges('[rel=\"contains\"]').length") > 0
     assert page.evaluate(_OVERLAPS) == 0
     assert page.evaluate(_OUTSIDE) == 0
     undrawable = "cy.edges(':visible').filter(e => e._private.rscratch.badLine).length"
