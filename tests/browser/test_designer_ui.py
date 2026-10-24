@@ -432,10 +432,16 @@ def test_new_nodes_appear_on_screen_and_the_canvas_pans(
     assert _on_canvas(page, first)
     # Dragging the background pans and does not close/open anything.
     vx, vy = page.evaluate("()=>[VIEW.x, VIEW.y]")
-    cv = _screen_box(page, "#cv")
-    page.mouse.move(cv["x"] + cv["width"] - 30, cv["y"] + cv["height"] - 30)
+    # Press on empty background: Show all centres the design, so cards can sit anywhere.
+    x, y = page.evaluate(
+        """()=>{const c=CV.getBoundingClientRect();
+        for(let y=c.bottom-30;y>c.top+150;y-=20) for(let x=c.right-30;x>c.left+250;x-=20)
+          if(document.elementFromPoint(x,y)===CV) return [x,y];
+        return null}"""
+    )
+    page.mouse.move(x, y)
     page.mouse.down()
-    page.mouse.move(cv["x"] + cv["width"] - 230, cv["y"] + cv["height"] - 130, steps=6)
+    page.mouse.move(x - 200, y - 100, steps=6)
     page.mouse.up()
     assert page.evaluate("()=>[VIEW.x, VIEW.y]") == [vx - 200, vy - 100]
     expect(page.locator("#sb")).to_have_class("h")
@@ -534,3 +540,29 @@ def test_wires_never_pass_through_cards(page: Page, designer: dict[str, Any], sh
         "p=>p.dispatchEvent(new MouseEvent('click',{bubbles:true}))"
     )
     expect(page.locator("#eg path")).to_have_count(2)
+
+
+def test_toolbar_fits_at_800_and_show_all_centres_a_small_design(
+    browser: Any, designer: dict[str, Any]
+) -> None:
+    context = browser.new_context(viewport={"width": 800, "height": 700})
+    page = context.new_page()
+    _open(page, designer)
+    assert page.evaluate("()=>document.getElementById('tb').scrollWidth") <= 800
+    fit = _screen_box(page, "#fit")
+    assert fit["x"] + fit["width"] <= 800
+    page.click("#fit")
+    centre = page.evaluate(
+        """()=>{const r=[...document.querySelectorAll('.node')].map(n=>n.getBoundingClientRect());
+        const c=CV.getBoundingClientRect();
+        return [(Math.min(...r.map(x=>x.left))+Math.max(...r.map(x=>x.right)))/2-c.left,
+                (Math.min(...r.map(x=>x.top))+Math.max(...r.map(x=>x.bottom)))/2-c.top,
+                canvasWidth(), CV.clientHeight]}"""
+    )
+    assert abs(centre[0] - centre[2] / 2) <= 2 and abs(centre[1] - centre[3] / 2) <= 2
+    # The small labels that were left at about 2.4:1 contrast.
+    colours = page.evaluate(
+        "()=>['.ndel','.tb-lbl'].map(s=>getComputedStyle(document.querySelector(s)).color)"
+    )
+    assert colours == ["rgb(124, 138, 160)"] * 2
+    context.close()

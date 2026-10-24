@@ -24,7 +24,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0}
 .brand{font-weight:700;font-size:14px;color:#a78bfa;white-space:nowrap}
 .sep{width:1px;height:20px;background:rgba(255,255,255,.08);flex-shrink:0}
-.tb-lbl{color:#475569;font-size:12px;white-space:nowrap}
+.tb-lbl{color:#7c8aa0;font-size:12px;white-space:nowrap}
 .tb-inp{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);
   border-radius:6px;color:#e2e8f0;padding:5px 9px;
   font-family:monospace;font-size:12px;outline:none;width:160px}
@@ -46,6 +46,12 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 .btn-p:disabled{opacity:.4;cursor:not-allowed}
 .tb-hint{color:#7c8aa0;font-size:11px;margin-left:auto;font-style:italic;white-space:nowrap;
   min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* Narrow windows: the buttons matter more than the brand and the hint. */
+@media (max-width:900px){
+  .brand,.brand+.sep,.tb-hint{display:none}
+  #tb{gap:8px;padding:0 10px}
+  .tb-inp{width:120px}
+}
 
 /* package tabs bar */
 #pt{height:40px;background:#0b0b19;border-bottom:1px solid rgba(139,92,246,.15);
@@ -58,7 +64,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   background:rgba(255,255,255,.03);
   border:1px solid rgba(255,255,255,.07);border-bottom:none;
   border-radius:6px 6px 0 0;
-  font-size:12px;font-family:monospace;color:#475569;
+  font-size:12px;font-family:monospace;color:#7c8aa0;
   cursor:pointer;white-space:nowrap;transition:background .15s,color .15s}
 .ptab.active{background:#12121e;border-color:rgba(139,92,246,.4);color:#e2e8f0}
 .ptab:hover:not(.active){background:rgba(255,255,255,.06);color:#94a3b8}
@@ -103,7 +109,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   background:linear-gradient(135deg,#8b5cf6,#22d3ee);flex-shrink:0}
 .nlbl{font-weight:700;font-size:13px;color:#e2e8f0;flex:1;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace}
-.ndel{background:none;border:none;color:#475569;cursor:pointer;
+.ndel{background:none;border:none;color:#7c8aa0;cursor:pointer;
   font-size:16px;padding:2px 4px;line-height:1;border-radius:4px;flex-shrink:0;
   transition:color .15s}
 .ndel:hover{color:#f87171}
@@ -133,7 +139,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 #sb.h{width:0;padding:0;overflow:hidden;border:none}
 .stit{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#8b5cf6}
 .slbl{display:block;font-size:10px;font-weight:700;text-transform:uppercase;
-  letter-spacing:.08em;color:#475569;margin-bottom:6px}
+  letter-spacing:.08em;color:#7c8aa0;margin-bottom:6px}
 .sinp{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);
   border-radius:6px;color:#e2e8f0;padding:6px 10px;
   font-family:monospace;font-size:12px;outline:none;width:100%}
@@ -145,7 +151,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   border-radius:8px;padding:10px;margin-bottom:8px}
 .tcr{display:flex;align-items:center;gap:6px;margin-bottom:6px}
 .tdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.trem{background:none;border:none;color:#475569;cursor:pointer;
+.trem{background:none;border:none;color:#7c8aa0;cursor:pointer;
   font-size:14px;padding:2px 4px;line-height:1;transition:color .15s}
 .trem:hover{color:#f87171}
 .ssel{background:#0a0a18;border:1px solid rgba(255,255,255,.09);
@@ -154,7 +160,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 .shnote{margin-top:auto;padding:10px 12px;
   background:rgba(139,92,246,.06);border-radius:8px;
   border:1px solid rgba(139,92,246,.1);
-  font-size:11px;color:#475569;line-height:1.6}
+  font-size:11px;color:#7c8aa0;line-height:1.6}
 
 /* empty state */
 #es{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
@@ -186,7 +192,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   <button class="btn" id="an">+ Add Node</button>
   <button class="btn-save" id="sv">💾 Save</button>
   <button class="btn-p" id="gb" disabled>↓ Generate All</button>
-  <button class="btn" id="fit" title="Pan so that every node is in view">⊡ Show all</button>
+  <button class="btn" id="fit" title="Bring the design back into view: centred when it fits, otherwise from its top-left node">⊡ Show all</button>
   <span class="tb-hint">Click node to configure · Drag cyan handles to connect · Drag the background or scroll to pan · Ctrl+S to save</span>
 </div>
 
@@ -305,10 +311,15 @@ function ensureVisible(nd){
   applyView();
 }
 
+// There is no zoom, so a design larger than the canvas starts at its top-left node.
 function showAll(){
   const p=pkg(); if(!p||!p.nodes.length){ VIEW.x=VIEW.y=0; applyView(); return; }
-  VIEW.x=40-Math.min(...p.nodes.map(n=>n.x));
-  VIEW.y=40-Math.min(...p.nodes.map(n=>n.y));
+  const rects=p.nodes.map(cardRect), M=40;
+  const l=Math.min(...rects.map(r=>r.l)), t=Math.min(...rects.map(r=>r.t));
+  const w=Math.max(...rects.map(r=>r.r))-l, h=Math.max(...rects.map(r=>r.b))-t;
+  const cw=canvasWidth(), ch=CV.clientHeight;
+  VIEW.x=w+2*M<=cw ? (cw-w)/2-l : M-l;
+  VIEW.y=h+2*M<=ch ? (ch-h)/2-t : M-t;
   applyView();
 }
 
@@ -334,17 +345,6 @@ function bez(sx,sy,tx,ty){
   return `M${sx},${sy} C${sx+cp},${sy} ${tx-cp},${ty} ${tx},${ty}`;
 }
 
-function esc(s){
-  return String(s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-// A value embedded as a JS string literal inside an HTML event-handler attribute.
-function jsa(v){ return esc(JSON.stringify(String(v))); }
-
-// 'pkg/msg/Type' and 'pkg/Type' are the same interface.
-function canonType(t){ return String(t).replace(/^([a-z][a-z0-9_]*)\/(?:msg|srv|action)\//,'$1/'); }
-function sameType(a,b){ return canonType(a)===canonType(b); }
 // ── wire routing ───────────────────────────────────────────────────────────
 // A wire is a smooth curve when nothing is in its way. If it would cross a card (and so look
 // like it starts or ends at that card's handles) or runs backwards, it detours along a lane
@@ -392,6 +392,17 @@ function wirePath(p,fn,tn,sx,sy,tx,ty,lane){
   return roundedPath([[sx,sy],[x1,sy],[x1,y],[x2,y],[x2,ty],[tx,ty]],10);
 }
 
+function esc(s){
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// A value embedded as a JS string literal inside an HTML event-handler attribute.
+function jsa(v){ return esc(JSON.stringify(String(v))); }
+
+// 'pkg/msg/Type' and 'pkg/Type' are the same interface.
+function canonType(t){ return String(t).replace(/^([a-z][a-z0-9_]*)\/(?:msg|srv|action)\//,'$1/'); }
+function sameType(a,b){ return canonType(a)===canonType(b); }
 
 function edgeEnds(p,e){
   const fn=p.nodes.find(n=>n.id===e.fn), tn=p.nodes.find(n=>n.id===e.tn);
@@ -446,6 +457,7 @@ function renderAll(){
 function renderEdges(){
   EG.innerHTML=''; WH.innerHTML='';
   const p=pkg(); if(!p) return;
+  let lane=0;
   for(const e of p.edges){
     const fn=p.nodes.find(n=>n.id===e.fn);
     const tn=p.nodes.find(n=>n.id===e.tn);
@@ -457,7 +469,6 @@ function renderEdges(){
     const ends=edgeEnds(p,e);
     const path=makeSVG('path');
     // End on the handle's rim so the arrowhead is never covered by the handle.
-  let lane=0;
     const d=wirePath(p,fn,tn,sp.x+HR,sp.y,tp2.x-HR,tp2.y,lane);
     if(!d.includes(' C')) lane++;
     path.setAttribute('d',d);
