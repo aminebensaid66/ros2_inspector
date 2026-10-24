@@ -299,11 +299,39 @@ def test_rename_after_generate_moves_directory_and_keeps_edits(server: Any) -> N
     status, data = _post(httpd, "/generate", _state(_pkg("new_name")))
     assert status == 200, data
     assert not (out / "old_name").exists()
-    moved = out / "new_name" / "old_name" / "talker.py"
-    # The module directory is regenerated under the new name; the user's edited file is kept.
+    # The module folder moves with the package, so the edited file is the one that is
+    # installed under the new name (not stranded in an old, uninstalled module folder).
+    moved = out / "new_name" / "new_name" / "talker.py"
     assert moved.read_text().endswith("# my edit\n")
-    assert (out / "new_name" / "new_name" / "talker.py").is_file()
-    assert any(path.endswith("old_name/talker.py") for path in data["kept_modified"])
+    assert not (out / "new_name" / "old_name").exists()
+    assert (out / "new_name" / "resource" / "new_name").is_file()
+    assert not (out / "new_name" / "resource" / "old_name").exists()
+    assert data["kept_modified"] == ["new_name/new_name/talker.py"]
+
+
+def test_rename_twice_keeps_edits_and_leaves_no_stale_files(server: Any) -> None:
+    httpd, out = server
+    _post(httpd, "/generate", _state(_pkg("first_name")))
+    node_file = out / "first_name" / "first_name" / "talker.py"
+    node_file.write_text(node_file.read_text() + "\n# my edit\n")
+    _post(httpd, "/generate", _state(_pkg("second_name")))
+    status, data = _post(httpd, "/generate", _state(_pkg("third_name")))
+    assert status == 200, data
+    package = out / "third_name"
+    assert (package / "third_name" / "talker.py").read_text().endswith("# my edit\n")
+    leftovers = sorted(
+        p.relative_to(package).as_posix() for p in package.rglob("*") if p.is_file()
+    )
+    assert leftovers == [
+        ".ros2inspector_generated",
+        "launch/launch.py",
+        "package.xml",
+        "resource/third_name",
+        "setup.cfg",
+        "setup.py",
+        "third_name/__init__.py",
+        "third_name/talker.py",
+    ]
 
 
 def test_unexpected_error_returns_json_500(server: Any, monkeypatch: pytest.MonkeyPatch) -> None:

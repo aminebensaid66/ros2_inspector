@@ -21,6 +21,7 @@ from rich.console import Console
 from ros2inspector.design.codegen import (
     _GENERATED_MARKER,
     GenerateResult,
+    rename_package_contents,
     render_package,
     write_package,
 )
@@ -111,6 +112,8 @@ def _apply_renames(
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    for old_dir, new_dir in moves:
+        rename_package_contents(new_dir, old_dir.name, new_dir.name)
     return moves
 
 

@@ -360,6 +360,45 @@ def read_manifest(package_dir: Path) -> dict[str, str] | None:
     return {str(k): str(v) for k, v in data["files"].items()}
 
 
+def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> None:
+    """Rename the module folder and resource marker inside a moved generated package.
+
+    The manifest is rewritten to the new paths, so files the user edited keep counting as
+    edited (and are never overwritten) under the new module name instead of being stranded
+    in a folder that ``setup.py`` no longer installs.
+    """
+    if old_name == new_name:
+        return
+    renames = [(old_name, new_name), (f"resource/{old_name}", f"resource/{new_name}")]
+    moved: list[tuple[str, str]] = []
+    for old, new in renames:
+        source, target = package_dir / old, package_dir / new
+        if source.exists() and not target.exists():
+            source.rename(target)
+            moved.append((old, new))
+    if not moved:
+        return
+    manifest = read_manifest(package_dir)
+    if not manifest:
+        return
+
+    def moved_key(key: str) -> str:
+        for old, new in moved:
+            if key == old or key.startswith(f"{old}/"):
+                return new + key[len(old) :]
+        return key
+
+    marker = {
+        "generated_by": "ros2inspector",
+        "format": _MARKER_FORMAT,
+        "files": {moved_key(key): digest for key, digest in manifest.items()},
+    }
+    _write_atomic(
+        package_dir / _GENERATED_MARKER,
+        (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
+
+
 def _write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
