@@ -144,11 +144,11 @@ _PKG_MD = """\
 
 _STYLE = """\
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; color: #222; }
   h1 { color: #0066cc; } h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
   .table-wrap { overflow-x: auto; margin: 1rem 0; }
   table { border-collapse: collapse; width: 100%; }
-  th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+  th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; overflow-wrap: break-word; }
   th { background: #f5f5f5; }
   .health-good { color: green; font-weight: bold; }
   .health-fair { color: orange; font-weight: bold; }
