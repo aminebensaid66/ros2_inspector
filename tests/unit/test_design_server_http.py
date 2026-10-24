@@ -324,11 +324,15 @@ def test_rename_twice_keeps_edits_and_leaves_no_stale_files(server: Any) -> None
     )
     assert leftovers == [
         ".ros2inspector_generated",
+        "README.md",
         "launch/launch.py",
         "package.xml",
         "resource/third_name",
         "setup.cfg",
         "setup.py",
+        "test/test_copyright.py",
+        "test/test_flake8.py",
+        "test/test_pep257.py",
         "third_name/__init__.py",
         "third_name/talker.py",
     ]

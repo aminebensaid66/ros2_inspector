@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
+from pydantic_core import ErrorDetails
 from rich.console import Console
 
 from ros2inspector.design.codegen import (
@@ -174,7 +175,7 @@ def _save_state(output_dir: Path, state: dict[str, Any]) -> None:
     temp_path.replace(state_path)
 
 
-def _issue_message(issue: dict[str, Any]) -> str:
+def _issue_message(issue: ErrorDetails) -> str:
     """Pydantic message without its internal 'Value error, ' / 'Assertion failed, ' prefix."""
     message = str(issue["msg"])
     for prefix in ("Value error, ", "Assertion failed, "):

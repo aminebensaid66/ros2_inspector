@@ -586,3 +586,57 @@ def test_save_state_roundtrip_keeps_active_package(tmp_path: Path) -> None:
     _save_state(tmp_path, DesignState.model_validate(state).model_dump(by_alias=True))
     loaded = _load_state(tmp_path)
     assert loaded is not None and loaded["activePkg"] == "b"
+
+
+# ── generated packages are healthy and follow ament_flake8 style (#16) ──────
+
+
+def _full_package() -> dict[str, Any]:
+    def ep(eid: str, name: str, msg_type: str) -> dict[str, str]:
+        return {"id": eid, "name": name, "msgType": msg_type}
+
+    return {
+        "id": "p",
+        "pkg_name": "healthy_pkg",
+        "nodes": [
+            {
+                "id": "a",
+                "label": "talker",
+                "publishers": [ep("1", "/chatter", "std_msgs/String")],
+                "services": [ep("2", "/reset", "std_srvs/Trigger")],
+                "action_servers": [ep("3", "/fib", "example_interfaces/Fibonacci")],
+            },
+            {
+                "id": "b",
+                "label": "listener",
+                "subscribers": [
+                    ep("4", "/robot/camera/front_left/image_rect", "sensor_msgs/Image")
+                ],
+            },
+        ],
+    }
+
+
+def test_generated_package_scores_full_health(tmp_path: Path) -> None:
+    from ros2inspector.static.health_scorer import score_package
+    from ros2inspector.static.package_xml import parse_package_xml
+
+    generate_package(_full_package(), tmp_path)
+    metadata = parse_package_xml(tmp_path / "healthy_pkg" / "package.xml")
+    assert metadata is not None
+    assert score_package(metadata) == 100
+
+
+def test_generated_sources_follow_ament_flake8_style(tmp_path: Path) -> None:
+    generate_package(_full_package(), tmp_path)
+    package = tmp_path / "healthy_pkg"
+    talker = (package / "healthy_pkg" / "talker.py").read_text()
+    imports = [line for line in talker.splitlines() if line.startswith(("import ", "from "))]
+    assert imports == sorted(imports, key=lambda line: line.split()[1].lower())
+    assert "from rclpy.action import ActionServer" in imports  # ActionClient is unused here
+    assert "\n\n\n    def " not in talker
+    for path in package.rglob("*.py"):
+        if path.parent.name != "test":
+            source = path.read_text()
+            assert '"' not in source, f"double quotes in {path.name}"
+            assert all(len(line) <= 99 for line in source.splitlines()), path.name
