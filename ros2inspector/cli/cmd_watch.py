@@ -15,6 +15,7 @@ from ros2inspector.cli._workspace import build_uam, load_packages_or_exit, pick_
 from ros2inspector.discovery import DEFAULT_EXCLUDED_DIRS, find_workspace_root, source_search_root
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.policy import PolicyConfigError, load_policy, run_policy, violation_summary
+from ros2inspector.static.health_scorer import README_NAMES, TEST_DIR_NAMES
 
 console = Console()
 err_console = Console(stderr=True)
@@ -42,7 +43,9 @@ WATCH_SUFFIXES = frozenset(
         ".toml",
     }
 )
-WATCH_NAMES = frozenset({"CMakeLists.txt", "COLCON_IGNORE", ".rosignore", ".ros2inspectorignore"})
+WATCH_NAMES = frozenset(
+    {"CMakeLists.txt", "COLCON_IGNORE", ".rosignore", ".ros2inspectorignore", *README_NAMES}
+)
 _STOP_MARKERS = ("COLCON_IGNORE", ".rosignore")
 _DEBOUNCE_SECONDS = 0.5
 _SEVERITY_COLOR = {
@@ -77,7 +80,12 @@ def _snapshot(root: Path, extra: tuple[Path, ...] = ()) -> Snapshot:
             dirnames[:] = []
             filenames = [name for name in filenames if name in _STOP_MARKERS]
         for filename in filenames:
-            if filename not in WATCH_NAMES and Path(filename).suffix not in WATCH_SUFFIXES:
+            if (
+                filename not in WATCH_NAMES
+                and Path(filename).suffix not in WATCH_SUFFIXES
+                # Any file makes a test directory count for the health score.
+                and base.name not in TEST_DIR_NAMES
+            ):
                 continue
             path = base / filename
             try:

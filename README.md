@@ -167,7 +167,7 @@ Writes architecture documentation: an index with summary, package and node table
 ros2inspector watch [PATH | -C PATH] [--policy FILE | --audit] [-i SECONDS] [--fail-on error|warning|info] [--once] [--verbose] [--no-cache]
 ```
 
-Re-runs policy validation (or the built-in audit with `--audit`) whenever a source, interface, launch, config or build file changes. After the first run it prints only new and resolved findings. Editing the policy file reloads it. The default policy is `<workspace>/ros2inspector_policy.yaml`. `--once` runs a single validation for scripts. Exit codes: `0` clean, `1` findings at or above `--fail-on`, `2` invalid policy, `3` workspace or analysis error, `130` stopped before the first run finished.
+Re-runs policy validation (or the built-in audit with `--audit`) whenever a source, interface, launch, config or build file changes, or a README or test file that affects a package's health score. After the first run it prints only new and resolved findings. Editing the policy file reloads it. The default policy is `<workspace>/ros2inspector_policy.yaml`. `--once` runs a single validation for scripts. Exit codes: `0` clean, `1` findings at or above `--fail-on`, `2` invalid policy, `3` workspace or analysis error, `130` stopped before the first run finished.
 
 ### `doctor`
 
