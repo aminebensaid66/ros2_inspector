@@ -1002,11 +1002,13 @@ GB.addEventListener('click',async()=>{
     const data=await res.json().catch(()=>({error:`HTTP ${res.status}`}));
     if(res.ok){
       markSaved();
-      const kept=data.kept_modified||[];
+      const kept=data.kept_modified||[], renamedIn=data.renamed_in||[];
       const written=(data.packages||[]).reduce((n,r)=>n+r.written.length,0);
-      showToast(kept.length
+      let msg=kept.length
         ? `✓ ${written} file(s) written → ${data.output_dir}. Kept your edits in ${kept.length} file(s): ${kept.join(', ')}`
-        : `✓ ${written} file(s) written, ${data.files.length-written} unchanged → ${data.output_dir}`,'ok');
+        : `✓ ${written} file(s) written, ${data.files.length-written} unchanged → ${data.output_dir}`;
+      if(renamedIn.length) msg+=`. Updated the package name in your edited file(s): ${renamedIn.join(', ')}`;
+      showToast(msg,'ok');
     } else {
       showToast(`✗ ${errorText(data,payload)}`,'err');
     }

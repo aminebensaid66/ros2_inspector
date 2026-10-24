@@ -22,6 +22,7 @@ from rich.console import Console
 from ros2inspector.design.codegen import (
     _GENERATED_MARKER,
     GenerateResult,
+    rename_blockers,
     rename_package_contents,
     render_package,
     write_package,
@@ -64,6 +65,13 @@ def _rename_plan(
             continue
         if not (old_dir / _GENERATED_MARKER).is_file():
             raise PermissionError(f"Refusing to rename '{old_dir}': it is not a generated package.")
+        blockers = rename_blockers(old_dir, old_name, new_name)
+        if blockers:
+            raise FileExistsError(
+                f"Cannot rename '{old_name}' to '{new_name}': {', '.join(blockers)} already "
+                f"exists inside the package, so the Python module could not be moved. "
+                "Rename or remove it first."
+            )
         moves.append((old_dir, output_dir / new_name))
 
     sources = {old for old, _ in moves}
@@ -81,12 +89,13 @@ def _apply_renames(
     packages: list[dict[str, Any]],
     output_dir: Path,
     old_state: dict[str, Any] | None,
-) -> list[tuple[Path, Path]]:
+) -> list[str]:
     """Rename generated package directories after a validated package-name change.
 
     Renames are staged through a temporary directory (marked ``COLCON_IGNORE``) so that
     swaps and cycles (a -> b, b -> a) work and no package is ever deleted. If any move
-    fails, every package is put back under its original name.
+    fails, every package is put back under its original name. Returns the edited files
+    (as ``package/path``) whose references to the old package name were updated.
     """
     moves = _rename_plan(packages, output_dir, old_state)
     if not moves:
@@ -113,9 +122,13 @@ def _apply_renames(
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    # Package names in edited files are rewritten after every move, so a swap (a <-> b) sees
+    # each file once and never turns 'a' into 'b' and back again.
+    renamed_in: list[str] = []
     for old_dir, new_dir in moves:
-        rename_package_contents(new_dir, old_dir.name, new_dir.name)
-    return moves
+        updated = rename_package_contents(new_dir, old_dir.name, new_dir.name)
+        renamed_in.extend(f"{new_dir.name}/{path}" for path in updated)
+    return renamed_in
 
 
 def _load_state(output_dir: Path, console: Console | None = None) -> dict[str, Any] | None:
@@ -377,8 +390,11 @@ def _make_handler(
                     return
             # 3. Rename, then write. Save state on the way out so names never go stale.
             results: list[GenerateResult] = []
+            renamed_in: list[str] = []
             try:
-                _apply_renames(package_payloads, self._out, old_state)
+                renamed_in = _apply_renames(package_payloads, self._out, old_state)
+                for path in renamed_in:
+                    self._con.print(f"  [yellow]updated the package name in:[/yellow] {path}")
                 for package_payload in package_payloads:
                     package = package_by_id[str(package_payload.get("id", ""))]
                     if (self._out / package.pkg_name / _GENERATED_MARKER).is_file():
@@ -410,6 +426,7 @@ def _make_handler(
                     "kept_modified": [
                         f"{r.package}/{path}" for r in results for path in r.kept_modified
                     ],
+                    "renamed_in": renamed_in,
                 },
             )
 

@@ -508,15 +508,18 @@ def read_manifest(package_dir: Path) -> dict[str, str] | None:
     return {str(k): str(v) for k, v in data["files"].items()}
 
 
-def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> None:
+def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> list[str]:
     """Rename the module folder and resource marker inside a moved generated package.
 
     The manifest is rewritten to the new paths, so files the user edited keep counting as
     edited (and are never overwritten) under the new module name instead of being stranded
-    in a folder that ``setup.py`` no longer installs.
+    in a folder that ``setup.py`` no longer installs. Unedited files are regenerated anyway;
+    in generated files the user edited, the old package name is replaced as a whole word, so
+    ``setup.py``, ``package.xml`` and launch files keep pointing at the package. Files the
+    user added are never touched. Returns the files that were rewritten.
     """
     if old_name == new_name:
-        return
+        return []
     renames = [(old_name, new_name), (f"resource/{old_name}", f"resource/{new_name}")]
     moved: list[tuple[str, str]] = []
     for old, new in renames:
@@ -524,11 +527,9 @@ def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> 
         if source.exists() and not target.exists():
             source.rename(target)
             moved.append((old, new))
-    if not moved:
-        return
     manifest = read_manifest(package_dir)
-    if not manifest:
-        return
+    if manifest is None:
+        return []
 
     def moved_key(key: str) -> str:
         for old, new in moved:
@@ -536,15 +537,50 @@ def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> 
                 return new + key[len(old) :]
         return key
 
+    manifest = {moved_key(key): digest for key, digest in manifest.items()}
+    rewritten = _replace_package_name(package_dir, manifest, old_name, new_name)
     marker = {
         "generated_by": "ros2inspector",
         "format": _MARKER_FORMAT,
-        "files": {moved_key(key): digest for key, digest in manifest.items()},
+        "files": manifest,
     }
     _write_atomic(
         package_dir / _GENERATED_MARKER,
         (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8"),
     )
+    return rewritten
+
+
+def rename_blockers(package_dir: Path, old_name: str, new_name: str) -> list[str]:
+    """Paths inside a package that would stop its module folder from being renamed."""
+    blockers = []
+    for old, new in ((old_name, new_name), (f"resource/{old_name}", f"resource/{new_name}")):
+        if (package_dir / old).exists() and (package_dir / new).exists():
+            blockers.append(new)
+    return blockers
+
+
+def _replace_package_name(
+    package_dir: Path, manifest: dict[str, str], old_name: str, new_name: str
+) -> list[str]:
+    word = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(old_name)}(?![A-Za-z0-9_])")
+    rewritten: list[str] = []
+    for relative, digest in sorted(manifest.items()):
+        path = package_dir / relative
+        if path.is_symlink() or not path.is_file():
+            continue
+        data = path.read_bytes()
+        if _digest(data) == digest:
+            continue  # unedited: write_package regenerates it under the new name
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        updated = word.sub(new_name, text)
+        if updated != text:
+            _write_atomic(path, updated.encode("utf-8"))
+            rewritten.append(relative)
+    return rewritten
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
