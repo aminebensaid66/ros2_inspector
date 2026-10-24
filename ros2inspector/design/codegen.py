@@ -27,6 +27,7 @@ _NODE_TMPL = """\
 {% endfor %}
 
 class {{ cls }}(Node):
+
     def __init__(self) -> None:
         super().__init__({{ name_literal }})
 {% for p in pubs %}        self.pub_{{ p.var }} = self.create_publisher(
@@ -64,7 +65,10 @@ class {{ cls }}(Node):
         self.pub_{{ p.var }}.publish(msg)
 {% endfor %}
 {% endif %}{% for s in subs %}
-    def cb_{{ s.var }}(self, msg: {{ s.cls }}) -> None:  # noqa: ARG002
+    def cb_{{ s.var }}(
+        self,
+        msg: {{ s.cls }},  # noqa: ARG002
+    ) -> None:
         # TODO: process message
         self.get_logger().info({{ s.received_literal }})
 {% endfor %}{% for s in services %}
@@ -76,7 +80,10 @@ class {{ cls }}(Node):
         # TODO: populate response
         return response
 {% endfor %}{% for a in action_servers %}
-    def execute_{{ a.var }}(self, goal_handle: object) -> {{ a.cls }}.Result:
+    def execute_{{ a.var }}(
+        self,
+        goal_handle: object,
+    ) -> {{ a.cls }}.Result:
         # TODO: inspect the goal and publish feedback
         succeed = getattr(goal_handle, 'succeed', None)
         if callable(succeed):
@@ -409,6 +416,20 @@ def render_node(node: NodeSpec) -> str:
     return re.sub(r"\n{3,}(    def )", r"\n\n\1", source)
 
 
+# ament_flake8's limit. Topic, type and node names can be any length, so a line that is
+# still too long after wrapping is marked instead of failing the package's colcon test.
+_MAX_LINE = 99
+
+
+def _fit_line_length(source: str) -> str:
+    lines = []
+    for line in source.split("\n"):
+        if len(line) > _MAX_LINE:
+            line = f"{line},E501" if "  # noqa: " in line else f"{line}  # noqa: E501"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 _README_GROUPS = (
     ("publishers", "Publishes"),
     ("subscribers", "Subscribes to"),
@@ -464,6 +485,7 @@ def render_package(package: PackageSpec) -> dict[str, str]:
     )
     for relative, source in files.items():
         if relative.endswith(".py"):
+            files[relative] = source = _fit_line_length(source)
             compile(source, relative, "exec")
     return files
 

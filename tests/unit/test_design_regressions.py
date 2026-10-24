@@ -714,3 +714,49 @@ def test_every_endpoint_combination_has_flake8_blank_lines(mask: int) -> None:
     assert "\n\nclass " not in source.replace("\n\n\nclass ", "")  # E302 before class
     assert "\n\ndef main" not in source.replace("\n\n\ndef main", "")  # E302 before main
     compile(source, "combo.py", "exec")
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "/robot/front_left/wheel/joint_states_filtered",  # the name from #9
+        "/" + "/".join(["very_long_segment_name"] * 6),  # 138 characters
+    ],
+)
+def test_long_names_stay_within_ament_flake8_line_length(tmp_path: Path, topic: str) -> None:
+    """Every generated line fits in 99 characters or is explicitly exempted (E501)."""
+
+    def ep(eid: str, msg_type: str) -> dict[str, str]:
+        return {"id": eid, "name": topic, "msgType": msg_type}
+
+    label = "front_left_wheel_joint_state_filter_node_with_a_long_name"
+    generate_package(
+        {
+            "id": "p",
+            "pkg_name": "a_rather_long_package_name_for_the_wheel_controllers",
+            "nodes": [
+                {
+                    "id": "a",
+                    "label": label,
+                    "publishers": [ep("1", "sensor_msgs/JointState")],
+                    "subscribers": [ep("2", "sensor_msgs/JointState")],
+                    "services": [ep("3", "std_srvs/Trigger")],
+                    "clients": [ep("4", "std_srvs/Trigger")],
+                    "action_servers": [ep("5", "example_interfaces/Fibonacci")],
+                    "action_clients": [ep("6", "example_interfaces/Fibonacci")],
+                }
+            ],
+        },
+        tmp_path,
+    )
+    sources = [p for p in tmp_path.rglob("*.py") if p.parent.name != "test"]
+    assert len(sources) == 4  # node, __init__, setup.py, launch.py
+    for path in sources:
+        source = path.read_text()
+        compile(source, path.name, "exec")
+        for line in source.splitlines():
+            assert len(line) <= 99 or line.endswith(("# noqa: E501", ",E501")), (path.name, line)
+    node = next(p for p in sources if p.stem == label).read_text()
+    assert "(Node):\n\n    def __init__" in node  # flake8-class-newline (CNL100)
+    if len(topic) < 50:
+        assert "E501" not in node  # realistic names need no exemption at all
