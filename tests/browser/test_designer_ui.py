@@ -348,3 +348,136 @@ def test_new_nodes_never_overlap_existing_cards(page: Page, designer: dict[str, 
             overlap_x = a["x"] < b["x"] + b["width"] and b["x"] < a["x"] + a["width"]
             overlap_y = a["y"] < b["y"] + b["height"] and b["y"] < a["y"] + a["height"]
             assert not (overlap_x and overlap_y), (a, b)
+
+
+# ── canvas: layering, geometry, panning (#6 #7 #8 #9 #10 #12 #13 #14) ───────
+
+
+def _screen_box(page: Page, selector: str) -> dict[str, float]:
+    box = page.locator(selector).bounding_box()
+    assert box is not None, selector
+    return box
+
+
+def _on_canvas(page: Page, selector: str) -> bool:
+    box, cv = _screen_box(page, selector), _screen_box(page, "#cv")
+    return (
+        box["x"] >= cv["x"]
+        and box["y"] >= cv["y"]
+        and box["x"] + box["width"] <= cv["x"] + cv["width"]
+        and box["y"] + box["height"] <= cv["y"] + cv["height"]
+    )
+
+
+def test_handles_sit_on_their_rows_above_the_cards(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    for side, row in (("pub", ".tr.pub"), ("sub", ".tr.sub")):
+        handle = _screen_box(page, f"#hg circle[data-side='{side}'] >> nth=0")
+        nid = page.locator(f"#hg circle[data-side='{side}']").first.get_attribute("data-nid")
+        row_box = _screen_box(page, f"#nd{nid} {row} >> nth=0")
+        assert (
+            abs((handle["y"] + handle["height"] / 2) - (row_box["y"] + row_box["height"] / 2)) <= 1
+        )
+        # Both halves of the handle (inside and outside the card edge) are hittable.
+        cx, cy = handle["x"] + handle["width"] / 2, handle["y"] + handle["height"] / 2
+        for dx in (-3, 0, 3):
+            tag = page.evaluate("([x,y])=>document.elementFromPoint(x,y).tagName", [cx + dx, cy])
+            assert tag == "circle"
+
+
+def test_wire_ends_on_the_handle_rim_with_a_matching_arrowhead(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    wire = page.locator("#eg path").first
+    assert wire.get_attribute("marker-end") == "url(#arr)"
+    end_x = float(wire.get_attribute("d").rsplit(" ", 1)[1].split(",")[0])  # type: ignore[union-attr]
+    handle_x = float(page.locator("#hg circle[data-side='sub']").first.get_attribute("cx") or 0)
+    assert end_x == handle_x - 6
+    # A wire that no longer matches turns red, arrowhead included.
+    page.locator(".node").nth(1).click()
+    _set_field(page, "#ssubs .tc input.sinp", "/renamed")
+    expect(page.locator("#eg path[stroke='#f87171']")).to_have_attribute(
+        "marker-end", "url(#arr-bad)"
+    )
+    # Every wire also has a faint copy above the cards, so it can be traced behind them.
+    expect(page.locator("#gg path")).to_have_count(page.locator("#eg path").count())
+
+
+def test_long_names_never_hide_the_publishers_column(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    page.locator(".node").nth(1).click()
+    _set_field(page, "#ssubs .tc input.sinp", "/robot/front_left/wheel/joint_states_filtered")
+    card = _screen_box(page, ".node >> nth=1")
+    publisher = _screen_box(page, ".node >> nth=1 >> .tr.pub")
+    assert card["x"] < publisher["x"] and publisher["x"] + publisher["width"] <= card["x"] + 280
+    expect(page.locator(".node >> nth=1 >> .tr.sub .tn")).to_have_attribute(
+        "title", "/robot/front_left/wheel/joint_states_filtered"
+    )
+
+
+def test_new_nodes_appear_on_screen_and_the_canvas_pans(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    for _ in range(14):
+        page.click("#an")
+        assert _on_canvas(page, f"#nd{page.evaluate('()=>S.sel')}")
+    page.keyboard.press("Escape")
+    first = ".node >> nth=0"
+    assert not _on_canvas(page, first)
+    page.click("#fit")
+    assert _on_canvas(page, first)
+    # Dragging the background pans and does not close/open anything.
+    vx, vy = page.evaluate("()=>[VIEW.x, VIEW.y]")
+    cv = _screen_box(page, "#cv")
+    page.mouse.move(cv["x"] + cv["width"] - 30, cv["y"] + cv["height"] - 30)
+    page.mouse.down()
+    page.mouse.move(cv["x"] + cv["width"] - 230, cv["y"] + cv["height"] - 130, steps=6)
+    page.mouse.up()
+    assert page.evaluate("()=>[VIEW.x, VIEW.y]") == [vx - 200, vy - 100]
+    expect(page.locator("#sb")).to_have_class("h")
+    page.mouse.wheel(0, 300)
+    assert page.evaluate("()=>VIEW.y") == vy - 100 - 300
+
+
+def test_wiring_still_works_after_the_canvas_scrolled(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    page.evaluate(
+        "()=>{const p=pkg();p.edges=[];p.nodes[0].x=960;p.nodes[1].x=1400;p.nodes[1].y=300;"
+        "renderAll();}"
+    )
+    # Keyboard focus on a card that sticks out makes the browser scroll the canvas.
+    page.locator(".node >> nth=1 >> .ndel").focus()
+    page.wait_for_timeout(50)
+    assert page.evaluate("()=>[CV.scrollLeft, CV.scrollTop]") == [0, 0]
+    assert page.evaluate("()=>VIEW.x") < 0
+    _drag(page, "#hg circle[data-side='pub'] >> nth=0", "#hg circle[data-side='sub'] >> nth=0")
+    expect(page.locator("#eg path")).to_have_count(1)
+
+
+def test_toolbar_fits_and_hint_is_readable_at_1024(browser: Any, designer: dict[str, Any]) -> None:
+    context = browser.new_context(viewport={"width": 1024, "height": 700})
+    page = context.new_page()
+    _open(page, designer)
+    toolbar = "()=>document.getElementById('tb').scrollWidth"
+    assert page.evaluate(toolbar) <= 1024
+    contrast = page.evaluate(
+        """()=>{
+          const lum=c=>{
+            const v=c.match(/\\d+/g).slice(0,3).map(x=>x/255)
+              .map(x=>x<=.03928?x/12.92:((x+.055)/1.055)**2.4);
+            return .2126*v[0]+.7152*v[1]+.0722*v[2]};
+          const fg=getComputedStyle(document.querySelector('.tb-hint')).color;
+          const bg=getComputedStyle(document.getElementById('tb')).backgroundColor;
+          const [a,b]=[lum(fg),lum(bg)].sort((x,y)=>y-x);return (a+.05)/(b+.05)}"""
+    )
+    assert contrast >= 4.5
+    context.close()
+
+
+def test_equivalent_type_spellings_can_be_wired(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    page.locator(".node").nth(1).click()
+    _set_field(page, "#ssubs .tc input.ssel", "sensor_msgs/msg/Image")
+    expect(page.locator("#eg path[stroke='#f87171']")).to_have_count(0)

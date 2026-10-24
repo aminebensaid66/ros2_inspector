@@ -44,7 +44,8 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   font-weight:600;cursor:pointer;white-space:nowrap;transition:opacity .15s}
 .btn-p:hover{opacity:.88}
 .btn-p:disabled{opacity:.4;cursor:not-allowed}
-.tb-hint{color:#1e2d40;font-size:11px;margin-left:auto;font-style:italic;white-space:nowrap}
+.tb-hint{color:#7c8aa0;font-size:11px;margin-left:auto;font-style:italic;white-space:nowrap;
+  min-width:0;overflow:hidden;text-overflow:ellipsis}
 
 /* package tabs bar */
 #pt{height:40px;background:#0b0b19;border-bottom:1px solid rgba(139,92,246,.15);
@@ -61,7 +62,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   cursor:pointer;white-space:nowrap;transition:background .15s,color .15s}
 .ptab.active{background:#12121e;border-color:rgba(139,92,246,.4);color:#e2e8f0}
 .ptab:hover:not(.active){background:rgba(255,255,255,.06);color:#94a3b8}
-.ptab-del{background:none;border:none;color:#2d3748;cursor:pointer;
+.ptab-del{background:none;border:none;color:#7c8aa0;cursor:pointer;
   font-size:14px;padding:1px 3px;line-height:1;border-radius:3px;
   transition:color .15s;flex-shrink:0}
 .ptab-del:hover{color:#f87171}
@@ -78,12 +79,18 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 #cv{flex:1;position:relative;overflow:hidden;
   background-color:#0a0a18;
   background-image:radial-gradient(rgba(139,92,246,.12) 1px,transparent 1px);
-  background-size:28px 28px;cursor:default}
-#svo{position:absolute;top:0;left:0;width:100%;height:100%;
-  pointer-events:none;overflow:visible}
+  background-size:28px 28px;cursor:grab}
+#cv.panning{cursor:grabbing}
+/* Everything on the canvas lives in #world, which is translated to pan the view.
+   Paint order: wires (#svo) under the cards; above them (#svh) a faint dashed copy of each
+   wire, so one that passes behind a card stays traceable, then handles and drag preview. */
+#world{position:absolute;left:0;top:0;width:0;height:0}
+#svo,#svh{position:absolute;overflow:visible;pointer-events:none}
+#svo{z-index:0}
+#svh{z-index:2}
 
 /* nodes */
-.node{position:absolute;width:280px;background:#12121e;
+.node{position:absolute;z-index:1;width:280px;cursor:default;background:#12121e;
   border:1px solid rgba(139,92,246,.35);border-radius:12px;overflow:hidden;
   box-shadow:0 4px 24px rgba(0,0,0,.4);transition:border-color .2s,box-shadow .2s}
 .node.sel{border-color:#8b5cf6;
@@ -99,21 +106,22 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   font-size:16px;padding:2px 4px;line-height:1;border-radius:4px;flex-shrink:0;
   transition:color .15s}
 .ndel:hover{color:#f87171}
-.nch{display:grid;grid-template-columns:1fr 1fr;
+.nch{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
   border-bottom:1px solid rgba(255,255,255,.04);padding:3px 0}
-.clbl{font-size:9px;color:#2d3748;text-transform:uppercase;letter-spacing:.08em;padding:0 10px}
+.clbl{font-size:9px;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;padding:0 10px}
 .clbl.r{text-align:right}
-.ncols{display:grid;grid-template-columns:1fr 1fr}
+.ncols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
 .sc{border-right:1px solid rgba(255,255,255,.04)}
 .tr{height:40px;display:flex;align-items:center;padding:0 10px}
 .tr.sub{padding-left:18px}
 .tr.pub{padding-right:18px;flex-direction:row-reverse}
-.ti{display:flex;flex-direction:column;gap:1px}
+.ti{display:flex;flex-direction:column;gap:1px;min-width:0;max-width:100%}
 .tn{font-size:12px;color:#e2e8f0;font-family:monospace;line-height:1.2}
-.tt{font-size:10px;color:#475569;line-height:1.2}
+.tt{font-size:10px;color:#7c8aa0;line-height:1.2}
+.tn,.tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tr.pub .ti{text-align:right}
 .ec{height:40px;display:flex;align-items:center;padding:0 10px;
-  color:#1a2535;font-size:11px;font-style:italic}
+  color:#7c8aa0;font-size:11px;font-style:italic}
 .ec.r{justify-content:flex-end}
 
 /* sidebar */
@@ -149,7 +157,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 
 /* empty state */
 #es{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-  text-align:center;color:#1a2535;pointer-events:none}
+  text-align:center;color:#7c8aa0;pointer-events:none}
 #es.h{display:none}
 #es .big{font-size:48px;margin-bottom:10px}
 #es p{font-size:13px}
@@ -177,23 +185,32 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   <button class="btn" id="an">+ Add Node</button>
   <button class="btn-save" id="sv">💾 Save</button>
   <button class="btn-p" id="gb" disabled>↓ Generate All</button>
-  <span class="tb-hint">Click node to configure · Drag cyan handles to connect · Ctrl+S to save</span>
+  <button class="btn" id="fit" title="Pan so that every node is in view">⊡ Show all</button>
+  <span class="tb-hint">Click node to configure · Drag cyan handles to connect · Drag the background or scroll to pan · Ctrl+S to save</span>
 </div>
 
 <div id="pt"></div>
 
 <div id="main">
   <div id="cv">
-    <svg id="svo" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
-          <path d="M0,0 L0,6 L8,3 z" fill="#22d3ee"/>
-        </marker>
-      </defs>
-      <g id="eg"></g>
-      <g id="tg"></g>
-      <g id="hg"></g>
-    </svg>
+    <div id="world">
+      <svg id="svo" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#22d3ee"/>
+          </marker>
+          <marker id="arr-bad" markerWidth="8" markerHeight="8" refX="8" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#f87171"/>
+          </marker>
+        </defs>
+        <g id="eg"></g>
+      </svg>
+      <svg id="svh" xmlns="http://www.w3.org/2000/svg">
+        <g id="gg"></g>
+        <g id="tg"></g>
+        <g id="hg"></g>
+      </svg>
+    </div>
     <div id="es">
       <div class="big">⬡</div>
       <p>Click <strong style="color:#a78bfa">+ Add Node</strong> to start designing</p>
@@ -226,8 +243,11 @@ function pkg(){ return S.packages.find(p=>p.id===S.activePkg)||S.packages[0]||nu
 // ── dom ────────────────────────────────────────────────────────────────────
 const CV  = document.getElementById('cv');
 const SVO = document.getElementById('svo');
+const SVH = document.getElementById('svh');
+const WORLD = document.getElementById('world');
 const EG  = document.getElementById('eg');
 const TG  = document.getElementById('tg');
+const GG  = document.getElementById('gg');
 const HG  = document.getElementById('hg');
 const SB  = document.getElementById('sb');
 const ES  = document.getElementById('es');
@@ -236,13 +256,77 @@ const PT  = document.getElementById('pt');
 const PN  = document.getElementById('pn');
 const TOAST = document.getElementById('toast');
 
+// ── view (pan) ─────────────────────────────────────────────────────────────
+// Node x/y are world coordinates; the screen shows the world shifted by VIEW.
+const VIEW={x:0,y:0};
+// The SVG layers start this far up/left of the world origin, so wires that loop
+// left of x=0 or above y=0 are still drawn and clickable.
+const SVG_PAD=4000;
+
+function applyView(){
+  WORLD.style.transform=`translate(${VIEW.x}px,${VIEW.y}px)`;
+  CV.style.backgroundPosition=`${VIEW.x}px ${VIEW.y}px`;
+}
+
+function sizeLayers(){
+  const p=pkg();
+  let w=0,h=0;
+  for(const n of (p?p.nodes:[])){ w=Math.max(w,n.x+NW); h=Math.max(h,n.y+cardHeight(n)); }
+  for(const svg of [SVO,SVH]){
+    svg.style.left=svg.style.top=(-SVG_PAD)+'px';
+    svg.setAttribute('width',w+2*SVG_PAD); svg.setAttribute('height',h+2*SVG_PAD);
+  }
+  for(const g of [EG,GG,TG,HG]) g.setAttribute('transform',`translate(${SVG_PAD},${SVG_PAD})`);
+}
+
+// Pointer position in world coordinates.
+function toWorld(e){
+  const r=CV.getBoundingClientRect();
+  return {x:e.clientX-r.left-VIEW.x, y:e.clientY-r.top-VIEW.y};
+}
+
+// Width of the canvas once the sidebar has finished opening or closing.
+function canvasWidth(){
+  return document.getElementById('main').clientWidth-(S.sel?SB_WIDTH:0);
+}
+const SB_WIDTH=300;
+
+// Pan just enough that a node card is fully on screen.
+function ensureVisible(nd){
+  const el=document.getElementById('nd'+nd.id);
+  const w=canvasWidth(), h=CV.clientHeight;
+  const cw=el?el.offsetWidth:NW, ch=el?el.offsetHeight:cardHeight(nd);
+  const m=20;
+  if(nd.x+VIEW.x+cw>w-m) VIEW.x=w-m-cw-nd.x;
+  if(nd.x+VIEW.x<m) VIEW.x=m-nd.x;
+  if(nd.y+VIEW.y+ch>h-m) VIEW.y=h-m-ch-nd.y;
+  if(nd.y+VIEW.y<m) VIEW.y=m-nd.y;
+  applyView();
+}
+
+function showAll(){
+  const p=pkg(); if(!p||!p.nodes.length){ VIEW.x=VIEW.y=0; applyView(); return; }
+  VIEW.x=40-Math.min(...p.nodes.map(n=>n.x));
+  VIEW.y=40-Math.min(...p.nodes.map(n=>n.y));
+  applyView();
+}
+
 // ── geometry ───────────────────────────────────────────────────────────────
+// Handle position of row i, measured from the rendered card so it always lines up
+// with its row (fonts, long names and zoom change the real heights).
 function hp(node,side,i){
+  const el=document.getElementById('nd'+node.id);
+  const row=el&&el.querySelectorAll(side==='pub'?'.tr.pub':'.tr.sub')[i];
+  if(row) return {
+    x: side==='pub' ? node.x+el.offsetWidth : node.x,
+    y: node.y+el.clientTop+row.offsetTop+row.offsetHeight/2,
+  };
   return {
     x: side==='pub' ? node.x+NW : node.x,
     y: node.y + NH + CH + i*RH + RH/2,
   };
 }
+const HR=6;  // handle radius
 
 function bez(sx,sy,tx,ty){
   const cp=Math.max(80,Math.abs(tx-sx)*.5);
@@ -301,9 +385,10 @@ function renderTabs(){
 
 // ── render ─────────────────────────────────────────────────────────────────
 function renderAll(){
+  renderNodes();
+  sizeLayers();
   renderEdges();
   renderHandles();
-  renderNodes();
   const p=pkg();
   ES.classList.toggle('h', !!(p&&p.nodes.length>0));
   GB.disabled = !S.packages.some(p=>p.nodes.length>0);
@@ -311,7 +396,7 @@ function renderAll(){
 }
 
 function renderEdges(){
-  EG.innerHTML='';
+  EG.innerHTML=''; GG.innerHTML='';
   const p=pkg(); if(!p) return;
   for(const e of p.edges){
     const fn=p.nodes.find(n=>n.id===e.fn);
@@ -323,12 +408,13 @@ function renderEdges(){
     const sp=hp(fn,'pub',fi), tp2=hp(tn,'sub',ti);
     const ends=edgeEnds(p,e);
     const path=makeSVG('path');
-    path.setAttribute('d',bez(sp.x,sp.y,tp2.x,tp2.y));
+    // End on the handle's rim so the arrowhead is never covered by the handle.
+    path.setAttribute('d',bez(sp.x+HR,sp.y,tp2.x-HR,tp2.y));
     path.setAttribute('stroke',ends&&ends.ok?'#22d3ee':'#f87171');
     if(ends&&!ends.ok) path.setAttribute('stroke-dasharray','6 4');
     path.setAttribute('stroke-width','2');
     path.setAttribute('fill','none');
-    path.setAttribute('marker-end','url(#arr)');
+    path.setAttribute('marker-end',ends&&!ends.ok?'url(#arr-bad)':'url(#arr)');
     path.setAttribute('opacity','.75');
     path.style.pointerEvents='stroke';
     path.style.cursor='pointer';
@@ -339,6 +425,14 @@ function renderEdges(){
     path.appendChild(tip);
     path.addEventListener('click',()=>{ p.edges=p.edges.filter(x=>x.id!==e.id); renderAll(); });
     EG.appendChild(path);
+    const ghost=makeSVG('path');
+    ghost.setAttribute('d',path.getAttribute('d'));
+    ghost.setAttribute('stroke',path.getAttribute('stroke'));
+    ghost.setAttribute('stroke-width','1.5');
+    ghost.setAttribute('stroke-dasharray','3 5');
+    ghost.setAttribute('fill','none');
+    ghost.setAttribute('opacity','.4');
+    GG.appendChild(ghost);
   }
 }
 
@@ -366,7 +460,7 @@ function renderHandles(){
 function makeHandle(x,y,fill,stroke){
   const c=makeSVG('circle');
   c.setAttribute('cx',x); c.setAttribute('cy',y);
-  c.setAttribute('r','6');
+  c.setAttribute('r',String(HR));
   c.setAttribute('fill',fill);
   c.setAttribute('stroke',stroke);
   c.setAttribute('stroke-width','1.5');
@@ -381,14 +475,14 @@ function makeSVG(tag){
 function renderNodes(){
   const p=pkg();
   const validIds=new Set((p?p.nodes:[]).map(n=>'nd'+n.id));
-  CV.querySelectorAll('.node').forEach(el=>{ if(!validIds.has(el.id)) el.remove(); });
+  WORLD.querySelectorAll('.node').forEach(el=>{ if(!validIds.has(el.id)) el.remove(); });
   if(!p) return;
   for(const node of p.nodes){
     let el=document.getElementById('nd'+node.id);
     if(!el){
       el=document.createElement('div');
       el.className='node'; el.id='nd'+node.id;
-      CV.appendChild(el);
+      WORLD.appendChild(el);
     }
     el.style.left=node.x+'px'; el.style.top=node.y+'px';
     el.classList.toggle('sel',node.id===S.sel);
@@ -416,13 +510,13 @@ CV.addEventListener('mouseup',e=>{
 function nodeHTML(nd){
   const subs=nd.subscribers.map(s=>`
     <div class="tr sub"><div class="ti">
-      <div class="tn">${esc(s.name)}</div>
-      <div class="tt">${esc(s.msgType)}</div>
+      <div class="tn" title="${esc(s.name)}">${esc(s.name)}</div>
+      <div class="tt" title="${esc(s.msgType)}">${esc(s.msgType)}</div>
     </div></div>`).join('')||'<div class="ec">—</div>';
   const pubs=nd.publishers.map(p2=>`
     <div class="tr pub"><div class="ti">
-      <div class="tn">${esc(p2.name)}</div>
-      <div class="tt">${esc(p2.msgType)}</div>
+      <div class="tn" title="${esc(p2.name)}">${esc(p2.name)}</div>
+      <div class="tt" title="${esc(p2.msgType)}">${esc(p2.msgType)}</div>
     </div></div>`).join('')||'<div class="ec r">—</div>';
   const serviceCount=(nd.services||[]).length;
   const clientCount=(nd.clients||[]).length;
@@ -431,7 +525,7 @@ function nodeHTML(nd){
   return `
     <div class="nh">
       <span class="ndot"></span>
-      <span class="nlbl">${esc(nd.label)}</span>
+      <span class="nlbl" title="${esc(nd.label)}">${esc(nd.label)}</span>
       <button class="ndel" title="Delete node">×</button>
     </div>
     <div class="nch">
@@ -442,7 +536,7 @@ function nodeHTML(nd){
       <div class="sc">${subs}</div>
       <div>${pubs}</div>
     </div>
-    <div style="padding:7px 10px;border-top:1px solid #1e293b;font-size:10px;color:#64748b">
+    <div style="padding:7px 10px;border-top:1px solid #1e293b;font-size:10px;color:#7c8aa0">
       Services ${serviceCount}/${clientCount} provider/client · Actions ${actionServerCount}/${actionClientCount} server/client
     </div>`;
 }
@@ -506,7 +600,7 @@ function renderSB(){
 
 function tHTML(topics,side){
   const col=side==='pub'?'#22d3ee':'#a78bfa';
-  if(!topics.length) return '<p style="color:#1e293b;font-size:12px;font-style:italic">None yet</p>';
+  if(!topics.length) return '<p style="color:#7c8aa0;font-size:12px;font-style:italic">None yet</p>';
   return topics.map(t=>`
     <div class="tc">
       <div class="tcr">
@@ -536,7 +630,7 @@ function endpointSection(kind,label,endpoints,typeList,color){
 }
 
 function endpointHTML(kind,endpoints,typeList,color){
-  if(!endpoints.length) return '<p style="color:#1e293b;font-size:12px;font-style:italic">None yet</p>';
+  if(!endpoints.length) return '<p style="color:#7c8aa0;font-size:12px;font-style:italic">None yet</p>';
   return endpoints.map(t=>`
     <div class="tc">
       <div class="tcr">
@@ -570,8 +664,9 @@ function delPkg(id){
     S.activePkg=S.packages[0].id;
     S.sel=null;
     SB.classList.add('h');
-    CV.querySelectorAll('.node').forEach(el=>el.remove());
+    WORLD.querySelectorAll('.node').forEach(el=>el.remove());
     PN.value=S.packages[0].pkg_name;
+    VIEW.x=VIEW.y=0; applyView();
   }
   renderAll();
 }
@@ -581,14 +676,19 @@ function switchPkg(id){
   S.activePkg=id;
   S.sel=null;
   SB.classList.add('h');
-  CV.querySelectorAll('.node').forEach(el=>el.remove());
+  WORLD.querySelectorAll('.node').forEach(el=>el.remove());
+  VIEW.x=VIEW.y=0; applyView();
   const p=pkg();
   if(p) PN.value=p.pkg_name;
   renderAll();
 }
 
 // ── node actions ──────────────────────────────────────────────────────────
-function selNode(id){ S.sel=id; renderAll(); renderSB(); }
+function selNode(id){
+  S.sel=id; renderAll(); renderSB();
+  const p=pkg(), nd=p&&p.nodes.find(n=>n.id===id);
+  if(nd) ensureVisible(nd);
+}
 function closeSB(){ S.sel=null; SB.classList.add('h'); renderAll(); }
 
 function delNode(id){
@@ -604,13 +704,16 @@ function cardHeight(n){
   return NH+CH+Math.max(1,n.publishers.length,n.subscribers.length)*RH+36;
 }
 
+// First free grid cell in the part of the world that is currently on screen.
 function freeSpot(p){
+  const cols=Math.max(1,Math.floor((canvasWidth()-60)/360));
+  const ox=Math.max(0,Math.round(-VIEW.x)), oy=Math.max(0,Math.round(-VIEW.y));
   for(let i=0;i<300;i++){
-    const x=60+(i%3)*360, y=60+Math.floor(i/3)*240;
+    const x=ox+60+(i%cols)*360, y=oy+60+Math.floor(i/cols)*240;
     const clash=p.nodes.some(n=>x<n.x+NW+40&&n.x<x+NW+40&&y<n.y+cardHeight(n)+30&&n.y<y+NH+CH+RH+66);
     if(!clash) return {x,y};
   }
-  return {x:60,y:60};
+  return {x:ox+60,y:oy+60};
 }
 
 function addNode(){
@@ -696,9 +799,9 @@ function onNDown(e,nid){
   dNode=nid;
   const p=pkg();
   const nd=p&&p.nodes.find(n=>n.id===nid); if(!nd) return;
-  const cr=CV.getBoundingClientRect();
-  dOX=e.clientX-cr.left-nd.x;
-  dOY=e.clientY-cr.top-nd.y;
+  const w=toWorld(e);
+  dOX=w.x-nd.x;
+  dOY=w.y-nd.y;
 }
 
 // ── edge drag ─────────────────────────────────────────────────────────────
@@ -717,19 +820,23 @@ function onHDown(e){
 
 // ── global mouse handlers ─────────────────────────────────────────────────
 document.addEventListener('mousemove',e=>{
+  if(pan){
+    const dx=e.clientX-pan.sx, dy=e.clientY-pan.sy;
+    if(Math.abs(dx)+Math.abs(dy)>3) pan.moved=true;
+    VIEW.x=pan.vx+dx; VIEW.y=pan.vy+dy; applyView();
+  }
   if(dNode){
-    const cr=CV.getBoundingClientRect();
+    const w=toWorld(e);
     const p=pkg();
     const nd=p&&p.nodes.find(n=>n.id===dNode);
     if(nd){
-      nd.x=Math.max(0,Math.round(e.clientX-cr.left-dOX));
-      nd.y=Math.max(0,Math.round(e.clientY-cr.top-dOY));
+      nd.x=Math.max(0,Math.round(w.x-dOX));
+      nd.y=Math.max(0,Math.round(w.y-dOY));
       renderAll();
     }
   }
   if(eDrag){
-    const cr=CV.getBoundingClientRect();
-    const tx=e.clientX-cr.left, ty=e.clientY-cr.top;
+    const {x:tx,y:ty}=toWorld(e);
     TG.innerHTML=`<path d="${bez(eDrag.sx,eDrag.sy,tx,ty)}"
       stroke="#22d3ee" stroke-width="1.5" fill="none"
       stroke-dasharray="6 4" opacity=".6"/>`;
@@ -738,9 +845,9 @@ document.addEventListener('mousemove',e=>{
 
 document.addEventListener('mouseup',e=>{
   dNode=null;
+  if(pan){ panMoved=pan.moved; pan=null; CV.classList.remove('panning'); }
   if(eDrag){
-    const cr=CV.getBoundingClientRect();
-    const mx=e.clientX-cr.left, my=e.clientY-cr.top;
+    const {x:mx,y:my}=toWorld(e);
     const p=pkg();
     outer: for(const nd of (p?p.nodes:[])){
       if(nd.id===eDrag.fn) continue;
@@ -770,8 +877,37 @@ document.addEventListener('mouseup',e=>{
   }
 });
 
+// ── pan ───────────────────────────────────────────────────────────────────
+let pan=null, panMoved=false;
+function isBackground(t){ return t===CV||t===WORLD||t===SVO||t===SVH; }
+
+CV.addEventListener('mousedown',e=>{
+  if(e.button!==0||!isBackground(e.target)) return;
+  e.preventDefault();
+  pan={sx:e.clientX, sy:e.clientY, vx:VIEW.x, vy:VIEW.y, moved:false};
+  panMoved=false;
+  CV.classList.add('panning');
+});
+
+CV.addEventListener('wheel',e=>{
+  e.preventDefault();
+  VIEW.x-=e.shiftKey?e.deltaY:e.deltaX;
+  VIEW.y-=e.shiftKey?0:e.deltaY;
+  applyView();
+},{passive:false});
+
+// The browser may still scroll the canvas (e.g. when keyboard focus moves to a card that
+// sticks out); turn that into a pan so pointer maths never sees a scroll offset.
+CV.addEventListener('scroll',()=>{
+  if(!CV.scrollLeft&&!CV.scrollTop) return;
+  VIEW.x-=CV.scrollLeft; VIEW.y-=CV.scrollTop;
+  CV.scrollLeft=0; CV.scrollTop=0;
+  applyView();
+});
+
 CV.addEventListener('click',e=>{
-  if(e.target===CV||e.target===SVO) closeSB();
+  if(isBackground(e.target)&&!panMoved) closeSB();
+  panMoved=false;
 });
 
 // ── pkg name input ────────────────────────────────────────────────────────
@@ -883,6 +1019,7 @@ GB.addEventListener('click',async()=>{
 });
 
 document.getElementById('an').addEventListener('click', addNode);
+document.getElementById('fit').addEventListener('click', showAll);
 document.getElementById('sv').addEventListener('click', saveState);
 document.addEventListener('keydown', e=>{
   if((e.ctrlKey||e.metaKey)&&e.key==='s'){ e.preventDefault(); saveState(); }
