@@ -640,3 +640,51 @@ def test_generated_sources_follow_ament_flake8_style(tmp_path: Path) -> None:
             source = path.read_text()
             assert '"' not in source, f"double quotes in {path.name}"
             assert all(len(line) <= 99 for line in source.splitlines()), path.name
+
+
+# ── nodes --show-connections names service and action peers (#29) ───────────
+
+
+def test_show_connections_names_service_and_action_peers(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from ros2inspector.cli.app import app
+
+    def ep(eid: str, name: str, msg_type: str) -> dict[str, str]:
+        return {"id": eid, "name": name, "msgType": msg_type}
+
+    src = tmp_path / "ws" / "src"
+    generate_package(
+        {
+            "id": "p",
+            "pkg_name": "peers_pkg",
+            "nodes": [
+                {
+                    "id": "a",
+                    "label": "server_node",
+                    "services": [ep("1", "/reset", "std_srvs/Trigger")],
+                    "action_servers": [ep("2", "/fib", "example_interfaces/Fibonacci")],
+                },
+                {
+                    "id": "b",
+                    "label": "client_node",
+                    "clients": [ep("3", "/reset", "std_srvs/Trigger")],
+                    "action_clients": [ep("4", "/fib", "example_interfaces/Fibonacci")],
+                },
+            ],
+        },
+        src,
+    )
+    result = CliRunner().invoke(
+        app,
+        ["-q", "nodes", "-C", str(tmp_path / "ws"), "--show-connections", "--no-cache"],
+        env={"COLUMNS": "200"},
+    )
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    reset_lines = [line for line in lines if "/reset" in line]
+    fib_lines = [line for line in lines if "/fib" in line]
+    assert any("(client: client_node)" in line for line in reset_lines), reset_lines
+    assert any("(server: server_node)" in line for line in reset_lines), reset_lines
+    assert any("(client: client_node)" in line for line in fib_lines), fib_lines
+    assert any("(server: server_node)" in line for line in fib_lines), fib_lines
