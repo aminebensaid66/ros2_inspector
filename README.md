@@ -119,6 +119,8 @@ Graph views:
 | `comms` | Node-to-topic, service, and action communication |
 | `full` | Dependency and communication relationships together |
 
+In Mermaid, DOT and `viz` output, arrows follow the data or request: publisher → topic → subscriber, and client → service/action → provider. JSON output keeps the model's orientation, where every endpoint edge points from the node to the topic, service or action.
+
 Examples:
 
 ```bash

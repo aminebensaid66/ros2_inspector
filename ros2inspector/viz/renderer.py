@@ -6,7 +6,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from ros2inspector.graph.renderer import _subgraph
+from ros2inspector.graph.renderer import _subgraph, flow_direction
 from ros2inspector.model.uam import UAM
 
 
@@ -141,7 +141,8 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
         # Skip structural edges already encoded by compound nesting.
         if attrs.get("rel") in ("defined_in", "deploys_as"):
             continue
-        d = {"id": f"e{i}", "source": src, "target": dst}
+        source, target = flow_direction(src, dst, attrs.get("rel"))
+        d = {"id": f"e{i}", "source": source, "target": target}
         for k, v in attrs.items():
             if k not in _CY_EDGE_RESERVED:
                 d[k] = _safe(v)
