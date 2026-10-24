@@ -6,7 +6,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from ros2inspector.graph.renderer import _subgraph
+from ros2inspector.graph.renderer import _subgraph, flow_direction
 from ros2inspector.model.uam import UAM
 
 
@@ -38,6 +38,25 @@ def _safe(v: object) -> object:
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
     return str(v)
+
+
+def _short_endpoint_labels(sub: Any) -> dict[str, str]:
+    """Shorten deep topic/service/action names to their last two segments, as '…/a/b'.
+
+    A name is only shortened when no other endpoint of the same kind would get the same
+    label, so '/robot1/front/scan' and '/robot2/front/scan' are never both shown as one.
+    """
+    candidates: dict[str, tuple[str, str]] = {}
+    for nid, attrs in sub.nodes(data=True):
+        kind = str(attrs.get("kind", ""))
+        name = str(attrs.get("name", nid))
+        if kind in ("Topic", "Service", "Action") and name.lstrip("/").count("/") > 1:
+            candidates[nid] = (kind, "…/" + "/".join(name.rsplit("/", 2)[-2:]))
+    names: dict[tuple[str, str], set[str]] = {}
+    for nid, attrs in sub.nodes(data=True):
+        key = candidates.get(nid, (str(attrs.get("kind", "")), str(attrs.get("name", nid))))
+        names.setdefault(key, set()).add(str(attrs.get("name", nid)))
+    return {nid: key[1] for nid, key in candidates.items() if len(names[key]) == 1}
 
 
 def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
@@ -91,6 +110,7 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
             }
         )
 
+    short_labels = _short_endpoint_labels(sub)
     for nid, attrs in sub.nodes(data=True):
         if nid in seen_nodes:
             continue
@@ -99,15 +119,11 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
         if kind == "Package":
             seen_pkgs.add(nid)
         raw_name = str(attrs.get("name", nid))
-        # Preserve exact ROS names (including a leading slash). For very deep
-        # names, keep the final two segments while retaining absolute-name form.
-        short = raw_name
-        if kind in ("Topic", "Service", "Action"):
-            body = raw_name.lstrip("/")
-            if body.count("/") > 1:
-                body = "/".join(body.rsplit("/", 2)[-2:])
-                short = f"/{body}" if raw_name.startswith("/") else body
-        data: dict[str, object] = {"id": nid, "label": short, "name": raw_name}
+        data: dict[str, object] = {
+            "id": nid,
+            "label": short_labels.get(nid, raw_name),
+            "name": raw_name,
+        }
         for k, v in attrs.items():
             if k != "name":
                 data[k] = _safe(v)
@@ -141,7 +157,8 @@ def _cy_elements(uam: UAM, graph_type: str) -> dict[str, Any]:
         # Skip structural edges already encoded by compound nesting.
         if attrs.get("rel") in ("defined_in", "deploys_as"):
             continue
-        d = {"id": f"e{i}", "source": src, "target": dst}
+        source, target = flow_direction(src, dst, attrs.get("rel"))
+        d = {"id": f"e{i}", "source": source, "target": target}
         for k, v in attrs.items():
             if k not in _CY_EDGE_RESERVED:
                 d[k] = _safe(v)
@@ -298,7 +315,7 @@ select:focus{outline:none;border-color:#388bfd}
       <div class="sec-title">Edge types</div>
       <label class="frow"><input type="checkbox" data-rel="publishes"      checked><span style="color:#06d6a0">→</span>Publishes</label>
       <label class="frow"><input type="checkbox" data-rel="subscribes"     checked><span style="color:#3a86ff">→</span>Subscribes</label>
-      <label class="frow"><input type="checkbox" data-rel="depends_on"     checked><span style="color:#8b949e">⤍</span>Depends on</label>
+      <label class="frow"><input type="checkbox" data-rel="depends_on"     checked><span style="color:#a5b1c2">⤍</span>Depends on</label>
       <label class="frow"><input type="checkbox" data-rel="provides"       checked><span style="color:#c77dff">→</span>Provides</label>
       <label class="frow"><input type="checkbox" data-rel="calls"          checked><span style="color:#c77dff">⤍</span>Calls</label>
       <label class="frow"><input type="checkbox" data-rel="defined_in"          ><span style="color:#444">→</span>Defined in</label>
@@ -343,7 +360,7 @@ const K = {
 const E = {
   publishes:      {c:'#06d6a0', dash:false},
   subscribes:     {c:'#3a86ff', dash:false},
-  depends_on:     {c:'#555',    dash:true },
+  depends_on:     {c:'#a5b1c2', dash:true },
   provides:       {c:'#c77dff', dash:false},
   calls:          {c:'#c77dff', dash:true },
   defined_in:     {c:'#2a2a2a', dash:false},
@@ -351,6 +368,23 @@ const E = {
 };
 
 // ── Cytoscape stylesheet ───────────────────────────────────────────────────
+// Leaf size from the label. Diamonds and hexagons only fit text in their middle.
+const _measure=document.createElement('canvas').getContext('2d');
+function fontSize(ele){ return parseFloat(ele.pstyle('font-size').strValue)||9; }
+function textWidth(ele){
+  _measure.font=`${fontSize(ele)}px 'Segoe UI',system-ui,sans-serif`;
+  return _measure.measureText(String(ele.data('label')||'')).width;
+}
+const SHAPE_ROOM={Service:[1.9,2.4], Action:[1.45,1.6]};
+function leafWidth(ele){
+  const [w]=SHAPE_ROOM[ele.data('kind')]||[1];
+  return Math.ceil(textWidth(ele)*w+12);
+}
+function leafHeight(ele){
+  const [,h]=SHAPE_ROOM[ele.data('kind')]||[0,1];
+  return Math.ceil((fontSize(ele)+8)*h);
+}
+
 function mkStyle() {
   const s = [
     // leaf nodes (topics, services, actions, interfaces)
@@ -358,8 +392,8 @@ function mkStyle() {
         label:'data(label)', 'font-size':'9px', color:'#c9d1d9',
         'text-valign':'center','text-halign':'center',
         'text-wrap':'wrap','text-max-width':'75px',
-        'border-width':1.5, padding:'4px',
-        'width':'label','height':'label',
+        'border-width':1.5,
+        'width':leafWidth,'height':leafHeight,
       }
     },
     // Level-1 container: Package (rounded rect, dashed blue border)
@@ -375,7 +409,8 @@ function mkStyle() {
         'font-size':'11px',
         'font-weight':'bold',
         'color':'#58a6ff',
-        'padding':'10px',
+        'padding':'22px',
+        'text-margin-y':'-3px',
         'shape':'round-rectangle',
       }
     },
@@ -400,8 +435,8 @@ function mkStyle() {
         'font-weight':'bold',
         'color':'#ffb380',
         'padding':'6px',
-        'text-margin-y':'9px',
-        'shape':'ellipse',
+        'text-margin-y':'-3px',
+        'shape':'round-rectangle',
       }
     },
     // Level-2 ROS Node as leaf (no children)
@@ -419,6 +454,10 @@ function mkStyle() {
     },
     { selector:'edge.cross-pkg', style:{
         width:2, opacity:.9,
+      }
+    },
+    { selector:'edge[rel="depends_on"]', style:{
+        width:1.8, 'arrow-scale':1.5, opacity:.95,
       }
     },
     { selector:'node:selected', style:{
@@ -453,15 +492,21 @@ function mkStyle() {
       'line-style':v.dash?'dashed':'solid',
     }});
   }
+  // Flat layouts only: what a package (or node) contains. Structure, not data flow.
+  s.push({selector:'edge[rel="contains"]', style:{
+    'line-color':'#484f58','line-style':'dotted',width:1,'target-arrow-shape':'none',
+  }});
   return s;
 }
 
 // ── layout configs ─────────────────────────────────────────────────────────
 const LAYOUTS = {
-  cose:{name:'cose',animate:true,animationDuration:800,
-    nodeRepulsion:80000,idealEdgeLength:180,edgeElasticity:.25,
-    gravity:.05,numIter:3000,randomize:true,componentSpacing:100,
-    nestingFactor:.1,coolingFactor:.97},
+  // Strong overlap repulsion and slow cooling: the previous settings stopped after ~200
+  // iterations with nodes stacked on top of each other (and their edges undrawable).
+  cose:{name:'cose',animate:'end',animationDuration:500,
+    nodeRepulsion:400000,idealEdgeLength:110,edgeElasticity:100,
+    gravity:.8,numIter:2500,randomize:true,componentSpacing:120,
+    nodeOverlap:80,coolingFactor:.995,padding:30,nodeDimensionsIncludeLabels:true},
   breadthfirst:{name:'breadthfirst',animate:true,animationDuration:450,
     directed:true,spacingFactor:1.6,padding:30},
   circle:{name:'circle',animate:true,animationDuration:400,spacingFactor:1.5},
@@ -475,7 +520,7 @@ const LAYOUTS = {
 const GRAPH_DEFAULT_LAYOUT = {deps:'breadthfirst', comms:'compound', full:'compound'};
 
 // ── state ──────────────────────────────────────────────────────────────────
-let cy, curGraph='deps', curLayout='breadthfirst';
+let cy, curGraph='deps', curLayout='breadthfirst', isGrouped=true, searchQuery='';
 
 // ── manual compound preset layout ─────────────────────────────────────────
 // Sizes derived from actual content. Packages row-packed by area so no
@@ -522,68 +567,6 @@ function runCompoundPreset(){
     animate:true,animationDuration:400,fit:true,padding:24,stop:afterLayout}).run();
 }
 
-// ── mathematical edge routing (runs after every layout) ────────────────────
-// For each source-target pair we compute the exact perpendicular offset needed
-// to clear both compound containers. Parallel edges on the same pair are
-// distributed on alternating sides so they never stack.
-function routeEdges(){
-  // Group edges by unordered source-target id pair
-  const pairs = {};
-  cy.edges(':visible').forEach(e => {
-    const key = [e.source().id(), e.target().id()].sort().join('\x00');
-    (pairs[key] = pairs[key]||[]).push(e);
-  });
-
-  Object.values(pairs).forEach(group => {
-    const n = group.length;
-    group.forEach((edge, i) => {
-      const src = edge.source();
-      const tgt = edge.target();
-
-      // Self-loop: leave Cytoscape default
-      if(src.id() === tgt.id()) return;
-
-      const sp = src.position();
-      const tp = tgt.position();
-
-      // Direction vector and its perpendicular
-      const dx = tp.x - sp.x, dy = tp.y - sp.y;
-      const len = Math.hypot(dx, dy);
-      if(len < 1) return;
-
-      const srcPkg = src.ancestors('[kind="Package"]').first();
-      const tgtPkg = tgt.ancestors('[kind="Package"]').first();
-      const crossPkg = srcPkg.nonempty() && tgtPkg.nonempty() && srcPkg.id() !== tgtPkg.id();
-
-      // Minimum clearance = enough to arc outside the largest container involved
-      let baseDist;
-      if(crossPkg){
-        const sb = srcPkg.boundingBox(), tb = tgtPkg.boundingBox();
-        // Diagonal of each package is the worst-case extent we must clear.
-        // The bezier midpoint sits at: midLine + 0.5 * controlPointOffset
-        // so controlPointOffset = 2 * required_midpoint_clearance.
-        // We want the midpoint of the curve to sit outside both bounding boxes.
-        // Required clearance from the source-target midpoint to the nearest
-        // package edge = half the diagonal of the larger package + margin.
-        const diagSrc = Math.hypot(sb.w, sb.h);
-        const diagTgt = Math.hypot(tb.w, tb.h);
-        baseDist = Math.max(diagSrc, diagTgt) * 0.55 + 30;
-      } else {
-        // Within same package or no package: small default separation
-        baseDist = 25;
-      }
-
-      // Distribute parallel edges: alternating sign, increasing offset per pair
-      // i=0 → +base, i=1 → -base, i=2 → +base+step, i=3 → -base+step …
-      const sign  = (i % 2 === 0) ? 1 : -1;
-      const extra = Math.floor(i / 2) * 20;
-      const dist  = sign * (baseDist + extra);
-
-      edge.style('control-point-distance', dist);
-    });
-  });
-}
-
 // ── helpers ────────────────────────────────────────────────────────────────
 function applyFilters(){
   cy.elements().removeClass('hidden');
@@ -600,8 +583,8 @@ function applyFilters(){
 
 function refreshStats(){
   const counts={};
-  cy.nodes('.hidden').length; // touch
-  cy.nodes(':visible').forEach(n=>{
+  // Count by the filter class: ':visible' still reads the old style right after a change.
+  cy.nodes().filter(n=>!n.hasClass('hidden')).forEach(n=>{
     const k=n.data('kind')||'?';
     counts[k]=(counts[k]||0)+1;
   });
@@ -611,13 +594,26 @@ function refreshStats(){
     .join('');
 }
 
+// Everything is on screen after a layout; zoom in with the wheel for detail.
 function afterLayout(){
-  if(cy.nodes(':visible').length <= 80) cy.fit(48);
-  else { cy.fit(24); if(cy.zoom()<.22) cy.zoom({level:.22,renderedPosition:{x:cy.width()/2,y:cy.height()/2}}); }
-  routeEdges();
+  cy.fit(cy.nodes(':visible').length <= 80 ? 48 : 24);
+}
+
+// Only the Grouped layout understands package/node nesting. Other layouts place children
+// freely and Cytoscape stretches the containers around them, so they get a flat graph in
+// which each container is a plain node linked to its children (see addGraph).
+function setGrouping(grouped){
+  if(grouped===isGrouped) return;
+  isGrouped=grouped;
+  cy.elements().remove();
+  addGraph(curGraph, grouped);
+  applyFilters();
+  refreshStats();
+  applySearch();
 }
 
 function runLayout(){
+  setGrouping(curLayout === 'compound');
   if(curLayout === 'compound'){ runCompoundPreset(); return; }
   // Pre-scatter leaf nodes so physics layouts never start from origin
   const w=cy.width()||1000, h=cy.height()||800;
@@ -635,22 +631,45 @@ function loadGraph(g){
   curLayout=GRAPH_DEFAULT_LAYOUT[g]||'concentric';
   document.getElementById('lay-sel').value=curLayout;
   cy.elements().remove();
-  const d=GRAPHS[g];
-  cy.add([...d.nodes,...d.edges]);
-  // Tag edges that cross package boundaries for special curve styling
-  cy.edges().forEach(e=>{
-    const sp=e.source().ancestors('[kind="Package"]').first();
-    const tp=e.target().ancestors('[kind="Package"]').first();
-    if(sp.nonempty()&&tp.nonempty()&&sp.id()!==tp.id()) e.addClass('cross-pkg');
-  });
+  isGrouped=curLayout==='compound';
+  addGraph(g, isGrouped);
   applyFilters();
   runLayout();
   refreshStats();
   clearDetails();
 }
 
+function addGraph(g, grouped){
+  const d=GRAPHS[g];
+  if(grouped){ cy.add([...d.nodes,...d.edges]); }
+  else {
+    // Flat: containers (packages, nodes with deployments) become ordinary nodes linked to
+    // what they contain, so packages and their dependency edges stay in every layout.
+    const nodes=d.nodes.map(n=>{ const data=Object.assign({},n.data); delete data.parent; return {data}; });
+    const contains=d.nodes.filter(n=>n.data.parent).map(n=>({data:{
+      id:`contains:${n.data.id}`, source:n.data.parent, target:n.data.id, rel:'contains'}}));
+    cy.add([...nodes,...d.edges,...contains]);
+  }
+  // Edges between packages are drawn a little heavier (by attribute, so it works flat too).
+  cy.edges().forEach(e=>{
+    const sp=e.source().data('package'), tp=e.target().data('package');
+    if(sp&&tp&&sp!==tp) e.addClass('cross-pkg');
+  });
+}
+
+function applySearch(){
+  if(!searchQuery){ cy.elements().removeClass('faded'); return; }
+  cy.elements().addClass('faded');
+  const hits=cy.nodes().filter(n=>[n.data('label'),n.data('name'),n.id(),n.data('source_symbol'),n.data('package')]
+    .filter(Boolean).join(' ').toLowerCase().includes(searchQuery));
+  hits.removeClass('faded');
+  hits.neighborhood().removeClass('faded');
+  hits.ancestors().removeClass('faded');
+}
+
 function clearDetails(){
   cy.elements().removeClass('faded');
+  applySearch();
   document.getElementById('det-empty').style.display='';
   document.getElementById('det-body').style.display='none';
 }
@@ -757,12 +776,8 @@ document.addEventListener('DOMContentLoaded',()=>{
 
   // search
   document.getElementById('search').addEventListener('input',e=>{
-    const q=e.target.value.trim().toLowerCase();
-    if(!q){cy.elements().removeClass('faded');return;}
-    cy.elements().addClass('faded');
-    const hits=cy.nodes().filter(n=>[n.data('label'),n.data('name'),n.id(),n.data('source_symbol'),n.data('package')].filter(Boolean).join(' ').toLowerCase().includes(q));
-    hits.removeClass('faded');
-    hits.neighborhood().removeClass('faded');
+    searchQuery=e.target.value.trim().toLowerCase();
+    applySearch();
   });
 
   // node click

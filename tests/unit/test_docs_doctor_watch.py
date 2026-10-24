@@ -61,6 +61,21 @@ def test_docs_markdown_golden_content(ws: Path) -> None:
     assert str(ws) not in page
 
 
+def test_docs_index_lists_services_and_clients(ws: Path) -> None:
+    _docs(ws)
+    _docs(ws, "--format", "html")
+    out = ws / "ros2inspector_docs"
+    index_md = (out / "index.md").read_text()
+    header = next(line for line in index_md.splitlines() if line.startswith("| Node |"))
+    assert "| Services | Clients |" in header
+    listener = next(line for line in index_md.splitlines() if line.startswith("| listener"))
+    cells = [cell.strip() for cell in listener.strip("|").split("|")]
+    assert cells[header.strip("|").split("|").index(" Clients ")] == "/ping"
+    index_html = (out / "index.html").read_text()
+    assert "<th>Services</th><th>Clients</th>" in index_html
+    assert "<td>/ping</td>" in index_html
+
+
 def test_docs_html_shows_names_not_object_reprs(ws: Path) -> None:
     _docs(ws, "--format", "html")
     page = (ws / "ros2inspector_docs" / "packages" / "pkg_a.html").read_text()

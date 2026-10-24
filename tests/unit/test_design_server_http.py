@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import socket
 import threading
 import time
@@ -299,11 +300,83 @@ def test_rename_after_generate_moves_directory_and_keeps_edits(server: Any) -> N
     status, data = _post(httpd, "/generate", _state(_pkg("new_name")))
     assert status == 200, data
     assert not (out / "old_name").exists()
-    moved = out / "new_name" / "old_name" / "talker.py"
-    # The module directory is regenerated under the new name; the user's edited file is kept.
+    # The module folder moves with the package, so the edited file is the one that is
+    # installed under the new name (not stranded in an old, uninstalled module folder).
+    moved = out / "new_name" / "new_name" / "talker.py"
     assert moved.read_text().endswith("# my edit\n")
-    assert (out / "new_name" / "new_name" / "talker.py").is_file()
-    assert any(path.endswith("old_name/talker.py") for path in data["kept_modified"])
+    assert not (out / "new_name" / "old_name").exists()
+    assert (out / "new_name" / "resource" / "new_name").is_file()
+    assert not (out / "new_name" / "resource" / "old_name").exists()
+    assert data["kept_modified"] == ["new_name/new_name/talker.py"]
+
+
+def test_rename_twice_keeps_edits_and_leaves_no_stale_files(server: Any) -> None:
+    httpd, out = server
+    _post(httpd, "/generate", _state(_pkg("first_name")))
+    node_file = out / "first_name" / "first_name" / "talker.py"
+    node_file.write_text(node_file.read_text() + "\n# my edit\n")
+    _post(httpd, "/generate", _state(_pkg("second_name")))
+    status, data = _post(httpd, "/generate", _state(_pkg("third_name")))
+    assert status == 200, data
+    package = out / "third_name"
+    assert (package / "third_name" / "talker.py").read_text().endswith("# my edit\n")
+    leftovers = sorted(p.relative_to(package).as_posix() for p in package.rglob("*") if p.is_file())
+    assert leftovers == [
+        ".ros2inspector_generated",
+        "README.md",
+        "launch/launch.py",
+        "package.xml",
+        "resource/third_name",
+        "setup.cfg",
+        "setup.py",
+        "test/test_copyright.py",
+        "test/test_flake8.py",
+        "test/test_pep257.py",
+        "third_name/__init__.py",
+        "third_name/talker.py",
+    ]
+
+
+def test_rename_updates_the_package_name_in_edited_files(server: Any) -> None:
+    """Edited setup.py/package.xml/launch files must not keep pointing at the old name."""
+    httpd, out = server
+    _post(httpd, "/generate", _state(_pkg("old_name")))
+    package = out / "old_name"
+    edited = ["setup.py", "package.xml", "setup.cfg", "launch/launch.py", "old_name/talker.py"]
+    for relative in edited:
+        path = package / relative
+        path.write_text(
+            path.read_text() + "\n<!-- edit -->\n"
+            if relative.endswith(".xml")
+            else path.read_text() + "\n# my edit\n"
+        )
+    (package / "launch" / "extra.launch.py").write_text("package = 'old_name'  # old_names\n")
+    status, data = _post(httpd, "/generate", _state(_pkg("new_name")))
+    assert status == 200, data
+    package = out / "new_name"
+    # The node file has no package name in it, so only the four package files change.
+    assert sorted(data["renamed_in"]) == sorted(f"new_name/{p}" for p in edited[:4])
+    for path in package.rglob("*"):
+        if path.is_file() and path.name not in (".ros2inspector_generated", "extra.launch.py"):
+            assert re.search(r"\bold_name\b", path.read_text()) is None, path
+    assert "package_name = 'new_name'" in (package / "setup.py").read_text()
+    assert "<name>new_name</name>" in (package / "package.xml").read_text()
+    # Files the user added are theirs and are left alone.
+    extra = (package / "launch" / "extra.launch.py").read_text()
+    assert extra == "package = 'old_name'  # old_names\n"
+    assert (package / "setup.py").read_text().endswith("# my edit\n")
+    assert "new_name/setup.py" in data["kept_modified"]
+
+
+def test_rename_refuses_when_the_module_folder_cannot_move(server: Any) -> None:
+    httpd, out = server
+    _post(httpd, "/generate", _state(_pkg("old_name")))
+    (out / "old_name" / "new_name").mkdir()
+    status, data = _post(httpd, "/generate", _state(_pkg("new_name")))
+    assert status == 409
+    assert "new_name already exists inside the package" in data["error"]
+    assert (out / "old_name" / "old_name" / "talker.py").is_file()
+    assert not (out / "new_name").exists()
 
 
 def test_unexpected_error_returns_json_500(server: Any, monkeypatch: pytest.MonkeyPatch) -> None:

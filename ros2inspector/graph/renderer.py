@@ -14,6 +14,17 @@ _COMMS_KINDS = {"Node", "Deployment", "Topic", "Service", "Action"}
 _DEPS_KINDS = {"Package"}
 _DEPS_RELS = {"depends_on"}
 
+# The model stores every communication edge as actor -> endpoint. Drawn that way, a
+# subscriber's arrow points *into* its topic just like a publisher's, and data flow can't
+# be read. Visual renderers flip these so arrows follow the data (or request):
+# publisher -> topic -> subscriber, client -> service/action -> provider.
+_FLOW_REVERSED_RELS = frozenset({"subscribes", "provides"})
+
+
+def flow_direction(src: str, dst: str, rel: object) -> tuple[str, str]:
+    """(from, to) of an edge as drawn, following data/request flow."""
+    return (dst, src) if rel in _FLOW_REVERSED_RELS else (src, dst)
+
 
 def _slugify(text: str) -> str:
     """Make a Mermaid/DOT-safe node ID.
@@ -118,8 +129,7 @@ def render_mermaid(
 
     for src, dst, attrs in sub.edges(data=True):
         rel = attrs.get("rel", "")
-        ssrc = _slugify(src)
-        sdst = _slugify(dst)
+        ssrc, sdst = (_slugify(n) for n in flow_direction(src, dst, rel))
         if rel == "publishes":
             lines.append(f"    {ssrc} -->|pub| {sdst}")
         elif rel == "subscribes":
@@ -165,9 +175,8 @@ def render_dot(uam: UnifiedArchitectureModel, graph_type: str, package: str | No
             lines.append(f'    {sid} [label="{name}"];')
 
     for src, dst, attrs in sub.edges(data=True):
-        ssrc = _slugify(src)
-        sdst = _slugify(dst)
         rel = attrs.get("rel", "")
+        ssrc, sdst = (_slugify(n) for n in flow_direction(src, dst, rel))
         if rel == "depends_on":
             lines.append(f"    {ssrc} -> {sdst} [style=dashed];")
         else:

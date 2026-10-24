@@ -242,22 +242,7 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
                 if kind == "Topic":
                     msg_type = target.get("msg_type", "unknown")
                     icon = "→" if rel == "publishes" else "←"
-                    other_pubs = [
-                        _actor_name(g, source)
-                        for source, _, data in g.in_edges(target_id, data=True)
-                        if data.get("rel") == "publishes" and source != actor_id
-                    ]
-                    other_subs = [
-                        _actor_name(g, source)
-                        for source, _, data in g.in_edges(target_id, data=True)
-                        if data.get("rel") == "subscribes" and source != actor_id
-                    ]
-                    peers = []
-                    if other_pubs:
-                        peers.append(f"pub: {', '.join(other_pubs)}")
-                    if other_subs:
-                        peers.append(f"sub: {', '.join(other_subs)}")
-                    peer_text = f"  [dim]({'; '.join(peers)})[/dim]" if peers else ""
+                    peer_text = _peer_text(g, target_id, actor_id, _TOPIC_PEERS)
                     rows.append(
                         f"  {deployment_prefix}{icon} [green]{name}[/green]  "
                         f"[dim]{msg_type}[/dim]{peer_text}"
@@ -268,6 +253,7 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
                     rows.append(
                         f"  {deployment_prefix}{icon} [yellow]{name}[/yellow]  "
                         f"[dim]{service_type}[/dim]  [dim]service[/dim]"
+                        f"{_peer_text(g, target_id, actor_id, _CALL_PEERS)}"
                     )
                 else:
                     action_type = target.get("action_type", "unknown")
@@ -275,12 +261,31 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
                     rows.append(
                         f"  {deployment_prefix}{icon} [magenta]{name}[/magenta]  "
                         f"[dim]{action_type}[/dim]  [dim]action[/dim]"
+                        f"{_peer_text(g, target_id, actor_id, _CALL_PEERS)}"
                     )
 
         body = "\n".join(rows) if rows else "  [dim]no connections[/dim]"
         con.print(Panel(Text.from_markup(body), title=Text.from_markup(title), expand=False))
 
     return buf.getvalue()
+
+
+_TOPIC_PEERS = (("publishes", "pub"), ("subscribes", "sub"))
+_CALL_PEERS = (("provides", "server"), ("calls", "client"))
+
+
+def _peer_text(g: Any, endpoint_id: str, actor_id: str, roles: tuple[tuple[str, str], ...]) -> str:
+    """'  (pub: a; sub: b)' naming the other actors on a topic, service or action."""
+    peers = []
+    for rel, label in roles:
+        names = [
+            _actor_name(g, source)
+            for source, _, data in g.in_edges(endpoint_id, data=True)
+            if data.get("rel") == rel and source != actor_id
+        ]
+        if names:
+            peers.append(f"{label}: {', '.join(names)}")
+    return f"  [dim]({'; '.join(peers)})[/dim]" if peers else ""
 
 
 def _write_or_print(text: str, output: Path | None, plain: bool = False) -> None:

@@ -348,3 +348,221 @@ def test_new_nodes_never_overlap_existing_cards(page: Page, designer: dict[str, 
             overlap_x = a["x"] < b["x"] + b["width"] and b["x"] < a["x"] + a["width"]
             overlap_y = a["y"] < b["y"] + b["height"] and b["y"] < a["y"] + a["height"]
             assert not (overlap_x and overlap_y), (a, b)
+
+
+# ── canvas: layering, geometry, panning (#6 #7 #8 #9 #10 #12 #13 #14) ───────
+
+
+def _screen_box(page: Page, selector: str) -> dict[str, float]:
+    box = page.locator(selector).bounding_box()
+    assert box is not None, selector
+    return box
+
+
+def _on_canvas(page: Page, selector: str) -> bool:
+    box, cv = _screen_box(page, selector), _screen_box(page, "#cv")
+    return (
+        box["x"] >= cv["x"]
+        and box["y"] >= cv["y"]
+        and box["x"] + box["width"] <= cv["x"] + cv["width"]
+        and box["y"] + box["height"] <= cv["y"] + cv["height"]
+    )
+
+
+def test_handles_sit_on_their_rows_above_the_cards(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    for side, row in (("pub", ".tr.pub"), ("sub", ".tr.sub")):
+        handle = _screen_box(page, f"#hg circle[data-side='{side}'] >> nth=0")
+        nid = page.locator(f"#hg circle[data-side='{side}']").first.get_attribute("data-nid")
+        row_box = _screen_box(page, f"#nd{nid} {row} >> nth=0")
+        assert (
+            abs((handle["y"] + handle["height"] / 2) - (row_box["y"] + row_box["height"] / 2)) <= 1
+        )
+        # Both halves of the handle (inside and outside the card edge) are hittable.
+        cx, cy = handle["x"] + handle["width"] / 2, handle["y"] + handle["height"] / 2
+        for dx in (-3, 0, 3):
+            tag = page.evaluate("([x,y])=>document.elementFromPoint(x,y).tagName", [cx + dx, cy])
+            assert tag == "circle"
+
+
+def test_wire_ends_on_the_handle_rim_with_a_matching_arrowhead(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    wire = page.locator("#eg path").first
+    assert wire.get_attribute("marker-end") == "url(#arr)"
+    end_x = float(wire.get_attribute("d").rsplit(" ", 1)[1].split(",")[0])  # type: ignore[union-attr]
+    handle_x = float(page.locator("#hg circle[data-side='sub']").first.get_attribute("cx") or 0)
+    assert end_x == handle_x - 6
+    # A wire that no longer matches turns red, arrowhead included.
+    page.locator(".node").nth(1).click()
+    _set_field(page, "#ssubs .tc input.sinp", "/renamed")
+    expect(page.locator("#eg path[stroke='#f87171']")).to_have_attribute(
+        "marker-end", "url(#arr-bad)"
+    )
+    # Visible wires are painted above the cards; their click targets sit under the cards.
+    wires = page.locator("#eg path").count()
+    assert page.evaluate("()=>document.getElementById('eg').ownerSVGElement.id") == "svh"
+    expect(page.locator("#wh path")).to_have_count(wires)
+
+
+def test_long_names_never_hide_the_publishers_column(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    page.locator(".node").nth(1).click()
+    _set_field(page, "#ssubs .tc input.sinp", "/robot/front_left/wheel/joint_states_filtered")
+    card = _screen_box(page, ".node >> nth=1")
+    publisher = _screen_box(page, ".node >> nth=1 >> .tr.pub")
+    assert card["x"] < publisher["x"] and publisher["x"] + publisher["width"] <= card["x"] + 280
+    expect(page.locator(".node >> nth=1 >> .tr.sub .tn")).to_have_attribute(
+        "title", "/robot/front_left/wheel/joint_states_filtered"
+    )
+
+
+def test_new_nodes_appear_on_screen_and_the_canvas_pans(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    for _ in range(14):
+        page.click("#an")
+        assert _on_canvas(page, f"#nd{page.evaluate('()=>S.sel')}")
+    page.keyboard.press("Escape")
+    first = ".node >> nth=0"
+    assert not _on_canvas(page, first)
+    page.click("#fit")
+    assert _on_canvas(page, first)
+    # Dragging the background pans and does not close/open anything.
+    vx, vy = page.evaluate("()=>[VIEW.x, VIEW.y]")
+    # Press on empty background: Show all centres the design, so cards can sit anywhere.
+    x, y = page.evaluate(
+        """()=>{const c=CV.getBoundingClientRect();
+        for(let y=c.bottom-30;y>c.top+150;y-=20) for(let x=c.right-30;x>c.left+250;x-=20)
+          if(document.elementFromPoint(x,y)===CV) return [x,y];
+        return null}"""
+    )
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x - 200, y - 100, steps=6)
+    page.mouse.up()
+    assert page.evaluate("()=>[VIEW.x, VIEW.y]") == [vx - 200, vy - 100]
+    expect(page.locator("#sb")).to_have_class("h")
+    page.mouse.wheel(0, 300)
+    assert page.evaluate("()=>VIEW.y") == vy - 100 - 300
+
+
+def test_wiring_still_works_after_the_canvas_scrolled(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    page.evaluate(
+        "()=>{const p=pkg();p.edges=[];p.nodes[0].x=960;p.nodes[1].x=1400;p.nodes[1].y=300;"
+        "renderAll();}"
+    )
+    # Keyboard focus on a card that sticks out makes the browser scroll the canvas.
+    page.locator(".node >> nth=1 >> .ndel").focus()
+    page.wait_for_timeout(50)
+    assert page.evaluate("()=>[CV.scrollLeft, CV.scrollTop]") == [0, 0]
+    assert page.evaluate("()=>VIEW.x") < 0
+    _drag(page, "#hg circle[data-side='pub'] >> nth=0", "#hg circle[data-side='sub'] >> nth=0")
+    expect(page.locator("#eg path")).to_have_count(1)
+
+
+def test_toolbar_fits_and_hint_is_readable_at_1024(browser: Any, designer: dict[str, Any]) -> None:
+    context = browser.new_context(viewport={"width": 1024, "height": 700})
+    page = context.new_page()
+    _open(page, designer)
+    toolbar = "()=>document.getElementById('tb').scrollWidth"
+    assert page.evaluate(toolbar) <= 1024
+    contrast = page.evaluate(
+        """()=>{
+          const lum=c=>{
+            const v=c.match(/\\d+/g).slice(0,3).map(x=>x/255)
+              .map(x=>x<=.03928?x/12.92:((x+.055)/1.055)**2.4);
+            return .2126*v[0]+.7152*v[1]+.0722*v[2]};
+          const fg=getComputedStyle(document.querySelector('.tb-hint')).color;
+          const bg=getComputedStyle(document.getElementById('tb')).backgroundColor;
+          const [a,b]=[lum(fg),lum(bg)].sort((x,y)=>y-x);return (a+.05)/(b+.05)}"""
+    )
+    assert contrast >= 4.5
+    context.close()
+
+
+def test_equivalent_type_spellings_can_be_wired(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    page.locator(".node").nth(1).click()
+    _set_field(page, "#ssubs .tc input.ssel", "sensor_msgs/msg/Image")
+    expect(page.locator("#eg path[stroke='#f87171']")).to_have_count(0)
+
+
+_WIRE_HITS_CARDS = """() => {
+  const cards = [...document.querySelectorAll('.node')].map(el => el.getBoundingClientRect());
+  return [...document.querySelectorAll('#eg path')].map(path => {
+    const m = path.getScreenCTM(), length = path.getTotalLength(), hits = [];
+    for (let i = 2; i < 98; i++) {
+      const q = path.getPointAtLength(length * i / 100);
+      const x = q.x * m.a + m.e, y = q.y * m.d + m.f;
+      cards.forEach((r, k) => {
+        if (x > r.left + 2 && x < r.right - 2 && y > r.top + 2 && y < r.bottom - 2) hits.push(k);
+      });
+    }
+    return [...new Set(hits)];
+  });
+}"""
+
+
+def test_wires_never_pass_through_cards(page: Page, designer: dict[str, Any], shot: Any) -> None:
+    """Issue #6: a wire over a third card, or running backwards, must not look like another link."""
+    _open(page, designer)
+    page.evaluate(
+        """()=>{
+      const p=pkg(), ep=(id,name)=>({id,name,msgType:'std_msgs/String'});
+      const mk=(id,label,x,y,pubs,subs)=>({id,label,x,y,publishers:pubs,subscribers:subs,
+        services:[],clients:[],action_servers:[],action_clients:[]});
+      p.nodes=[mk('a','lidar',40,60,[ep('a1','/scan')],[]),
+               mk('b','camera',380,60,[ep('b1','/image')],[]),
+               mk('c','detector',720,60,[],[ep('c1','/scan'),ep('c2','/image')]),
+               mk('d','navigator',720,420,[ep('d1','/goal')],[]),
+               mk('e','mission',120,420,[],[ep('e1','/goal')])];
+      p.edges=[{id:'w1',fn:'a',ft:'a1',tn:'c',tt:'c1'},{id:'w2',fn:'b',ft:'b1',tn:'c',tt:'c2'},
+               {id:'w3',fn:'d',ft:'d1',tn:'e',tt:'e1'}];
+      renderAll();
+    }"""
+    )
+    expect(page.locator("#eg path")).to_have_count(3)
+    shot(page, "designer-wires-routed")
+    assert page.evaluate(_WIRE_HITS_CARDS) == [[], [], []]
+    # The straight-through wire and the backwards one are detours, the free one stays a curve.
+    kinds = [
+        " C" in (d or "")
+        for d in page.locator("#eg path").evaluate_all("ps=>ps.map(p=>p.getAttribute('d'))")
+    ]
+    assert kinds == [False, True, False]
+    # Visible wires are drawn above the cards; clicking one in open canvas removes it.
+    assert page.evaluate("()=>document.getElementById('eg').ownerSVGElement.id") == "svh"
+    page.locator("#wh path").nth(2).evaluate(
+        "p=>p.dispatchEvent(new MouseEvent('click',{bubbles:true}))"
+    )
+    expect(page.locator("#eg path")).to_have_count(2)
+
+
+def test_toolbar_fits_at_800_and_show_all_centres_a_small_design(
+    browser: Any, designer: dict[str, Any]
+) -> None:
+    context = browser.new_context(viewport={"width": 800, "height": 700})
+    page = context.new_page()
+    _open(page, designer)
+    assert page.evaluate("()=>document.getElementById('tb').scrollWidth") <= 800
+    fit = _screen_box(page, "#fit")
+    assert fit["x"] + fit["width"] <= 800
+    page.click("#fit")
+    centre = page.evaluate(
+        """()=>{const r=[...document.querySelectorAll('.node')].map(n=>n.getBoundingClientRect());
+        const c=CV.getBoundingClientRect();
+        return [(Math.min(...r.map(x=>x.left))+Math.max(...r.map(x=>x.right)))/2-c.left,
+                (Math.min(...r.map(x=>x.top))+Math.max(...r.map(x=>x.bottom)))/2-c.top,
+                canvasWidth(), CV.clientHeight]}"""
+    )
+    assert abs(centre[0] - centre[2] / 2) <= 2 and abs(centre[1] - centre[3] / 2) <= 2
+    # The small labels that were left at about 2.4:1 contrast.
+    colours = page.evaluate(
+        "()=>['.ndel','.tb-lbl'].map(s=>getComputedStyle(document.querySelector(s)).color)"
+    )
+    assert colours == ["rgb(124, 138, 160)"] * 2
+    context.close()

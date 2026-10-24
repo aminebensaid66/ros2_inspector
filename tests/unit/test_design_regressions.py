@@ -586,3 +586,177 @@ def test_save_state_roundtrip_keeps_active_package(tmp_path: Path) -> None:
     _save_state(tmp_path, DesignState.model_validate(state).model_dump(by_alias=True))
     loaded = _load_state(tmp_path)
     assert loaded is not None and loaded["activePkg"] == "b"
+
+
+# ── generated packages are healthy and follow ament_flake8 style (#16) ──────
+
+
+def _full_package() -> dict[str, Any]:
+    def ep(eid: str, name: str, msg_type: str) -> dict[str, str]:
+        return {"id": eid, "name": name, "msgType": msg_type}
+
+    return {
+        "id": "p",
+        "pkg_name": "healthy_pkg",
+        "nodes": [
+            {
+                "id": "a",
+                "label": "talker",
+                "publishers": [ep("1", "/chatter", "std_msgs/String")],
+                "services": [ep("2", "/reset", "std_srvs/Trigger")],
+                "action_servers": [ep("3", "/fib", "example_interfaces/Fibonacci")],
+            },
+            {
+                "id": "b",
+                "label": "listener",
+                "subscribers": [
+                    ep("4", "/robot/camera/front_left/image_rect", "sensor_msgs/Image")
+                ],
+            },
+        ],
+    }
+
+
+def test_generated_package_scores_full_health(tmp_path: Path) -> None:
+    from ros2inspector.static.health_scorer import score_package
+    from ros2inspector.static.package_xml import parse_package_xml
+
+    generate_package(_full_package(), tmp_path)
+    metadata = parse_package_xml(tmp_path / "healthy_pkg" / "package.xml")
+    assert metadata is not None
+    assert score_package(metadata) == 100
+
+
+def test_generated_sources_follow_ament_flake8_style(tmp_path: Path) -> None:
+    generate_package(_full_package(), tmp_path)
+    package = tmp_path / "healthy_pkg"
+    talker = (package / "healthy_pkg" / "talker.py").read_text()
+    imports = [line for line in talker.splitlines() if line.startswith(("import ", "from "))]
+    assert imports == sorted(imports, key=lambda line: line.split()[1].lower())
+    assert "from rclpy.action import ActionServer" in imports  # ActionClient is unused here
+    assert "\n\n\n    def " not in talker
+    for path in package.rglob("*.py"):
+        if path.parent.name != "test":
+            source = path.read_text()
+            assert '"' not in source, f"double quotes in {path.name}"
+            assert all(len(line) <= 99 for line in source.splitlines()), path.name
+
+
+# ── nodes --show-connections names service and action peers (#29) ───────────
+
+
+def test_show_connections_names_service_and_action_peers(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from ros2inspector.cli.app import app
+
+    def ep(eid: str, name: str, msg_type: str) -> dict[str, str]:
+        return {"id": eid, "name": name, "msgType": msg_type}
+
+    src = tmp_path / "ws" / "src"
+    generate_package(
+        {
+            "id": "p",
+            "pkg_name": "peers_pkg",
+            "nodes": [
+                {
+                    "id": "a",
+                    "label": "server_node",
+                    "services": [ep("1", "/reset", "std_srvs/Trigger")],
+                    "action_servers": [ep("2", "/fib", "example_interfaces/Fibonacci")],
+                },
+                {
+                    "id": "b",
+                    "label": "client_node",
+                    "clients": [ep("3", "/reset", "std_srvs/Trigger")],
+                    "action_clients": [ep("4", "/fib", "example_interfaces/Fibonacci")],
+                },
+            ],
+        },
+        src,
+    )
+    result = CliRunner().invoke(
+        app,
+        ["-q", "nodes", "-C", str(tmp_path / "ws"), "--show-connections", "--no-cache"],
+        env={"COLUMNS": "200"},
+    )
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    reset_lines = [line for line in lines if "/reset" in line]
+    fib_lines = [line for line in lines if "/fib" in line]
+    assert any("(client: client_node)" in line for line in reset_lines), reset_lines
+    assert any("(server: server_node)" in line for line in reset_lines), reset_lines
+    assert any("(client: client_node)" in line for line in fib_lines), fib_lines
+    assert any("(server: server_node)" in line for line in fib_lines), fib_lines
+
+
+@pytest.mark.parametrize("mask", range(64))
+def test_every_endpoint_combination_has_flake8_blank_lines(mask: int) -> None:
+    """Each subset of endpoint kinds renders with PEP 8 blank lines (E301-E303)."""
+    from ros2inspector.design.codegen import render_node
+    from ros2inspector.design.models import NodeSpec
+
+    groups = {
+        "publishers": ("/out", "std_msgs/String"),
+        "subscribers": ("/in", "std_msgs/String"),
+        "services": ("/srv", "std_srvs/Trigger"),
+        "clients": ("/cli", "std_srvs/Trigger"),
+        "action_servers": ("/act", "example_interfaces/Fibonacci"),
+        "action_clients": ("/goal", "example_interfaces/Fibonacci"),
+    }
+    node: dict[str, Any] = {"id": "n", "label": "combo"}
+    for bit, (group, (name, msg_type)) in enumerate(groups.items()):
+        if mask & (1 << bit):
+            node[group] = [{"id": f"e{bit}", "name": name, "msgType": msg_type}]
+    source = render_node(NodeSpec.model_validate(node))
+    assert "\n\n\n\n" not in source  # E303: never more than two blank lines
+    assert "\n\n\n    " not in source  # E303: one blank line between methods
+    assert "\n\nclass " not in source.replace("\n\n\nclass ", "")  # E302 before class
+    assert "\n\ndef main" not in source.replace("\n\n\ndef main", "")  # E302 before main
+    compile(source, "combo.py", "exec")
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "/robot/front_left/wheel/joint_states_filtered",  # the name from #9
+        "/" + "/".join(["very_long_segment_name"] * 6),  # 138 characters
+    ],
+)
+def test_long_names_stay_within_ament_flake8_line_length(tmp_path: Path, topic: str) -> None:
+    """Every generated line fits in 99 characters or is explicitly exempted (E501)."""
+
+    def ep(eid: str, msg_type: str) -> dict[str, str]:
+        return {"id": eid, "name": topic, "msgType": msg_type}
+
+    label = "front_left_wheel_joint_state_filter_node_with_a_long_name"
+    generate_package(
+        {
+            "id": "p",
+            "pkg_name": "a_rather_long_package_name_for_the_wheel_controllers",
+            "nodes": [
+                {
+                    "id": "a",
+                    "label": label,
+                    "publishers": [ep("1", "sensor_msgs/JointState")],
+                    "subscribers": [ep("2", "sensor_msgs/JointState")],
+                    "services": [ep("3", "std_srvs/Trigger")],
+                    "clients": [ep("4", "std_srvs/Trigger")],
+                    "action_servers": [ep("5", "example_interfaces/Fibonacci")],
+                    "action_clients": [ep("6", "example_interfaces/Fibonacci")],
+                }
+            ],
+        },
+        tmp_path,
+    )
+    sources = [p for p in tmp_path.rglob("*.py") if p.parent.name != "test"]
+    assert len(sources) == 4  # node, __init__, setup.py, launch.py
+    for path in sources:
+        source = path.read_text()
+        compile(source, path.name, "exec")
+        for line in source.splitlines():
+            assert len(line) <= 99 or line.endswith(("# noqa: E501", ",E501")), (path.name, line)
+    node = next(p for p in sources if p.stem == label).read_text()
+    assert "(Node):\n\n    def __init__" in node  # flake8-class-newline (CNL100)
+    if len(topic) < 50:
+        assert "E501" not in node  # realistic names need no exemption at all

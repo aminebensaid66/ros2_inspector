@@ -114,3 +114,62 @@ def test_mermaid_labels_escape_html_and_quotes() -> None:
 
     assert _mermaid_label("<dynamic>") == "#lt;dynamic#gt;"
     assert _mermaid_label('say "hi" #1') == "say #quot;hi#quot; #35;1"
+
+
+# ── visual formats follow data flow (#18) ────────────────────────────────────
+
+
+def _flow_ids(uam: UAM) -> tuple[str, str, str]:
+    from ros2inspector.graph.renderer import _slugify
+
+    graph = uam.graph
+    topic = next(n for n, d in graph.nodes(data=True) if d.get("name") == "/chatter")
+    talker = next(s for s, t, d in graph.edges(data=True) if t == topic and d["rel"] == "publishes")
+    listener = next(
+        s for s, t, d in graph.edges(data=True) if t == topic and d["rel"] == "subscribes"
+    )
+    return _slugify(talker), _slugify(topic), _slugify(listener)
+
+
+def test_mermaid_arrows_follow_data_flow(uam: UAM) -> None:
+    talker, topic, listener = _flow_ids(uam)
+    out = render_mermaid(uam, "comms")
+    assert f"{talker} -->|pub| {topic}" in out
+    assert f"{topic} -->|sub| {listener}" in out
+    assert f"{listener} -->|sub| {topic}" not in out
+
+
+def test_dot_arrows_follow_data_flow(uam: UAM) -> None:
+    _, topic, listener = _flow_ids(uam)
+    out = render_dot(uam, "comms")
+    assert f'{topic} -> {listener} [label="subscribes"];' in out
+
+
+def test_viz_topics_have_outgoing_subscriber_edges(uam: UAM) -> None:
+    from ros2inspector.viz.renderer import _cy_elements
+
+    edges = _cy_elements(uam, "comms")["edges"]
+    into_topic = [e["data"]["rel"] for e in edges if e["data"]["target"].startswith("topic:")]
+    out_of_topic = [e["data"]["rel"] for e in edges if e["data"]["source"].startswith("topic:")]
+    assert into_topic and set(into_topic) == {"publishes"}
+    assert out_of_topic and set(out_of_topic) == {"subscribes"}
+
+
+def test_json_keeps_model_orientation(uam: UAM) -> None:
+    import json
+
+    edges = json.loads(render_json(uam, "comms"))["edges"]
+    subscribes = [e for e in edges if e["rel"] == "subscribes"]
+    assert subscribes and all(e["target"].startswith("topic:") for e in subscribes)
+
+
+def test_viz_short_labels_are_unique_and_marked() -> None:
+    import networkx as nx
+
+    from ros2inspector.viz.renderer import _short_endpoint_labels
+
+    graph = nx.MultiDiGraph()
+    for name in ("/robot1/front/scan", "/robot2/front/scan", "/robot1/imu/data", "/a/b"):
+        graph.add_node(f"topic:{name}", kind="Topic", name=name)
+    labels = _short_endpoint_labels(graph)
+    assert labels == {"topic:/robot1/imu/data": "…/imu/data"}

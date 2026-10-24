@@ -621,3 +621,14 @@ def test_docs_show_ros_node_names_and_class(ws: Path) -> None:
     assert "| talker | pkg\\_a |" in (out / "index.md").read_text()
     html = (out / "packages" / "pkg_a.html").read_text()
     assert "<h3><code>talker</code></h3>" in html and "<code>TalkerNode</code>" in html
+
+
+def test_snapshot_watches_files_that_change_health(ws: Path) -> None:
+    pkg = ws / "src" / "pkg_a"
+    before = cmd_watch._snapshot(ws)
+    (pkg / "README.md").write_text("# pkg_a\n")
+    (pkg / "test").mkdir(exist_ok=True)
+    (pkg / "test" / "fixture.json").write_text("{}\n")
+    (pkg / "notes.md").write_text("not an analysis input\n")
+    changed = cmd_watch._changed_files(before, cmd_watch._snapshot(ws))
+    assert sorted(changed) == ["pkg_a/README.md", "pkg_a/test/fixture.json"]

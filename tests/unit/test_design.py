@@ -338,3 +338,36 @@ def test_ui_initial_state_escapes_script_end_tag() -> None:
     html = build_html(state)
     assert "</script><script>" not in html
     assert "__INITIAL_STATE_SLOT__" not in html
+
+
+def _wired_package(pub_type: str, sub_type: str) -> dict[str, Any]:
+    talker = _node_payload("talker")
+    talker["publishers"] = [{"id": "t1", "name": "/chatter", "msgType": pub_type}]
+    listener = {**_node_payload("listener"), "id": "n2"}
+    listener["subscribers"] = [{"id": "t2", "name": "/chatter", "msgType": sub_type}]
+    return {
+        **_package_payload(),
+        "nodes": [talker, listener],
+        "edges": [{"id": "e1", "fn": "n1", "ft": "t1", "tn": "n2", "tt": "t2"}],
+    }
+
+
+def test_wire_accepts_both_spellings_of_one_type() -> None:
+    PackageSpec.model_validate(_wired_package("std_msgs/String", "std_msgs/msg/String"))
+    with pytest.raises(ValidationError, match="types differ"):
+        PackageSpec.model_validate(_wired_package("std_msgs/String", "std_msgs/msg/Int32"))
+
+
+def test_validation_messages_hide_pydantic_prefixes(tmp_path: Path) -> None:
+    server, port = _start_server(tmp_path)
+    package = _package_payload()
+    package["nodes"] = [_node_payload("Bad Name")]
+    try:
+        status, body = _request(f"http://127.0.0.1:{port}/save", _state_payload(package))
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert status == 422
+    messages = [field["message"] for field in body["fields"]]
+    assert messages and all(not m.startswith("Value error") for m in messages)
+    assert any(m.startswith("node name must be a lowercase identifier") for m in messages)
