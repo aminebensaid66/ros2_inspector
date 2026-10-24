@@ -319,9 +319,7 @@ def test_rename_twice_keeps_edits_and_leaves_no_stale_files(server: Any) -> None
     assert status == 200, data
     package = out / "third_name"
     assert (package / "third_name" / "talker.py").read_text().endswith("# my edit\n")
-    leftovers = sorted(
-        p.relative_to(package).as_posix() for p in package.rglob("*") if p.is_file()
-    )
+    leftovers = sorted(p.relative_to(package).as_posix() for p in package.rglob("*") if p.is_file())
     assert leftovers == [
         ".ros2inspector_generated",
         "README.md",
