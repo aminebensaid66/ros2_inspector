@@ -161,3 +161,15 @@ def test_json_keeps_model_orientation(uam: UAM) -> None:
     edges = json.loads(render_json(uam, "comms"))["edges"]
     subscribes = [e for e in edges if e["rel"] == "subscribes"]
     assert subscribes and all(e["target"].startswith("topic:") for e in subscribes)
+
+
+def test_viz_short_labels_are_unique_and_marked() -> None:
+    import networkx as nx
+
+    from ros2inspector.viz.renderer import _short_endpoint_labels
+
+    graph = nx.MultiDiGraph()
+    for name in ("/robot1/front/scan", "/robot2/front/scan", "/robot1/imu/data", "/a/b"):
+        graph.add_node(f"topic:{name}", kind="Topic", name=name)
+    labels = _short_endpoint_labels(graph)
+    assert labels == {"topic:/robot1/imu/data": "…/imu/data"}
