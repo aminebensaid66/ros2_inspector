@@ -82,8 +82,9 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   background-size:28px 28px;cursor:grab}
 #cv.panning{cursor:grabbing}
 /* Everything on the canvas lives in #world, which is translated to pan the view.
-   Paint order: wires (#svo) under the cards; above them (#svh) a faint dashed copy of each
-   wire, so one that passes behind a card stays traceable, then handles and drag preview. */
+   Paint order: wire click targets (#svo) under the cards, so a click on a card's field never
+   hits a wire; then the cards; then (#svh) the visible wires, drag preview and handles, so a
+   wire is never hidden by a card it passes over and always reads as the right connection. */
 #world{position:absolute;left:0;top:0;width:0;height:0}
 #svo,#svh{position:absolute;overflow:visible;pointer-events:none}
 #svo{z-index:0}
@@ -203,10 +204,10 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
             <path d="M0,0 L0,6 L8,3 z" fill="#f87171"/>
           </marker>
         </defs>
-        <g id="eg"></g>
+        <g id="wh"></g>
       </svg>
       <svg id="svh" xmlns="http://www.w3.org/2000/svg">
-        <g id="gg"></g>
+        <g id="eg"></g>
         <g id="tg"></g>
         <g id="hg"></g>
       </svg>
@@ -247,7 +248,7 @@ const SVH = document.getElementById('svh');
 const WORLD = document.getElementById('world');
 const EG  = document.getElementById('eg');
 const TG  = document.getElementById('tg');
-const GG  = document.getElementById('gg');
+const WH  = document.getElementById('wh');
 const HG  = document.getElementById('hg');
 const SB  = document.getElementById('sb');
 const ES  = document.getElementById('es');
@@ -276,7 +277,7 @@ function sizeLayers(){
     svg.style.left=svg.style.top=(-SVG_PAD)+'px';
     svg.setAttribute('width',w+2*SVG_PAD); svg.setAttribute('height',h+2*SVG_PAD);
   }
-  for(const g of [EG,GG,TG,HG]) g.setAttribute('transform',`translate(${SVG_PAD},${SVG_PAD})`);
+  for(const g of [EG,WH,TG,HG]) g.setAttribute('transform',`translate(${SVG_PAD},${SVG_PAD})`);
 }
 
 // Pointer position in world coordinates.
@@ -344,6 +345,53 @@ function jsa(v){ return esc(JSON.stringify(String(v))); }
 // 'pkg/msg/Type' and 'pkg/Type' are the same interface.
 function canonType(t){ return String(t).replace(/^([a-z][a-z0-9_]*)\/(?:msg|srv|action)\//,'$1/'); }
 function sameType(a,b){ return canonType(a)===canonType(b); }
+// ── wire routing ───────────────────────────────────────────────────────────
+// A wire is a smooth curve when nothing is in its way. If it would cross a card (and so look
+// like it starts or ends at that card's handles) or runs backwards, it detours along a lane
+// above or below every card in its span, so it never passes through a card.
+function cardRect(n){
+  const el=document.getElementById('nd'+n.id);
+  return {l:n.x, t:n.y, r:n.x+(el?el.offsetWidth:NW), b:n.y+(el?el.offsetHeight:NH+CH+RH)};
+}
+function bezPoint(sx,sy,tx,ty,t){
+  const cp=Math.max(80,Math.abs(tx-sx)*.5), u=1-t;
+  const xs=[sx,sx+cp,tx-cp,tx], ys=[sy,sy,ty,ty];
+  const f=v=>u*u*u*v[0]+3*u*u*t*v[1]+3*u*t*t*v[2]+t*t*t*v[3];
+  return [f(xs),f(ys)];
+}
+function bezCrossesCards(sx,sy,tx,ty,rects){
+  for(let i=1;i<40;i++){
+    const [x,y]=bezPoint(sx,sy,tx,ty,i/40);
+    if(rects.some(r=>x>r.l-4&&x<r.r+4&&y>r.t-4&&y<r.b+4)) return true;
+  }
+  return false;
+}
+function roundedPath(pts,radius){
+  let d=`M${pts[0][0]},${pts[0][1]}`;
+  for(let i=1;i<pts.length-1;i++){
+    const [px,py]=pts[i-1], [x,y]=pts[i], [nx,ny]=pts[i+1];
+    const r=Math.min(radius,Math.hypot(x-px,y-py)/2,Math.hypot(nx-x,ny-y)/2);
+    const a=[x+Math.sign(px-x)*r, y+Math.sign(py-y)*r];
+    const b=[x+Math.sign(nx-x)*r, y+Math.sign(ny-y)*r];
+    d+=` L${a[0]},${a[1]} Q${x},${y} ${b[0]},${b[1]}`;
+  }
+  const [lx,ly]=pts[pts.length-1];
+  return d+` L${lx},${ly}`;
+}
+function wirePath(p,fn,tn,sx,sy,tx,ty,lane){
+  const rects=p.nodes.map(cardRect);
+  // Every card counts, its own two included: a curve that bends back into them is wrong too.
+  const others=p.nodes.filter(n=>n!==fn&&n!==tn).map(cardRect);
+  const forward=tx-sx>=40;
+  if(forward && !bezCrossesCards(sx,sy,tx,ty,others)) return bez(sx,sy,tx,ty);
+  const x1=sx+20, x2=tx-20, lo=Math.min(x1,x2), hi=Math.max(x1,x2);
+  const span=rects.filter(r=>r.r>lo&&r.l<hi);
+  const gap=16+8*(lane%4);
+  const above=Math.min(...span.map(r=>r.t))-gap, below=Math.max(...span.map(r=>r.b))+gap;
+  const y=Math.abs(sy-above)+Math.abs(ty-above)<Math.abs(sy-below)+Math.abs(ty-below)?above:below;
+  return roundedPath([[sx,sy],[x1,sy],[x1,y],[x2,y],[x2,ty],[tx,ty]],10);
+}
+
 
 function edgeEnds(p,e){
   const fn=p.nodes.find(n=>n.id===e.fn), tn=p.nodes.find(n=>n.id===e.tn);
@@ -396,7 +444,7 @@ function renderAll(){
 }
 
 function renderEdges(){
-  EG.innerHTML=''; GG.innerHTML='';
+  EG.innerHTML=''; WH.innerHTML='';
   const p=pkg(); if(!p) return;
   for(const e of p.edges){
     const fn=p.nodes.find(n=>n.id===e.fn);
@@ -409,30 +457,34 @@ function renderEdges(){
     const ends=edgeEnds(p,e);
     const path=makeSVG('path');
     // End on the handle's rim so the arrowhead is never covered by the handle.
-    path.setAttribute('d',bez(sp.x+HR,sp.y,tp2.x-HR,tp2.y));
+  let lane=0;
+    const d=wirePath(p,fn,tn,sp.x+HR,sp.y,tp2.x-HR,tp2.y,lane);
+    if(!d.includes(' C')) lane++;
+    path.setAttribute('d',d);
     path.setAttribute('stroke',ends&&ends.ok?'#22d3ee':'#f87171');
     if(ends&&!ends.ok) path.setAttribute('stroke-dasharray','6 4');
     path.setAttribute('stroke-width','2');
     path.setAttribute('fill','none');
     path.setAttribute('marker-end',ends&&!ends.ok?'url(#arr-bad)':'url(#arr)');
-    path.setAttribute('opacity','.75');
-    path.style.pointerEvents='stroke';
-    path.style.cursor='pointer';
+    path.setAttribute('opacity','.85');
+    EG.appendChild(path);
+    // The click target is a wider invisible copy under the cards (see the paint order above).
+    const hit=makeSVG('path');
+    hit.setAttribute('d',path.getAttribute('d'));
+    hit.setAttribute('stroke','transparent');
+    hit.setAttribute('stroke-width','10');
+    hit.setAttribute('fill','none');
+    hit.style.pointerEvents='stroke';
+    hit.style.cursor='pointer';
     const tip=makeSVG('title');
     tip.textContent=ends&&!ends.ok
       ? `${fn.label} → ${tn.label}: topic name or type no longer match (click to remove)`
       : `${fn.label} → ${tn.label} (click to remove)`;
-    path.appendChild(tip);
-    path.addEventListener('click',()=>{ p.edges=p.edges.filter(x=>x.id!==e.id); renderAll(); });
-    EG.appendChild(path);
-    const ghost=makeSVG('path');
-    ghost.setAttribute('d',path.getAttribute('d'));
-    ghost.setAttribute('stroke',path.getAttribute('stroke'));
-    ghost.setAttribute('stroke-width','1.5');
-    ghost.setAttribute('stroke-dasharray','3 5');
-    ghost.setAttribute('fill','none');
-    ghost.setAttribute('opacity','.4');
-    GG.appendChild(ghost);
+    hit.appendChild(tip);
+    hit.addEventListener('click',()=>{ p.edges=p.edges.filter(x=>x.id!==e.id); renderAll(); });
+    hit.addEventListener('mouseenter',()=>path.setAttribute('stroke-width','3'));
+    hit.addEventListener('mouseleave',()=>path.setAttribute('stroke-width','2'));
+    WH.appendChild(hit);
   }
 }
 

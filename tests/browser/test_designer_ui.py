@@ -400,8 +400,10 @@ def test_wire_ends_on_the_handle_rim_with_a_matching_arrowhead(
     expect(page.locator("#eg path[stroke='#f87171']")).to_have_attribute(
         "marker-end", "url(#arr-bad)"
     )
-    # Every wire also has a faint copy above the cards, so it can be traced behind them.
-    expect(page.locator("#gg path")).to_have_count(page.locator("#eg path").count())
+    # Visible wires are painted above the cards; their click targets sit under the cards.
+    wires = page.locator("#eg path").count()
+    assert page.evaluate("()=>document.getElementById('eg').ownerSVGElement.id") == "svh"
+    expect(page.locator("#wh path")).to_have_count(wires)
 
 
 def test_long_names_never_hide_the_publishers_column(page: Page, designer: dict[str, Any]) -> None:
@@ -481,3 +483,54 @@ def test_equivalent_type_spellings_can_be_wired(page: Page, designer: dict[str, 
     page.locator(".node").nth(1).click()
     _set_field(page, "#ssubs .tc input.ssel", "sensor_msgs/msg/Image")
     expect(page.locator("#eg path[stroke='#f87171']")).to_have_count(0)
+
+
+_WIRE_HITS_CARDS = """() => {
+  const cards = [...document.querySelectorAll('.node')].map(el => el.getBoundingClientRect());
+  return [...document.querySelectorAll('#eg path')].map(path => {
+    const m = path.getScreenCTM(), length = path.getTotalLength(), hits = [];
+    for (let i = 2; i < 98; i++) {
+      const q = path.getPointAtLength(length * i / 100);
+      const x = q.x * m.a + m.e, y = q.y * m.d + m.f;
+      cards.forEach((r, k) => {
+        if (x > r.left + 2 && x < r.right - 2 && y > r.top + 2 && y < r.bottom - 2) hits.push(k);
+      });
+    }
+    return [...new Set(hits)];
+  });
+}"""
+
+
+def test_wires_never_pass_through_cards(page: Page, designer: dict[str, Any], shot: Any) -> None:
+    """Issue #6: a wire over a third card, or running backwards, must not look like another link."""
+    _open(page, designer)
+    page.evaluate(
+        """()=>{
+      const p=pkg(), ep=(id,name)=>({id,name,msgType:'std_msgs/String'});
+      const mk=(id,label,x,y,pubs,subs)=>({id,label,x,y,publishers:pubs,subscribers:subs,
+        services:[],clients:[],action_servers:[],action_clients:[]});
+      p.nodes=[mk('a','lidar',40,60,[ep('a1','/scan')],[]),
+               mk('b','camera',380,60,[ep('b1','/image')],[]),
+               mk('c','detector',720,60,[],[ep('c1','/scan'),ep('c2','/image')]),
+               mk('d','navigator',720,420,[ep('d1','/goal')],[]),
+               mk('e','mission',120,420,[],[ep('e1','/goal')])];
+      p.edges=[{id:'w1',fn:'a',ft:'a1',tn:'c',tt:'c1'},{id:'w2',fn:'b',ft:'b1',tn:'c',tt:'c2'},
+               {id:'w3',fn:'d',ft:'d1',tn:'e',tt:'e1'}];
+      renderAll();
+    }"""
+    )
+    expect(page.locator("#eg path")).to_have_count(3)
+    shot(page, "designer-wires-routed")
+    assert page.evaluate(_WIRE_HITS_CARDS) == [[], [], []]
+    # The straight-through wire and the backwards one are detours, the free one stays a curve.
+    kinds = [
+        " C" in (d or "")
+        for d in page.locator("#eg path").evaluate_all("ps=>ps.map(p=>p.getAttribute('d'))")
+    ]
+    assert kinds == [False, True, False]
+    # Visible wires are drawn above the cards; clicking one in open canvas removes it.
+    assert page.evaluate("()=>document.getElementById('eg').ownerSVGElement.id") == "svh"
+    page.locator("#wh path").nth(2).evaluate(
+        "p=>p.dispatchEvent(new MouseEvent('click',{bubbles:true}))"
+    )
+    expect(page.locator("#eg path")).to_have_count(2)
