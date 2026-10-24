@@ -257,12 +257,16 @@ function esc(s){
 // A value embedded as a JS string literal inside an HTML event-handler attribute.
 function jsa(v){ return esc(JSON.stringify(String(v))); }
 
+// 'pkg/msg/Type' and 'pkg/Type' are the same interface.
+function canonType(t){ return String(t).replace(/^([a-z][a-z0-9_]*)\/(?:msg|srv|action)\//,'$1/'); }
+function sameType(a,b){ return canonType(a)===canonType(b); }
+
 function edgeEnds(p,e){
   const fn=p.nodes.find(n=>n.id===e.fn), tn=p.nodes.find(n=>n.id===e.tn);
   if(!fn||!tn) return null;
   const pub=fn.publishers.find(x=>x.id===e.ft), sub=tn.subscribers.find(x=>x.id===e.tt);
   if(!pub||!sub) return null;
-  return {fn,tn,pub,sub,ok:pub.name===sub.name&&pub.msgType===sub.msgType};
+  return {fn,tn,pub,sub,ok:pub.name===sub.name&&sameType(pub.msgType,sub.msgType)};
 }
 
 // Drop wires whose endpoints were deleted; return wires that no longer match.
@@ -746,7 +750,7 @@ document.addEventListener('mouseup',e=>{
           const sub=nd.subscribers[i];
           const src=p.nodes.find(n=>n.id===eDrag.fn);
           const pub=src&&src.publishers.find(x=>x.id===eDrag.ft);
-          if(pub&&pub.msgType!==sub.msgType){
+          if(pub&&!sameType(pub.msgType,sub.msgType)){
             showToast(`✗ Type mismatch: ${pub.msgType} → ${sub.msgType}. A wire needs the same type on both ends.`,'err');
             break outer;
           }

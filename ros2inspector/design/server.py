@@ -174,13 +174,22 @@ def _save_state(output_dir: Path, state: dict[str, Any]) -> None:
     temp_path.replace(state_path)
 
 
+def _issue_message(issue: dict[str, Any]) -> str:
+    """Pydantic message without its internal 'Value error, ' / 'Assertion failed, ' prefix."""
+    message = str(issue["msg"])
+    for prefix in ("Value error, ", "Assertion failed, "):
+        if message.startswith(prefix):
+            return message[len(prefix) :]
+    return message
+
+
 def _validation_response(exc: ValidationError) -> dict[str, Any]:
     return {
         "error": "Validation failed",
         "fields": [
             {
                 "path": ".".join(str(part) for part in issue["loc"]),
-                "message": issue["msg"],
+                "message": _issue_message(issue),
                 "type": issue["type"],
             }
             for issue in exc.errors(include_url=False)
