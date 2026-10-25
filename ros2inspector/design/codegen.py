@@ -20,6 +20,13 @@ from ros2inspector.design.models import (
     PackageSpec,
     split_interface,
 )
+from ros2inspector.design.source_edits import (
+    console_script_list,
+    rename_constructor,
+    rename_launch_nodes,
+    rename_package_text,
+    rename_script_entries,
+)
 from ros2inspector.utils.files import default_file_mode
 
 _GENERATED_MARKER = ".ros2inspector_generated"
@@ -546,20 +553,15 @@ def _write_marker(package_dir: Path, files: dict[str, str], nodes: dict[str, str
 
 def _console_scripts_list(tree: ast.AST) -> ast.List | None:
     """The literal ``'console_scripts': [...]`` list of a setup.py, if it has exactly one."""
-    found = [
-        value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Dict)
-        for key, value in zip(node.keys, node.values, strict=True)
-        if isinstance(key, ast.Constant) and key.value == "console_scripts"
-    ]
-    if len(found) != 1 or not isinstance(found[0], ast.List):
+    try:
+        listing = console_script_list(tree)
+    except ValueError:
         return None
     if not all(
-        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in found[0].elts
+        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in listing.elts
     ):
         return None
-    return found[0]
+    return listing
 
 
 def console_scripts(setup_py: str) -> set[str] | None:
@@ -627,11 +629,6 @@ def add_console_scripts(setup_py: str, entries: list[str]) -> str | None:
     return updated if names is not None and wanted <= names else None
 
 
-def _launch_entry(field_name: str, value: str) -> re.Pattern[str]:
-    return re.compile(rf"(\b{field_name}\s*=\s*(['\"])){re.escape(value)}(\2)")
-
-
-_LAUNCH_EXECUTABLE = re.compile(r"\bexecutable\s*=\s*(['\"])([^'\"]+)\1")
 _DEPEND = re.compile(r"<(?:depend|exec_depend|run_depend)>\s*([^<\s]+)\s*</")
 
 
@@ -706,10 +703,22 @@ def plan_package_edits(
             )
             continue
         assert source is not None
+        spec = next(node for node in package.nodes if node.label == new)
+        old_spec = spec.model_copy(update={"label": old})
+        _, names = _import_plan(old_spec)
+        try:
+            updated = rename_constructor(
+                source, old, new, node_class_name(old_spec, set(names.values()))
+            )
+        except ValueError as exc:
+            plan.problems.append(
+                f"{old_rel} has your edits; its constructor cannot be renamed safely: {exc}. "
+                f"Please update the node name in the constructor yourself and move it to "
+                f"{new_rel}, or rename the node back to '{old}'."
+            )
+            continue
         plan.moves.append((old_rel, new_rel))
-        plan.patched[new_rel] = source.replace(
-            f"super().__init__({old!r})", f"super().__init__({new!r})"
-        )
+        plan.patched[new_rel] = updated
         plan.notes.append(f"moved your edited {old_rel} to {new_rel}")
 
     entries = {label: f"{label} = {pkg}.{label}:main" for label in labels}
@@ -717,8 +726,16 @@ def plan_package_edits(
     if edited("setup.py"):
         original = text_of("setup.py")
         setup_text = original or ""
-        for old, new in renamed.items():
-            setup_text = setup_text.replace(repr(f"{old} = {pkg}.{old}:main"), repr(entries[new]))
+        if renamed:
+            try:
+                setup_text = rename_script_entries(
+                    setup_text,
+                    {f"{old} = {pkg}.{old}:main": entries[new] for old, new in renamed.items()},
+                )
+            except ValueError as exc:
+                plan.problems.append(
+                    f"setup.py has your edits; update console_scripts by hand: {exc}."
+                )
         changed = sorted(new for old, new in renamed.items() if repr(entries[new]) in setup_text)
         registered = console_scripts(setup_text) if original is not None else None
         missing = [
@@ -746,10 +763,13 @@ def plan_package_edits(
     if edited(launch_rel):
         original = text_of(launch_rel)
         launch_text = original or ""
-        for old, new in renamed.items():
-            for field_name in ("executable", "name"):
-                launch_text = _launch_entry(field_name, old).sub(rf"\g<1>{new}\g<3>", launch_text)
-        started = {match.group(2) for match in _LAUNCH_EXECUTABLE.finditer(launch_text)}
+        try:
+            launch_text, started = rename_launch_nodes(launch_text, renamed)
+        except ValueError as exc:
+            plan.problems.append(
+                f"{launch_rel} has your edits; update its Node entries by hand: {exc}."
+            )
+            started = set()
         known = set(labels) | set(previous_nodes.values())
         for executable in sorted(started & known):
             if registered is not None and executable not in registered:
@@ -782,18 +802,10 @@ def plan_package_edits(
 
 
 def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> list[str]:
-    """Rename the module folder and resource marker inside a moved generated package.
-
-    The manifest is rewritten to the new paths, so files the user edited keep counting as
-    edited (and are never overwritten) under the new module name instead of being stranded
-    in a folder that ``setup.py`` no longer installs. Unedited files are regenerated anyway;
-    in the edited ``setup.py``, ``setup.cfg`` and ``package.xml`` the old package name is
-    replaced as a whole word, and in edited launch files only the ``package=`` entries are,
-    so the package still builds and launches. Node code and files the user added are never
-    touched. Returns the files that were rewritten.
-    """
+    """Move package paths and update only the metadata constructs that name the package."""
     if old_name == new_name:
         return []
+    pending = package_name_edits(package_dir, old_name, new_name)
     renames = [(old_name, new_name), (f"resource/{old_name}", f"resource/{new_name}")]
     moved: list[tuple[str, str]] = []
     for old, new in renames:
@@ -812,7 +824,11 @@ def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> 
         return key
 
     manifest = {moved_key(key): digest for key, digest in manifest.items()}
-    rewritten = _replace_package_name(package_dir, manifest, old_name, new_name)
+    rewritten = []
+    for relative, data in pending.items():
+        relative = moved_key(relative)
+        _write_atomic(package_dir / relative, data)
+        rewritten.append(relative)
     _write_marker(package_dir, manifest, previous_node_labels(package_dir))
     return rewritten
 
@@ -826,18 +842,7 @@ def rename_blockers(package_dir: Path, old_name: str, new_name: str) -> list[str
     return blockers
 
 
-# Files whose every whole-word mention of the package name names the package itself.
 _PACKAGE_NAME_FILES = frozenset({"setup.py", "setup.cfg", "package.xml"})
-
-
-def _launch_package_pattern(old_name: str) -> re.Pattern[str]:
-    """``package='old'`` (Python), ``pkg="old"`` (XML) and ``pkg: old`` (YAML) launch entries."""
-    name = re.escape(old_name)
-    return re.compile(
-        rf"(?P<head>\bpackage\s*=\s*(?P<q>['\"])){name}(?P=q)"
-        rf"|(?P<xhead>\bpkg\s*=\s*(?P<xq>['\"])){name}(?P=xq)"
-        rf"|(?P<yhead>\bpkg\s*:\s*(?P<yq>['\"]?)){name}(?P=yq)(?![A-Za-z0-9_])"
-    )
 
 
 def _is_launch_file(relative: str) -> bool:
@@ -845,32 +850,12 @@ def _is_launch_file(relative: str) -> bool:
     return parts[0] == "launch" or ".launch." in parts[-1]
 
 
-def _replace_package_name(
-    package_dir: Path, manifest: dict[str, str], old_name: str, new_name: str
-) -> list[str]:
-    """Point the build files and launch ``package=`` entries the user edited at the new name.
-
-    Only ``setup.py``, ``setup.cfg`` and ``package.xml`` (whole words) and the package
-    entries of launch files are rewritten. Node code and every other file are never touched:
-    the old name there is the user's own text (a topic such as ``/perception/obstacles``),
-    and rewriting it would silently disconnect the node at runtime.
-    """
-    word = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(old_name)}(?![A-Za-z0-9_])")
-    launch_entry = _launch_package_pattern(old_name)
-
-    def replace_entry(match: re.Match[str]) -> str:
-        if match.group("head") is not None:
-            return f"{match.group('head')}{new_name}{match.group('q')}"
-        if match.group("xhead") is not None:
-            return f"{match.group('xhead')}{new_name}{match.group('xq')}"
-        return f"{match.group('yhead')}{new_name}{match.group('yq')}"
-
-    def rewrite(relative: str, text: str) -> str:
-        if relative in _PACKAGE_NAME_FILES:
-            return word.sub(new_name, text)
-        return launch_entry.sub(replace_entry, text)
-
-    rewritten: list[str] = []
+def package_name_edits(package_dir: Path, old_name: str, new_name: str) -> dict[str, bytes]:
+    """Plan metadata changes completely before a package directory can move."""
+    if old_name == new_name:
+        return {}
+    manifest = read_manifest(package_dir) or {}
+    pending: dict[str, bytes] = {}
     for relative, digest in sorted(manifest.items()):
         if relative not in _PACKAGE_NAME_FILES and not _is_launch_file(relative):
             continue
@@ -879,16 +864,18 @@ def _replace_package_name(
             continue
         data = path.read_bytes()
         if _digest(data) == digest:
-            continue  # unedited: write_package regenerates it under the new name
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError:
             continue
-        updated = rewrite(relative, text)
-        if updated != text:
-            _write_atomic(path, updated.encode("utf-8"))
-            rewritten.append(relative)
-    return rewritten
+        try:
+            source = data.decode("utf-8")
+            updated = rename_package_text(relative, source, old_name, new_name)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(
+                f"{relative} has your edits; update its package references "
+                f"by hand before renaming: {exc}."
+            ) from exc
+        if updated != source:
+            pending[relative] = updated.encode("utf-8")
+    return pending
 
 
 def _write_atomic(path: Path, data: bytes) -> None:

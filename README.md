@@ -189,6 +189,11 @@ ros2inspector design [-o DIR] [-p PORT] [--open|--no-open]
 
 Opens a local browser-based package designer (bound to `127.0.0.1`, protected by a per-session token). Add packages and nodes, give them publishers, subscribers, services, clients and action servers or clients, wire publishers to subscribers, then **Generate** to write ready-to-build `ament_python` packages into `DIR` (use your workspace's `src/`). The design is saved in `DIR/.ros2inspector_design.json`.
 
+Renaming an edited node updates only its actual constructor name literal and the relevant
+registration and launch entries. Other strings, comments and docstrings stay intact. If a
+constructor or edited metadata cannot be identified safely, Generate refuses with HTTP 409
+before moving or writing files; its message explains what to update by hand.
+
 Regenerating is safe: a file is rewritten only if you have not edited it since the last generation, files you added are never touched, and renaming a package moves its directory. Directories that were not created by the designer are never modified.
 
 ## Global options

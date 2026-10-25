@@ -709,3 +709,23 @@ def test_server_length_errors_open_the_node_and_mark_the_field(
     expect(page.locator("#snm")).to_have_value("camera_node_longer")
     expect(page.locator("#spubs .ferr")).to_contain_text("Shorten it by 7")
     expect(page.locator("#spubs .sinp")).to_be_focused()
+
+
+def test_ambiguous_constructor_rename_shows_conflict(
+    page: Page, designer: dict[str, Any], shot: Any
+) -> None:
+    _open(page, designer)
+    page.click("#gb")
+    _toast(page, "ok")
+    module = designer["out"] / "my_package/my_package/camera_node.py"
+    source = module.read_text() + "\ndef broken(\n"
+    module.write_text(source)
+    page.locator(".node").first.click()
+    page.locator("#snm").fill("camera_renamed")
+    page.click("#gb")
+    message = _toast(page, "err")
+    assert "constructor cannot be renamed safely" in message
+    assert "update the node name in the constructor yourself" in message
+    assert module.read_text() == source
+    assert not module.with_name("camera_renamed.py").exists()
+    shot(page, "designer-constructor-conflict")
