@@ -7,6 +7,7 @@ import networkx as nx
 
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.model.uam import UnifiedArchitectureModel
+from ros2inspector.policy.schema import FieldSpec
 from ros2inspector.static import workspace_aggregate_score
 
 
@@ -441,10 +442,9 @@ def rule_qos_compatibility(
                     and (requested.get("reliability") or "reliable") == "reliable"
                 ):
                     failures.append("reliability")
-                if (
-                    (offered.get("durability") or "volatile") == "volatile"
-                    and requested.get("durability") == "transient_local"
-                ):
+                if (offered.get("durability") or "volatile") == "volatile" and requested.get(
+                    "durability"
+                ) == "transient_local":
                     failures.append("durability")
                 for policy in ("deadline", "liveliness_lease_duration"):
                     offer = offered.get(policy)
@@ -598,5 +598,55 @@ _RULE_RUNNERS = {
     "service_connectivity": rule_service_connectivity,
     "action_connectivity": rule_action_connectivity,
 }
+
+_STRING = FieldSpec("string")
+_BOOL = FieldSpec("bool")
+_SEVERITY = FieldSpec("severity")
+_SCORE = FieldSpec("int", minimum=0, maximum=100)
+_STRINGS = FieldSpec("list", item=_STRING)
+_COMMON = {"type": _STRING, "_source": _STRING, "_line": FieldSpec("int", minimum=0)}
+_NAMING = FieldSpec("mapping", fields={"pattern": FieldSpec("pattern"), "severity": _SEVERITY})
+
+RULE_SCHEMAS: dict[str, dict[str, FieldSpec]] = {
+    "health_threshold": {"min_score": _SCORE, "workspace_min_score": _SCORE},
+    "license": {"allowed": _STRINGS},
+    "naming": dict.fromkeys(("packages", "nodes", "topics", "services"), _NAMING),
+    "dependency": {
+        "forbidden": FieldSpec(
+            "list",
+            item=FieldSpec(
+                "mapping",
+                fields={"from": _STRING, "to": _STRING, "severity": _SEVERITY},
+                required=frozenset({"from", "to"}),
+            ),
+        ),
+        "required": FieldSpec(
+            "list",
+            item=FieldSpec(
+                "mapping",
+                fields={"package": _STRING, "depends_on": _STRING, "severity": _SEVERITY},
+                required=frozenset({"package", "depends_on"}),
+            ),
+        ),
+    },
+    "no_circular_deps": {},
+    "maintainer_required": {"require_email": _BOOL},
+    "version_not_default": {"default_version": _STRING},
+    "topic_connectivity": {
+        "no_publisher": _BOOL,
+        "no_subscriber": _BOOL,
+        "include_unresolved": _BOOL,
+        "exclude": _STRINGS,
+        "severity_no_publisher": _SEVERITY,
+        "severity_no_subscriber": _SEVERITY,
+    },
+    "node_isolation": {"skip_dynamic_names": _BOOL},
+    "qos_compatibility": {},
+    "service_connectivity": {"missing_provider_severity": _SEVERITY, "include_unresolved": _BOOL},
+    "action_connectivity": {"missing_server_severity": _SEVERITY, "include_unresolved": _BOOL},
+}
+for _fields in RULE_SCHEMAS.values():
+    _fields.update(_COMMON)
+    _fields["severity"] = _SEVERITY
 
 __all__ = ["_RULE_RUNNERS"]
