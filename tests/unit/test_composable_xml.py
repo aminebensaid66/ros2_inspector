@@ -23,7 +23,7 @@ def test_xml_composable_nodes(tmp_path: Path) -> None:
     assert set(nodes) == {"demo::Pub", "demo::Sub"}
     assert nodes["demo::Pub"].presence == "known"
     assert nodes["demo::Pub"].namespace == "ns"
-    assert nodes["demo::Pub"].remaps == {"a": "b"}
+    assert nodes["demo::Pub"].remaps == [("a", "b")]
     assert nodes["demo::Sub"].presence == "conditional"
 
 

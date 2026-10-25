@@ -620,7 +620,9 @@ class UnifiedArchitectureModel:
                 )
             ]
 
-            actors: list[tuple[str, dict[str, str], str | None, str | None, dict[str, Any]]] = []
+            actors: list[
+                tuple[str, list[tuple[str, str]], str | None, str | None, dict[str, Any]]
+            ] = []
             if matches:
                 deployments: list[dict[str, Any]] = []
                 for deployment_index, launch_node in enumerate(matches):
@@ -677,7 +679,7 @@ class UnifiedArchitectureModel:
                             "namespace": launch_node.namespace,
                             "launch_file": launch_node.source_file,
                             "included_from": launch_node.included_from,
-                            "remaps": dict(launch_node.remaps),
+                            "remaps": [list(pair) for pair in launch_node.remaps],
                             "resolution": resolution,
                             "conditions": list(launch_node.conditions),
                             "unresolved_fields": list(launch_node.unresolved_fields),
@@ -689,7 +691,7 @@ class UnifiedArchitectureModel:
                 g.nodes[nid]["namespace"] = first["namespace"]
                 g.nodes[nid]["launch_file"] = first["launch_file"]
             else:
-                actors.append((nid, {}, None, nd.declared_ros_name, {}))
+                actors.append((nid, [], None, nd.declared_ros_name, {}))
 
             endpoint_groups = (
                 (nd.publishers, "Topic", "publisher", "publishes", "msg_type"),
@@ -913,7 +915,7 @@ class UnifiedArchitectureModel:
                 {
                     "executable": ln.executable,
                     "name": ln.name or "",
-                    "remaps": ln.remaps,
+                    "remaps": [list(pair) for pair in ln.remaps],
                     "namespace": ln.namespace,
                     "source_file": ln.source_file,
                     "unresolved_fields": list(ln.unresolved_fields),

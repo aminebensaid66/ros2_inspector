@@ -235,6 +235,13 @@ deployment unresolved instead of guessing.
 Literal Python `QoSProfile` settings and C++ `rclcpp::QoS(...)` settings are reported when
 available. The `qos_compatibility` rule reports only explicit reliability or durability
 mismatches; unknown QoS settings do not create findings.
+Remaps retain source order and duplicate match keys; the first matching rule wins.
+JSON `remaps` values in launch records and node deployments are arrays of `[from, to]`
+pairs, including an empty array when there are no rules (previously an object). See
+[the remap JSON schema](docs/launch-remaps.schema.json). A node qualifier precedes the
+optional kind prefix, for example `talker:rostopic://chatter` or
+`talker:rosservice://chatter`. Node-level remaps are supported; `SetRemap` launch actions
+remain unsupported and must not be treated as resolved global remaps.
 
 ## Output formats
 

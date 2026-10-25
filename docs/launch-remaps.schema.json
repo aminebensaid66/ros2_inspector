@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ordered launch remaps",
+  "description": "The remaps field used by launch records and source-node deployment records.",
+  "type": "array",
+  "items": {
+    "type": "array",
+    "prefixItems": [{"type": "string"}, {"type": "string"}],
+    "items": false,
+    "minItems": 2,
+    "maxItems": 2
+  }
+}

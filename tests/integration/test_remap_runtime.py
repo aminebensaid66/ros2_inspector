@@ -13,12 +13,17 @@ _REMAP_CASES = json.loads(
     (Path(__file__).parents[1] / "data/remap_cases.json").read_text(encoding="utf-8")
 )
 
+_QUALIFIER_CASES = json.loads(
+    (Path(__file__).parents[1] / "data/remap_qualifier_cases.json").read_text(encoding="utf-8")
+)
+
 
 @pytest.mark.requires_ros2
 @pytest.mark.parametrize(
     "case",
     [
         *_REMAP_CASES,
+        *_QUALIFIER_CASES,
         {"source": "chatter", "key": "rosservice://chatter", "target": "out"},
         {"source": "chatter", "key": "other:chatter", "target": "out"},
     ],
@@ -36,14 +41,19 @@ def test_remap_resolution_matches_rclpy(case: dict[str, str], ros_domain: int) -
     )
     node = rclpy.create_node("talker", namespace="robot", context=context)
     try:
-        remaps = {case["key"]: case["target"]}
+        remaps = [(case["key"], case["target"])]
         for kind, live in [
             ("Topic", node.resolve_topic_name(case["source"])),
             ("Service", node.resolve_service_name(case["source"])),
         ]:
             assert resolve_endpoint_name(case["source"], remaps, "robot", "talker", kind) == live
         if "actual" in case:
-            assert node.resolve_topic_name(case["source"]) == case["actual"]
+            live_name = (
+                node.resolve_service_name(case["source"])
+                if case.get("kind") == "Service"
+                else node.resolve_topic_name(case["source"])
+            )
+            assert live_name == case["actual"]
     finally:
         node.destroy_node()
         rclpy.shutdown(context=context)
@@ -61,7 +71,9 @@ def test_remapped_action_names_are_left_unresolved(ros_domain: int) -> None:
     node = rclpy.create_node("talker", namespace="robot", context=context)
     client = ActionClient(node, action.Fibonacci, "chatter")
     try:
-        expected = resolve_endpoint_name("chatter", {"chatter": "out"}, "robot", "talker", "Action")
+        expected = resolve_endpoint_name(
+            "chatter", [("chatter", "out")], "robot", "talker", "Action"
+        )
         deadline = time.monotonic() + 5.0
         services: set[str] = set()
         while time.monotonic() < deadline and not services:

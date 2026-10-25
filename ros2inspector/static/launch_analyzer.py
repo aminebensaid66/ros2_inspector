@@ -19,7 +19,7 @@ class LaunchNode:
     executable: str
     package: str
     name: str | None = None
-    remaps: dict[str, str] = field(default_factory=dict)
+    remaps: list[tuple[str, str]] = field(default_factory=list)
     namespace: str | None = None
     parameters: dict[str, object] = field(default_factory=dict)
     parameters_unresolved: bool = False
@@ -301,12 +301,12 @@ def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchN
     )
 
 
-def _extract_remaps(node: ast.expr | None) -> tuple[dict[str, str], bool]:
+def _extract_remaps(node: ast.expr | None) -> tuple[list[tuple[str, str]], bool]:
     if node is None:
-        return {}, False
+        return [], False
     if not isinstance(node, (ast.List, ast.Tuple)):
-        return {}, True
-    remaps: dict[str, str] = {}
+        return [], True
+    remaps: list[tuple[str, str]] = []
     unresolved = False
     for elt in node.elts:
         if not isinstance(elt, ast.Tuple) or len(elt.elts) != 2:
@@ -316,7 +316,7 @@ def _extract_remaps(node: ast.expr | None) -> tuple[dict[str, str], bool]:
         dst, dst_unresolved = _python_string(elt.elts[1], required=True)
         unresolved = unresolved or src_unresolved or dst_unresolved
         if src and dst:
-            remaps[src] = dst
+            remaps.append((src, dst))
     return remaps, unresolved
 
 
@@ -436,14 +436,14 @@ def _append_xml_node(
         else elem.get("namespace", elem.get("ns")),
         required=False,
     )
-    remaps: dict[str, str] = {}
+    remaps: list[tuple[str, str]] = []
     remaps_unresolved = False
     for remap in elem.findall("remap"):
         src, src_unresolved = _xml_string(remap.get("from"), required=True)
         dst, dst_unresolved = _xml_string(remap.get("to"), required=True)
         remaps_unresolved = remaps_unresolved or src_unresolved or dst_unresolved
         if src and dst:
-            remaps[src] = dst
+            remaps.append((src, dst))
 
     unresolved_fields = [
         field_name
@@ -609,12 +609,12 @@ def _yaml_string(value: object, *, required: bool) -> tuple[str | None, bool]:
     return value, False
 
 
-def _extract_yaml_remaps(value: object) -> tuple[dict[str, str], bool]:
+def _extract_yaml_remaps(value: object) -> tuple[list[tuple[str, str]], bool]:
     if value is None:
-        return {}, False
+        return [], False
     if not isinstance(value, list):
-        return {}, True
-    remaps: dict[str, str] = {}
+        return [], True
+    remaps: list[tuple[str, str]] = []
     unresolved = False
     for item in value:
         if isinstance(item, dict):
@@ -629,5 +629,5 @@ def _extract_yaml_remaps(value: object) -> tuple[dict[str, str], bool]:
         dst, dst_unresolved = _yaml_string(dst_value, required=True)
         unresolved = unresolved or src_unresolved or dst_unresolved
         if src and dst:
-            remaps[src] = dst
+            remaps.append((src, dst))
     return remaps, unresolved

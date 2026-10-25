@@ -49,7 +49,7 @@ def _expand(value: str, namespace: str | None, node_name: str | None) -> str:
 
 def resolve_endpoint_name(
     name: str,
-    remaps: dict[str, str],
+    remaps: list[tuple[str, str]],
     namespace: str | None,
     node_name: str | None,
     kind: str = "Topic",
@@ -71,7 +71,14 @@ def resolve_endpoint_name(
     if expanded == DYNAMIC_SENTINEL:
         return expanded
     short_name = _short_name(node_name)
-    for key, replacement in remaps.items():
+    for key, replacement in remaps:
+        qualifier, separator, remainder = key.partition(":")
+        if separator and not remainder.startswith("//"):
+            if short_name is None:
+                return DYNAMIC_SENTINEL
+            if qualifier != short_name:
+                continue
+            key = remainder
         if key.startswith("rostopic://"):
             if kind not in {"Topic", "Action"}:
                 continue
@@ -80,12 +87,6 @@ def resolve_endpoint_name(
             if kind not in {"Service", "Action"}:
                 continue
             key = key.removeprefix("rosservice://")
-        elif ":" in key:
-            qualifier, _, key = key.partition(":")
-            if short_name is None:
-                return DYNAMIC_SENTINEL
-            if qualifier != short_name:
-                continue
         match = _expand(key, namespace, node_name)
         if match == DYNAMIC_SENTINEL:
             return DYNAMIC_SENTINEL
@@ -96,7 +97,9 @@ def resolve_endpoint_name(
     return expanded
 
 
-def unresolved_name_suffix(name: str, remaps: dict[str, str], node_name: str | None) -> str | None:
+def unresolved_name_suffix(
+    name: str, remaps: list[tuple[str, str]], node_name: str | None
+) -> str | None:
     """Return the tail an endpoint's name must end with when only its namespace is unknown.
 
     ``None`` means the name could resolve to anything, for example because remap rules
