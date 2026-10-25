@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html as _html
 import json
+import re
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -171,18 +172,21 @@ def generate_html(uam: UAM, workspace_root: Path) -> str:
     # break the generated markup (e.g. in <title> and the workspace <div>).
     workspace_html = _html.escape(str(workspace_root))
 
-    return (
-        _TEMPLATE.replace("__CYTOSCAPE_SCRIPT_TAG__", _cytoscape_script_tag())
-        .replace("__GRAPHS_JSON__", graphs_json)
-        .replace("__SUMMARY_JSON__", summary_json)
-        .replace(
-            "__DIAGNOSTICS_JSON__",
-            json.dumps(uam.to_dict().get("diagnostics", []), separators=(",", ":")).replace(
-                "</", "<\\/"
-            ),
-        )
-        .replace("__WORKSPACE__", workspace_html)
+    replacements = {
+        "__CYTOSCAPE_SCRIPT_TAG__": _cytoscape_script_tag(),
+        "__GRAPHS_JSON__": graphs_json,
+        "__SUMMARY_JSON__": summary_json,
+        "__DIAGNOSTICS_JSON__": json.dumps(
+            uam.to_dict().get("diagnostics", []), separators=(",", ":")
+        ).replace("</", "<\\/"),
+        "__WORKSPACE__": workspace_html,
+    }
+    placeholders = re.compile(
+        r"__(?:CYTOSCAPE_SCRIPT_TAG|GRAPHS_JSON|SUMMARY_JSON|DIAGNOSTICS_JSON|WORKSPACE)__"
     )
+    # Substitute only placeholders from the original template. Replacement values may
+    # contain placeholder-looking text as valid source data and must remain untouched.
+    return placeholders.sub(lambda match: replacements[match.group(0)], _TEMPLATE)
 
 
 # ---------------------------------------------------------------------------
