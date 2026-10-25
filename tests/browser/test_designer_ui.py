@@ -627,3 +627,48 @@ def test_failed_save_keeps_a_banner_with_export_until_saved(
     expect(banner).to_be_hidden()
     assert "Design saved" in _toast(page, "ok")
     assert json.loads((designer["out"] / STATE_FILE).read_text())["packages"]
+
+
+def test_renaming_an_edited_node_reports_the_moved_module(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.click("#gb")
+    _toast(page, "ok")
+    module = designer["out"] / "my_package" / "my_package" / "camera_node.py"
+    module.write_text(module.read_text() + "# USER_EDIT_RETAINED\n")
+    page.locator(".node").first.click()
+    page.locator("#snm").fill("camera_renamed")
+    page.click("#gb")
+    expect(page.locator("#toast.show.ok")).to_contain_text(
+        "moved your edited my_package/camera_node.py to my_package/camera_renamed.py"
+    )
+    renamed = module.with_name("camera_renamed.py")
+    assert renamed.read_text().endswith("# USER_EDIT_RETAINED\n")
+    assert not module.exists()
+
+
+def test_rename_conflict_is_refused_with_an_actionable_message(
+    page: Page, designer: dict[str, Any], shot: Any
+) -> None:
+    _open(page, designer)
+    page.click("#gb")
+    _toast(page, "ok")
+    module = designer["out"] / "my_package" / "my_package" / "camera_node.py"
+    module.write_text(module.read_text() + "# mine\n")
+    module.with_name("camera_renamed.py").write_text("# also mine\n")
+    page.locator(".node").first.click()
+    page.locator("#snm").fill("camera_renamed")
+    page.click("#gb")
+    text = _toast(page, "err")
+    assert "camera_node.py has your edits" in text
+    assert "my_package/camera_renamed.py already exists" in text
+    assert "Merge your code into my_package/camera_renamed.py" in text
+    assert "rename the node back to 'camera_node'" in text
+    # Errors stay readable until dismissed.
+    page.wait_for_timeout(5500)
+    expect(page.locator("#toast.show.err")).to_be_visible()
+    shot(page, "designer-09-rename-conflict")
+    page.locator("#toast").click()
+    expect(page.locator("#toast.show")).to_have_count(0)
+    assert module.read_text().endswith("# mine\n")

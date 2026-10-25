@@ -23,6 +23,9 @@ from rich.console import Console
 from ros2inspector.design.codegen import (
     _GENERATED_MARKER,
     GenerateResult,
+    plan_package_edits,
+    previous_node_labels,
+    read_manifest,
     rename_blockers,
     rename_package_contents,
     render_package,
@@ -239,6 +242,78 @@ def _merge_generated_names(payload: dict[str, Any], old_state: dict[str, Any] | 
             package["_generated_name"] = generated_by_id[package_id]
 
 
+def _old_package(old_state: dict[str, Any] | None, package_id: str) -> dict[str, Any] | None:
+    for package in (old_state or {}).get("packages", []):
+        if isinstance(package, dict) and str(package.get("id", "")) == package_id:
+            return package
+    return None
+
+
+def _previous_nodes(
+    package_dir: Path, old_state: dict[str, Any] | None, package_id: str
+) -> dict[str, str]:
+    """Node id -> label at the last generation, from the package marker or the saved design."""
+    labels = previous_node_labels(package_dir)
+    if labels:
+        return labels
+    old_package = _old_package(old_state, package_id) or {}
+    return {
+        str(node["id"]): str(node["label"])
+        for node in old_package.get("nodes", [])
+        if isinstance(node, dict) and "id" in node and "label" in node
+    }
+
+
+def _edit_problems(
+    packages: list[PackageSpec],
+    rendered: dict[str, dict[str, str]],
+    output_dir: Path,
+    renames: list[tuple[Path, Path]],
+    old_state: dict[str, Any] | None,
+) -> list[str]:
+    """Why regenerating would leave a package that does not run, checked before any write."""
+    source_of = {new: old for old, new in renames}
+    problems: list[str] = []
+    for package in packages:
+        if package.id not in rendered:
+            continue
+        target = output_dir / package.pkg_name
+        source = source_of.get(target, target)
+        manifest = read_manifest(source)
+        if manifest is None:
+            continue
+        old_name, new_name = source.name, package.pkg_name
+        # Before a pending package rename, the module folder and resource marker still use
+        # the old name; view the package as it will look after the rename.
+        moves = [(old_name, new_name), (f"resource/{old_name}", f"resource/{new_name}")]
+
+        def renamed(relative: str, moves: list[tuple[str, str]] = moves) -> str:
+            for old, new in moves:
+                if relative == old or relative.startswith(f"{old}/"):
+                    return new + relative[len(old) :]
+            return relative
+
+        def read(
+            relative: str, source: Path = source, moves: list[tuple[str, str]] = moves
+        ) -> bytes | None:
+            for old, new in moves:
+                if relative == new or relative.startswith(f"{new}/"):
+                    relative = old + relative[len(new) :]
+                    break
+            path = source / relative
+            return path.read_bytes() if path.is_file() else None
+
+        translated = {renamed(key): digest for key, digest in manifest.items()}
+        plan = plan_package_edits(
+            package,
+            read,
+            translated,
+            _previous_nodes(source, old_state, package.id),
+        )
+        problems.extend(f"{package.pkg_name}: {problem}" for problem in plan.problems)
+    return problems
+
+
 def _make_handler(
     html: str | Callable[[], str],
     output_dir: Path,
@@ -405,7 +480,15 @@ def _make_handler(
                         },
                     )
                     return
-            # 3. Rename, then write. Save state on the way out so names never go stale.
+            # 3. Refuse up front if a package with user edits would not run after this.
+            try:
+                problems = _edit_problems(to_generate, rendered, self._out, renames, old_state)
+            except OSError as exc:
+                problems = [str(exc)]
+            if problems:
+                self._respond(409, {"error": " ".join(problems), "problems": problems})
+                return
+            # 4. Rename, then write. Save state on the way out so names never go stale.
             results: list[GenerateResult] = []
             renamed_in: list[str] = []
             try:
@@ -420,7 +503,13 @@ def _make_handler(
                     package = package_by_id[str(package_payload.get("id", ""))]
                     if package.id not in rendered:
                         continue
-                    result = write_package(package, self._out, rendered[package.id])
+                    target = self._out / package.pkg_name
+                    result = write_package(
+                        package,
+                        self._out,
+                        rendered[package.id],
+                        previous_nodes=_previous_nodes(target, old_state, package.id),
+                    )
                     package_payload["_generated_name"] = package.pkg_name
                     results.append(result)
                     self._report(result)
@@ -449,6 +538,8 @@ def _make_handler(
                         f"{r.package}/{path}" for r in results for path in r.kept_modified
                     ],
                     "renamed_in": renamed_in,
+                    "updated_in": [f"{r.package}: {note}" for r in results for note in r.notes],
+                    "warnings": [f"{r.package}: {text}" for r in results for text in r.warnings],
                     "state_saved": state_error is None,
                     "state_error": state_error,
                 },
@@ -462,6 +553,10 @@ def _make_handler(
             )
             for path in result.kept_modified:
                 self._con.print(f"  [yellow]kept your edits:[/yellow] {result.package}/{path}")
+            for note in result.notes:
+                self._con.print(f"  [yellow]{note}[/yellow]")
+            for warning in result.warnings:
+                self._con.print(f"  [yellow]warning:[/yellow] {warning}")
 
         def _try_save(self, payload: dict[str, Any]) -> str | None:
             """Save the design; return why it failed, or None. The old state is kept on failure."""

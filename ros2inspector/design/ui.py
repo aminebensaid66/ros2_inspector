@@ -1127,13 +1127,16 @@ GB.addEventListener('click',async()=>{
       if(saved){ markSaved(); hideSaveProblem(); }
       else showSaveProblem(data.state_error||'unknown error',true);
       const kept=data.kept_modified||[], renamedIn=data.renamed_in||[];
+      const updatedIn=data.updated_in||[], warnings=data.warnings||[];
       const written=(data.packages||[]).reduce((n,r)=>n+r.written.length,0);
       let msg=kept.length
         ? `${written} file(s) written → ${data.output_dir}. Kept your edits in ${kept.length} file(s): ${kept.join(', ')}`
         : `${written} file(s) written, ${data.files.length-written} unchanged → ${data.output_dir}`;
       if(renamedIn.length) msg+=`. Updated the package name in your edited file(s): ${renamedIn.join(', ')}`;
+      if(updatedIn.length) msg+=`. In your edited files: ${updatedIn.join('; ')}`;
+      if(warnings.length) msg+=`. Check: ${warnings.join(' ')}`;
       if(!saved) showToast(`⚠ ${msg}. The design itself was NOT saved; see the banner.`,'err');
-      else showToast('✓ '+msg,'ok');
+      else showToast((warnings.length?'⚠ ':'✓ ')+msg, warnings.length?'warn':'ok');
     } else {
       if(data.state_saved===false) showSaveProblem(data.state_error||'unknown error',true);
       showToast(`✗ ${errorText(data,payload)}`,'err');

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -11,6 +12,7 @@ from typing import Any
 import pytest
 
 from ros2inspector.design import server as design_server
+from ros2inspector.design.codegen import _GENERATED_MARKER
 from ros2inspector.design.server import STATE_FILE
 from tests.unit.test_design_server_http import _node, _pkg, _post, _state, server
 
@@ -87,3 +89,71 @@ def test_write_limit_never_truncates_the_saved_design(tmp_path: Path) -> None:
     assert result.stdout.startswith("failed")
     assert (tmp_path / STATE_FILE).read_text() == '{"packages": []}'
     assert sorted(p.name for p in tmp_path.iterdir()) == [STATE_FILE]
+
+
+# ── #43: an edited node module follows its node through a rename ───────────────────
+
+
+def _rename_camera(out: Path, httpd: Any, edit: str = "# USER_EDIT_RETAINED\n") -> Any:
+    assert _post(httpd, "/generate", _state(_pkg(nodes=[_camera()])))[0] == 200
+    module = out / "demo_pkg/demo_pkg/camera_node.py"
+    module.write_text(module.read_text() + edit)
+    return _post(httpd, "/generate", _state(_pkg(nodes=[_camera("camera_renamed")])))
+
+
+def test_renaming_an_edited_node_moves_its_module(server: Any) -> None:
+    httpd, out = server
+    status, data = _rename_camera(out, httpd)
+    assert status == 200, data
+    package = out / "demo_pkg"
+    assert not (package / "demo_pkg/camera_node.py").exists()
+    moved = (package / "demo_pkg/camera_renamed.py").read_text()
+    assert moved.endswith("# USER_EDIT_RETAINED\n")
+    assert "super().__init__('camera_renamed')" in moved
+    setup = (package / "setup.py").read_text()
+    assert "'camera_renamed = demo_pkg.camera_renamed:main'" in setup
+    assert "camera_node" not in setup
+    assert "executable='camera_renamed'" in (package / "launch/launch.py").read_text()
+    assert data["kept_modified"] == ["demo_pkg/demo_pkg/camera_renamed.py"]
+    assert data["updated_in"] == [
+        "demo_pkg: moved your edited demo_pkg/camera_node.py to demo_pkg/camera_renamed.py"
+    ]
+    # Still counted as edited, so the next Generate keeps it.
+    status, data = _post(httpd, "/generate", _state(_pkg(nodes=[_camera("camera_renamed")])))
+    assert data["kept_modified"] == ["demo_pkg/demo_pkg/camera_renamed.py"]
+
+
+def test_rename_uses_the_saved_design_for_older_markers(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg(nodes=[_camera()])))[0] == 200
+    marker = out / "demo_pkg" / _GENERATED_MARKER
+    data = json.loads(marker.read_text())
+    del data["nodes"]
+    marker.write_text(json.dumps(data))
+    module = out / "demo_pkg/demo_pkg/camera_node.py"
+    module.write_text(module.read_text() + "# edit\n")
+    status, _ = _post(httpd, "/generate", _state(_pkg(nodes=[_camera("camera_renamed")])))
+    assert status == 200
+    assert (out / "demo_pkg/demo_pkg/camera_renamed.py").read_text().endswith("# edit\n")
+
+
+def test_rename_onto_an_existing_module_is_refused_without_writing(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg(nodes=[_camera()])))[0] == 200
+    package = out / "demo_pkg"
+    (package / "demo_pkg/camera_node.py").write_text("# mine\n")
+    (package / "demo_pkg/camera_renamed.py").write_text("# also mine\n")
+    before = {p: p.read_bytes() for p in package.rglob("*") if p.is_file()}
+    status, data = _post(httpd, "/generate", _state(_pkg(nodes=[_camera("camera_renamed")])))
+    assert status == 409
+    assert "camera_renamed.py already exists" in data["error"]
+    assert {p: p.read_bytes() for p in package.rglob("*") if p.is_file()} == before
+
+
+def test_renaming_an_unedited_node_regenerates_it(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg(nodes=[_camera()])))[0] == 200
+    status, data = _post(httpd, "/generate", _state(_pkg(nodes=[_camera("camera_renamed")])))
+    assert status == 200
+    assert data["kept_modified"] == []
+    assert "demo_pkg/camera_node.py" in data["packages"][0]["removed"]
