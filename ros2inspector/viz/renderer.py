@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html as _html
-import json
 import re
 from importlib.resources import files
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Any
 
 from ros2inspector.graph.renderer import _subgraph, flow_direction
 from ros2inspector.model.uam import UAM
+from ros2inspector.utils.html import json_for_script
 
 
 def _cytoscape_script_tag() -> str:
@@ -181,10 +181,10 @@ def generate_html(uam: UAM, workspace_root: Path) -> str:
     }
     summary = uam.summary()
 
-    # Replace </ with <\/ so that node names containing "</script>" cannot
-    # break out of the embedded <script> block in the generated HTML.
-    graphs_json = json.dumps(graphs, separators=(",", ":")).replace("</", "<\\/")
-    summary_json = json.dumps(summary, separators=(",", ":")).replace("</", "<\\/")
+    # Names, paths and diagnostics are source data: none of their characters may change
+    # how the browser parses the <script> blocks they are embedded in.
+    graphs_json = json_for_script(graphs)
+    summary_json = json_for_script(summary)
     # HTML-escape the path so characters like <, >, & in directory names cannot
     # break the generated markup (e.g. in <title> and the workspace <div>).
     workspace_html = _html.escape(str(workspace_root))
@@ -193,9 +193,7 @@ def generate_html(uam: UAM, workspace_root: Path) -> str:
         "__CYTOSCAPE_SCRIPT_TAG__": _cytoscape_script_tag(),
         "__GRAPHS_JSON__": graphs_json,
         "__SUMMARY_JSON__": summary_json,
-        "__DIAGNOSTICS_JSON__": json.dumps(
-            uam.to_dict().get("diagnostics", []), separators=(",", ":")
-        ).replace("</", "<\\/"),
+        "__DIAGNOSTICS_JSON__": json_for_script(uam.to_dict().get("diagnostics", [])),
         "__WORKSPACE__": workspace_html,
     }
     placeholders = re.compile(

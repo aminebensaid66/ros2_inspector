@@ -267,3 +267,30 @@ def test_viz_labels_fit_their_shapes_without_style_warnings(page: Page, workspac
     assert ratio >= 1.9
     warnings = [m for m in page.errors.messages if "deprecated" in m]  # type: ignore[attr-defined]
     assert warnings == []
+
+
+def _viz_page(workspace: Path) -> Path:
+    target = workspace.parent / "graph.html"
+    result = runner.invoke(
+        app, ["-q", "viz", "-C", str(workspace), "-o", str(target), "--no-open", "--no-cache"]
+    )
+    assert result.exit_code == 0, result.output
+    return target
+
+
+def test_viz_renders_a_workspace_whose_path_opens_a_script_comment(
+    page: Page, workspace: Path, shot: Any
+) -> None:
+    hostile = workspace.parent / "ws<!--<script>name</script>x" / "workspace_a"
+    hostile.parent.mkdir(parents=True)
+    workspace.rename(hostile)
+    page.goto(_viz_page(hostile).as_uri())
+    page.wait_for_function(
+        "() => typeof cy !== 'undefined' && cy && typeof cy.nodes === 'function'",
+        timeout=10000,
+    )
+    assert page.evaluate("cy.nodes().length") == 3
+    assert "ws<!--<script>name</script>x" in page.locator("#ws").inner_text()
+    shot(page, "viz-07-hostile-path")
+    errors = [m for m in page.errors.messages if not m.startswith("console.warning")]  # type: ignore[attr-defined]
+    assert errors == []
