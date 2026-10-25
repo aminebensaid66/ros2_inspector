@@ -290,7 +290,14 @@ def rule_topic_connectivity(
     flag_no_sub: bool = cfg.get("no_subscriber", True)
     sev_no_pub = _sev(cfg.get("severity_no_publisher", "warning"))
     sev_no_sub = _sev(cfg.get("severity_no_subscriber", "info"))
-    exclude = _DEFAULT_SYSTEM_TOPICS | set(cfg.get("exclude", []))
+    # Topic names are resolved (``cmd_vel`` at the root is ``/cmd_vel``), so a relative
+    # name in the policy excludes the root-namespace topic as well.
+    user_exclude = {str(name) for name in cfg.get("exclude", [])}
+    exclude = (
+        _DEFAULT_SYSTEM_TOPICS
+        | user_exclude
+        | {f"/{name}" for name in user_exclude if not name.startswith(("/", "~"))}
+    )
     violations: list[PolicyViolation] = []
 
     for nid, attrs in g.nodes(data=True):

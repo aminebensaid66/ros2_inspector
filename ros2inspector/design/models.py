@@ -104,6 +104,12 @@ def split_interface(value: str) -> tuple[str, InterfaceKind | None, str]:
     return match.group(1), kind, match.group(3)  # type: ignore[return-value]
 
 
+def canonical_interface(value: str) -> str:
+    """'pkg/msg/Type' and 'pkg/Type' name the same interface; return the short form."""
+    package, _, type_name = split_interface(value)
+    return f"{package}/{type_name}"
+
+
 def _check_identifier(value: str, what: str) -> str:
     if not _IDENTIFIER_RE.fullmatch(value):
         raise ValueError(f"{what} must be a lowercase identifier (letters, digits, '_')")
@@ -279,7 +285,9 @@ class PackageSpec(BaseModel):
                     f"edge {source.label} -> {target.label}: topic names differ "
                     f"({publisher.name!r} vs {subscriber.name!r}), so they would not connect"
                 )
-            if publisher.interface_type != subscriber.interface_type:
+            if canonical_interface(publisher.interface_type) != canonical_interface(
+                subscriber.interface_type
+            ):
                 raise ValueError(
                     f"edge {source.label} -> {target.label} on {publisher.name!r}: "
                     f"types differ ({publisher.interface_type} vs {subscriber.interface_type})"

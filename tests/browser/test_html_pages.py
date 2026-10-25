@@ -51,17 +51,45 @@ def test_docs_package_page_lists_endpoints_and_links_back(
 
 
 @pytest.mark.parametrize("width", [375, 768])
-def test_docs_pages_fit_small_screens(page: Page, workspace: Path, width: int, shot: Any) -> None:
+@pytest.mark.parametrize("page_path", ["index.html", "packages/pkg_a.html"])
+def test_docs_pages_fit_small_screens(
+    page: Page, workspace: Path, width: int, page_path: str, shot: Any
+) -> None:
     out = _docs_html(workspace)
     page.set_viewport_size({"width": width, "height": 800})
-    page.goto((out / "packages" / "pkg_a.html").as_uri())
+    page.goto((out / page_path).as_uri())
     overflow = page.evaluate(
         "document.documentElement.scrollWidth - document.documentElement.clientWidth"
     )
-    shot(page, f"docs-03-package-{width}px")
-    # Long endpoint names may wrap inside tables, but the page itself must not scroll sideways
-    # by more than a few pixels of table border.
-    assert overflow <= 24, overflow
+    shot(page, f"docs-03-{page_path.replace('/', '-')}-{width}px")
+    # Wide tables scroll inside their own container; the page never scrolls sideways.
+    assert overflow == 0, overflow
+
+
+@pytest.mark.parametrize("page_path", ["index.html", "packages/{name}.html"])
+def test_docs_long_package_name_fits_375px(page: Page, workspace: Path, page_path: str) -> None:
+    """Regression (#27): a long package name in a heading must wrap, not widen the page."""
+    name = "navigation_stack_" + "very_long_package_name_" * 3 + "controller"
+    pkg = workspace / "src" / "long"
+    pkg.mkdir()
+    (pkg / "package.xml").write_text(
+        f'<?xml version="1.0"?><package format="3"><name>{name}</name>'
+        "<version>1.0.0</version><description>x</description>"
+        '<maintainer email="a@b.c">A</maintainer><license>MIT</license></package>',
+        encoding="utf-8",
+    )
+    out = _docs_html(workspace)
+    page.set_viewport_size({"width": 375, "height": 800})
+    page.goto((out / page_path.format(name=name)).as_uri())
+    overflow = page.evaluate(
+        "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+    assert overflow == 0, overflow
+    widest = page.evaluate(
+        "Math.max(...[...document.querySelectorAll('h1,h2,h3,h4')]"
+        ".map(h => h.scrollWidth - h.clientWidth))"
+    )
+    assert widest <= 0, widest
 
 
 def test_docs_page_cannot_run_script_from_package_xml(page: Page, workspace: Path) -> None:
@@ -101,3 +129,141 @@ def test_viz_graph_renders_offline(page: Page, workspace: Path, shot: Any) -> No
     # Cytoscape logs deprecation warnings for the existing viz styles; only errors fail here.
     errors = [m for m in page.errors.messages if not m.startswith("console.warning")]  # type: ignore[attr-defined]
     assert errors == []
+
+
+def _open_viz(page: Page, workspace: Path) -> None:
+    target = workspace / "graph.html"
+    result = runner.invoke(
+        app, ["-q", "viz", "-C", str(workspace), "-o", str(target), "--no-open", "--no-cache"]
+    )
+    assert result.exit_code == 0, result.output
+    page.goto(target.as_uri())
+    page.wait_for_function("() => typeof cy !== 'undefined' && cy.nodes().length > 0")
+
+
+def _settle(page: Page) -> None:
+    page.wait_for_timeout(1300)  # longest layout animation is 500ms, cose needs a moment
+
+
+_OVERLAPS = """() => {
+  const ns = cy.nodes(':childless:visible'); let c = 0;
+  for (let i = 0; i < ns.length; i++) for (let j = i + 1; j < ns.length; j++) {
+    const a = ns[i].boundingBox(), b = ns[j].boundingBox();
+    if (a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2) c++;
+  }
+  return c; }"""
+_OUTSIDE = """() => { const e = cy.extent();
+  return cy.nodes(':visible').filter(n => { const b = n.boundingBox();
+    return b.x2 < e.x1 || b.x1 > e.x2 || b.y2 < e.y1 || b.y1 > e.y2; }).length; }"""
+
+
+_PACKAGES_AND_DEPS = """() => [cy.nodes('[kind="Package"]').length,
+  cy.edges('[rel="depends_on"]').length, cy.nodes().length]"""
+
+
+@pytest.mark.parametrize("layout", ["cose", "breadthfirst", "circle", "concentric", "grid"])
+def test_viz_free_layouts_are_flat_overlap_free_and_in_view(
+    page: Page, workspace: Path, layout: str
+) -> None:
+    _open_viz(page, workspace)
+    page.click('.tab[data-g="full"]')
+    _settle(page)
+    assert page.evaluate("cy.nodes(':parent').length") > 0  # Grouped keeps the packages
+    grouped = page.evaluate(_PACKAGES_AND_DEPS)
+    page.select_option("#lay-sel", layout)
+    _settle(page)
+    assert page.evaluate("cy.nodes(':parent').length") == 0
+    # Flat, but nothing is dropped: packages stay (linked to their nodes), deps included.
+    assert page.evaluate(_PACKAGES_AND_DEPS) == grouped
+    assert page.evaluate("cy.edges('[rel=\"contains\"]').length") > 0
+    assert page.evaluate(_OVERLAPS) == 0
+    assert page.evaluate(_OUTSIDE) == 0
+    undrawable = "cy.edges(':visible').filter(e => e._private.rscratch.badLine).length"
+    assert page.evaluate(undrawable) == 0
+    page.select_option("#lay-sel", "compound")
+    _settle(page)
+    assert page.evaluate("cy.nodes(':parent').length") > 0
+
+
+def _large_workspace(root: Path, packages: int = 45) -> Path:
+    """A nav2-sized workspace: many packages, nodes and shared topics."""
+    for p in range(packages):
+        name = f"nav_pkg_{p:02d}"
+        pkg = root / "src" / name
+        (pkg / name).mkdir(parents=True)
+        (pkg / "package.xml").write_text(
+            f'<?xml version="1.0"?><package format="3"><name>{name}</name>'
+            "<version>1.0.0</version><description>x</description>"
+            '<maintainer email="a@b.c">A</maintainer><license>MIT</license>'
+            "<depend>rclpy</depend>"
+            + (f"<depend>nav_pkg_{p - 1:02d}</depend>" if p else "")
+            + "<export><build_type>ament_python</build_type></export></package>",
+            encoding="utf-8",
+        )
+        for n in range(2):
+            lines = "\n        ".join(
+                [
+                    f"self.create_publisher(String, '/topic_{(p + n) % 30}', 10)",
+                    f"self.create_subscription(String, '/topic_{(p * 7 + n) % 30}', print, 10)",
+                ]
+            )
+            (pkg / name / f"node_{n}.py").write_text(
+                "from rclpy.node import Node\nfrom std_msgs.msg import String\n\n\n"
+                f"class Node{p}x{n}(Node):\n    def __init__(self):\n"
+                f"        super().__init__('node_{p}_{n}')\n        {lines}\n",
+                encoding="utf-8",
+            )
+    return root
+
+
+@pytest.mark.parametrize("tab", ["comms", "full"])
+def test_viz_force_layout_has_no_overlaps_on_a_large_workspace(
+    page: Page, tmp_path: Path, tab: str
+) -> None:
+    """Regression (#22): cose alone left nodes stacked on nav2-sized graphs."""
+    workspace = _large_workspace(tmp_path)
+    _open_viz(page, workspace)
+    page.click(f'.tab[data-g="{tab}"]')
+    _settle(page)
+    page.select_option("#lay-sel", "cose")
+    page.wait_for_timeout(4000)
+    assert page.evaluate("cy.nodes(':childless:visible').length") > 100
+    assert page.evaluate(_OVERLAPS) == 0
+    assert page.evaluate(_OUTSIDE) == 0
+
+
+def test_viz_stats_follow_filters_and_search_survives_tab_switch(
+    page: Page, workspace: Path
+) -> None:
+    _open_viz(page, workspace)
+    page.click('.tab[data-g="comms"]')
+    _settle(page)
+    page.locator('input[data-kind="Topic"]').uncheck()
+    assert "Topic" not in page.locator("#stats").inner_text()
+    page.locator('input[data-kind="Topic"]').check()
+    assert "Topic" in page.locator("#stats").inner_text()
+    page.fill("#search", "chatter")
+    faded = page.evaluate("cy.elements('.faded').length")
+    assert faded > 0
+    page.click('.tab[data-g="full"]')
+    _settle(page)
+    assert page.evaluate("cy.elements('.faded').length") > 0
+    highlighted = (
+        "cy.nodes().filter(n => (n.data('name') || '').includes('chatter')"
+        " && !n.hasClass('faded')).length"
+    )
+    assert page.evaluate(highlighted) > 0
+
+
+def test_viz_labels_fit_their_shapes_without_style_warnings(page: Page, workspace: Path) -> None:
+    _open_viz(page, workspace)
+    page.click('.tab[data-g="comms"]')
+    _settle(page)
+    # A diamond only fits text in its middle: it must be well over the text width.
+    ratio = page.evaluate(
+        "(() => { const n = cy.nodes('[kind=\"Service\"]').first();"
+        " return n.width() / textWidth(n); })()"
+    )
+    assert ratio >= 1.9
+    warnings = [m for m in page.errors.messages if "deprecated" in m]  # type: ignore[attr-defined]
+    assert warnings == []

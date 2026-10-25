@@ -20,6 +20,10 @@ _WEIGHTS = {
 
 assert sum(_WEIGHTS.values()) == 100
 
+# Files whose presence changes a package's score (watch re-runs when they change).
+README_NAMES = ("README.md", "README.rst", "README.txt", "README")
+TEST_DIR_NAMES = ("test", "tests")
+
 
 def score_package(pkg: PackageMetadata) -> int:
     path = Path(pkg.path)
@@ -41,8 +45,7 @@ def score_package(pkg: PackageMetadata) -> int:
     if pkg.version and pkg.version != "0.0.0":
         score += _WEIGHTS["has_version"]
 
-    readme_candidates = ["README.md", "README.rst", "README.txt", "README"]
-    if any((path / r).exists() for r in readme_candidates):
+    if any((path / r).exists() for r in README_NAMES):
         score += _WEIGHTS["has_readme"]
 
     all_deps = {d for deps in pkg.dependencies.values() for d in deps}
@@ -54,7 +57,7 @@ def score_package(pkg: PackageMetadata) -> int:
     # Assume no cycles initially; score_workspace deducts these points for cyclic packages.
     score += _WEIGHTS["no_circular_deps"]
 
-    test_dirs = (path / "test", path / "tests")
+    test_dirs = tuple(path / name for name in TEST_DIR_NAMES)
     if any(test_dir.is_dir() and any(test_dir.iterdir()) for test_dir in test_dirs):
         score += _WEIGHTS["has_test_dir"]
 
