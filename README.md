@@ -215,6 +215,9 @@ kinds are `publisher`, `subscription`, `service`, `client`, `action_server`, and
 Factory-derived endpoints retain source evidence and medium or low confidence.
 Literal Python and C++ parameter defaults can resolve endpoint names and are labeled
 `parameter_default`; launch parameter overrides and computed defaults remain unresolved.
+Endpoint names are resolved the way rcl resolves them: the name and each remap rule are
+expanded with the node's namespace and name before matching, and node-qualified
+(`node:from:=to`) and `rostopic://`/`rosservice://` rules apply only where ROS applies them.
 Literal Python `QoSProfile` settings and C++ `rclcpp::QoS(...)` settings are reported when
 available. The `qos_compatibility` rule reports only explicit reliability or durability
 mismatches; unknown QoS settings do not create findings.

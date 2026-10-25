@@ -1,0 +1,68 @@
+[
+  {
+    "source": "chatter",
+    "key": "/robot/chatter",
+    "target": "out",
+    "actual": "/robot/out"
+  },
+  {
+    "source": "/robot/chatter",
+    "key": "chatter",
+    "target": "out",
+    "actual": "/robot/out"
+  },
+  {
+    "source": "~/chatter",
+    "key": "/robot/talker/chatter",
+    "target": "out",
+    "actual": "/robot/out"
+  },
+  {
+    "source": "/robot/talker/chatter",
+    "key": "~/chatter",
+    "target": "out",
+    "actual": "/robot/out"
+  },
+  {
+    "source": "chatter",
+    "key": "chatter",
+    "target": "~/out",
+    "actual": "/robot/talker/out"
+  },
+  {
+    "source": "chatter",
+    "key": "chatter",
+    "target": "/out",
+    "actual": "/out"
+  },
+  {
+    "source": "/robot/chatter",
+    "key": "/robot/chatter",
+    "target": "out",
+    "actual": "/robot/out"
+  },
+  {
+    "source": "~/chatter",
+    "key": "~/chatter",
+    "target": "out",
+    "actual": "/robot/out"
+  },
+  {
+    "source": "chatter",
+    "key": "talker:chatter",
+    "target": "out",
+    "actual": "/robot/out"
+  },
+  {
+    "source": "chatter",
+    "key": "rostopic://chatter",
+    "target": "out",
+    "actual": "/robot/out"
+  },
+  {
+    "source": "chatter",
+    "key": "/chatter",
+    "target": "out",
+    "actual": "/robot/chatter"
+  }
+]

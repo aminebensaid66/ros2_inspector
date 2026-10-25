@@ -15,6 +15,9 @@ from ros2inspector.discovery import (
     find_interface_files,
     find_package_xml_files,
 )
+from ros2inspector.model.names import (
+    resolve_endpoint_name,
+)
 from ros2inspector.model.schemas import (
     DYNAMIC_SENTINEL,
     CommunicationEndpoint,
@@ -123,16 +126,6 @@ def _is_test_source(file_path: str | Path, package_path: Path) -> bool:
     except ValueError:
         return False
     return any(part in {"test", "tests", "gtest", "pytest"} for part in relative.parts[:-1])
-
-
-def _apply_remap(name: str, remaps: dict[str, str]) -> str:
-    """Return the remapped topic/service/action name, normalising leading slash variants."""
-    if name == DYNAMIC_SENTINEL:
-        return name
-    if name in remaps:
-        return remaps[name]
-    alt = f"/{name}" if not name.startswith("/") else name.lstrip("/")
-    return remaps.get(alt, name)
 
 
 def _apply_namespace(name: str, namespace: str | None, node_name: str | None = None) -> str:
@@ -683,8 +676,8 @@ class UnifiedArchitectureModel:
             for endpoints, kind, role, rel, type_key in endpoint_groups:
                 for index, endpoint in enumerate(endpoints):
                     for actor_id, remaps, namespace, node_name, deployment_attrs in actors:
-                        actual = _apply_namespace(
-                            _apply_remap(endpoint.name, remaps), namespace, node_name
+                        actual = resolve_endpoint_name(
+                            endpoint.name, remaps, namespace, node_name, kind
                         )
                         comm_id = _communication_id(kind, actual, actor_id, role, index)
                         self._upsert_comm_node(
