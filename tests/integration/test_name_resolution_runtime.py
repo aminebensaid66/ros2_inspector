@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
-import signal
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -113,7 +112,12 @@ def _fixture(root: Path) -> None:
 
 
 @pytest.mark.requires_ros2
-def test_group_namespace_parameters_and_types_match_live_graph(tmp_path: Path) -> None:
+def test_group_namespace_parameters_and_types_match_live_graph(
+    tmp_path: Path,
+    ros_domain: int,
+    ros_environment: dict[str, str],
+    ros_process: Callable[..., subprocess.Popen[bytes]],
+) -> None:
     import rclpy
 
     if shutil.which("colcon") is None or shutil.which("ros2") is None:
@@ -129,20 +133,24 @@ def test_group_namespace_parameters_and_types_match_live_graph(tmp_path: Path) -
     assert "'/robot/chatter'" in findings[0]["message"]
 
     result = subprocess.run(
-        ["colcon", "build"], cwd=tmp_path, capture_output=True, text=True, timeout=180
+        ["colcon", "build"],
+        cwd=tmp_path,
+        env=ros_environment,
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    launch = subprocess.Popen(
+    launch = ros_process(
         [
             "bash",
             "-c",
             "source install/setup.bash && exec ros2 launch resolution_demo system.launch.py",
         ],
         cwd=tmp_path,
-        env=dict(os.environ),
         start_new_session=True,
     )
-    rclpy.init()
+    rclpy.init(domain_id=ros_domain)
     observer = rclpy.create_node("resolution_observer")
     expected_nodes = {"/robot/talker", "/robot/listener", "/robot/typed"}
     try:
@@ -175,9 +183,3 @@ def test_group_namespace_parameters_and_types_match_live_graph(tmp_path: Path) -
     finally:
         observer.destroy_node()
         rclpy.shutdown()
-        os.killpg(launch.pid, signal.SIGINT)
-        try:
-            launch.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            os.killpg(launch.pid, signal.SIGKILL)
-            launch.wait(timeout=5)

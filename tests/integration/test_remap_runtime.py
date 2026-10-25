@@ -24,12 +24,16 @@ _REMAP_CASES = json.loads(
     ],
     ids=lambda c: f"{c['source']}|{c['key']}",
 )
-def test_remap_resolution_matches_rclpy(case: dict[str, str]) -> None:
+def test_remap_resolution_matches_rclpy(case: dict[str, str], ros_domain: int) -> None:
     import rclpy
     from rclpy.context import Context
 
     context = Context()
-    rclpy.init(args=["--ros-args", "-r", f"{case['key']}:={case['target']}"], context=context)
+    rclpy.init(
+        domain_id=ros_domain,
+        args=["--ros-args", "-r", f"{case['key']}:={case['target']}"],
+        context=context,
+    )
     node = rclpy.create_node("talker", namespace="robot", context=context)
     try:
         remaps = {case["key"]: case["target"]}
@@ -46,14 +50,14 @@ def test_remap_resolution_matches_rclpy(case: dict[str, str]) -> None:
 
 
 @pytest.mark.requires_ros2
-def test_remapped_action_names_are_left_unresolved() -> None:
+def test_remapped_action_names_are_left_unresolved(ros_domain: int) -> None:
     import rclpy
     from rclpy.action import ActionClient
     from rclpy.context import Context
 
     action = pytest.importorskip("example_interfaces.action")
     context = Context()
-    rclpy.init(args=["--ros-args", "-r", "chatter:=out"], context=context)
+    rclpy.init(domain_id=ros_domain, args=["--ros-args", "-r", "chatter:=out"], context=context)
     node = rclpy.create_node("talker", namespace="robot", context=context)
     client = ActionClient(node, action.Fibonacci, "chatter")
     try:

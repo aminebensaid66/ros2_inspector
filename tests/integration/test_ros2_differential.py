@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -12,7 +12,9 @@ from ros2inspector.model.uam import UAM
 
 
 @pytest.mark.requires_ros2
-def test_static_topic_prediction_matches_live_ros_graph(tmp_path: Path) -> None:
+def test_static_topic_prediction_matches_live_ros_graph(
+    tmp_path: Path, ros_domain: int, ros_process: Callable[..., subprocess.Popen[bytes]]
+) -> None:
     rclpy = pytest.importorskip("rclpy")
 
     package = tmp_path / "src" / "runtime_demo"
@@ -72,11 +74,10 @@ def test_static_topic_prediction_matches_live_ros_graph(tmp_path: Path) -> None:
     assert static_topic["publishers"] == ["runtime_fixture"]
     assert static_topic["subscribers"] == ["runtime_fixture"]
 
-    child_env = dict(os.environ)
-    process = subprocess.Popen([sys.executable, str(source)], env=child_env)
+    process = ros_process([sys.executable, str(source)])
     observer = None
     try:
-        rclpy.init()
+        rclpy.init(domain_id=ros_domain)
         observer = rclpy.create_node("ros2inspector_runtime_observer")
         deadline = time.monotonic() + 15.0
         runtime_node_names: set[str] = set()
@@ -85,14 +86,14 @@ def test_static_topic_prediction_matches_live_ros_graph(tmp_path: Path) -> None:
         while time.monotonic() < deadline:
             rclpy.spin_once(observer, timeout_sec=0.2)
             runtime_node_names = {
-                name
-                for name, _namespace in observer.get_node_names_and_namespaces()
+                name for name, _namespace in observer.get_node_names_and_namespaces()
             }
             publishers = observer.get_publishers_info_by_topic("/audit_chatter")
             subscribers = observer.get_subscriptions_info_by_topic("/audit_chatter")
             if "runtime_fixture" in runtime_node_names and publishers and subscribers:
                 break
 
+        assert process.poll() is None
         assert "runtime_fixture" in runtime_node_names
         assert publishers
         assert subscribers
@@ -103,9 +104,3 @@ def test_static_topic_prediction_matches_live_ros_graph(tmp_path: Path) -> None:
             observer.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
