@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -120,3 +121,115 @@ def test_generated_package_builds_with_colcon(tmp_path: Path) -> None:
     assert (install / "share" / "designed_demo" / "package.xml").is_file()
     index = install / "share" / "ament_index" / "resource_index" / "packages" / "designed_demo"
     assert index.is_file()
+
+
+def _edited_scenario(src: Path) -> PackageSpec:
+    """Generate, edit like a user would, then rename one node and add another (#43, #44)."""
+
+    def node(nid: str, label: str, topic: str) -> dict[str, Any]:
+        return {
+            "id": nid,
+            "label": label,
+            "publishers": [{"id": f"t{nid}", "name": topic, "msgType": "std_msgs/String"}],
+        }
+
+    first = PackageSpec.model_validate(
+        {"id": "p1", "pkg_name": "edited_demo", "nodes": [node("n1", "camera_node", "/cam")]}
+    )
+    generate_package_result(first, src)
+    package = src / "edited_demo"
+    module = package / "edited_demo" / "camera_node.py"
+    module.write_text(
+        module.read_text().replace(
+            "# TODO: fill in message fields", "msg.data = 'USER_EDIT_RETAINED'"
+        )
+    )
+    (package / "setup.py").write_text((package / "setup.py").read_text() + "# User edit\n")
+    second = PackageSpec.model_validate(
+        {
+            "id": "p1",
+            "pkg_name": "edited_demo",
+            "nodes": [node("n1", "camera_renamed", "/cam"), node("n2", "auxiliary", "/aux")],
+        }
+    )
+    from ros2inspector.design.codegen import render_package, write_package
+
+    result = write_package(second, src, render_package(second))
+    assert result.notes == [
+        "moved your edited edited_demo/camera_node.py to edited_demo/camera_renamed.py",
+        "registered auxiliary, camera_renamed in your edited setup.py",
+    ]
+    return second
+
+
+@pytest.mark.requires_ros2
+def test_edited_package_still_builds_and_launches_after_rename_and_new_node(
+    tmp_path: Path,
+) -> None:
+    rclpy = pytest.importorskip("rclpy")
+    from std_msgs.msg import String
+
+    if shutil.which("colcon") is None or shutil.which("ros2") is None:
+        pytest.skip("colcon and the ros2 CLI are required")
+    ws = tmp_path / "ws"
+    _edited_scenario(ws / "src")
+    build = subprocess.run(
+        ["colcon", "build", "--base-paths", "src"],
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    try:
+        import ament_flake8  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        for command in (["colcon", "test"], ["colcon", "test-result", "--verbose"]):
+            tested = subprocess.run(command, cwd=ws, capture_output=True, text=True, timeout=600)
+            assert tested.returncode == 0, tested.stdout + tested.stderr
+    shell = "source install/setup.bash && exec "
+    executables = subprocess.run(
+        ["bash", "-c", shell + "ros2 pkg executables edited_demo"],
+        cwd=ws,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert executables.stdout.split() == [
+        "edited_demo",
+        "auxiliary",
+        "edited_demo",
+        "camera_renamed",
+    ]
+    launch = subprocess.Popen(
+        ["bash", "-c", shell + "ros2 launch edited_demo launch.py"],
+        cwd=ws,
+        start_new_session=True,
+    )
+    rclpy.init()
+    observer = rclpy.create_node("ros2inspector_edit_observer")
+    received: list[str] = []
+    observer.create_subscription(String, "/cam", lambda msg: received.append(msg.data), 10)
+    try:
+        names: set[str] = set()
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and not (
+            {"camera_renamed", "auxiliary"} <= names and received
+        ):
+            rclpy.spin_once(observer, timeout_sec=0.2)
+            names = {name for name, _ in observer.get_node_names_and_namespaces()}
+        assert launch.poll() is None, "ros2 launch exited"
+        assert {"camera_renamed", "auxiliary"} <= names
+        # The launched camera node runs the user's edited code.
+        assert received and set(received) == {"USER_EDIT_RETAINED"}
+    finally:
+        observer.destroy_node()
+        rclpy.shutdown()
+        os.killpg(launch.pid, signal.SIGINT)
+        try:
+            launch.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(launch.pid, signal.SIGKILL)
+            launch.wait(timeout=5)

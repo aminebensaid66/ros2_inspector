@@ -12,7 +12,11 @@ from typing import Any
 import pytest
 
 from ros2inspector.design import server as design_server
-from ros2inspector.design.codegen import _GENERATED_MARKER
+from ros2inspector.design.codegen import (
+    _GENERATED_MARKER,
+    add_console_scripts,
+    console_scripts,
+)
 from ros2inspector.design.server import STATE_FILE
 from tests.unit.test_design_server_http import _node, _pkg, _post, _state, server
 
@@ -157,3 +161,95 @@ def test_renaming_an_unedited_node_regenerates_it(server: Any) -> None:
     assert status == 200
     assert data["kept_modified"] == []
     assert "demo_pkg/camera_node.py" in data["packages"][0]["removed"]
+
+
+# ── #44: an edited setup.py or launch file still registers and starts every node ───
+
+
+def test_adding_a_node_registers_it_in_an_edited_setup_py(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(setup.read_text() + "# User edit\n")
+    status, data = _post(httpd, "/generate", _state(_with_node(_pkg(), "auxiliary", "n2")))
+    assert status == 200, data
+    text = setup.read_text()
+    assert text.endswith("# User edit\n")
+    assert console_scripts(text) == {"talker", "auxiliary"}
+    assert "'auxiliary = demo_pkg.auxiliary:main'," in text
+    assert "demo_pkg/setup.py" in data["kept_modified"]
+    assert data["updated_in"] == ["demo_pkg: registered auxiliary in your edited setup.py"]
+
+
+def test_unreadable_console_scripts_are_refused_with_the_entry_to_add(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    text = setup.read_text()
+    start = text.index("'console_scripts': [")
+    end = text.index("],", start) + 1
+    setup.write_text(
+        "SCRIPTS = ['talker = demo_pkg.talker:main']\n"
+        + text[:start]
+        + "'console_scripts': SCRIPTS"
+        + text[end:]
+    )
+    status, data = _post(httpd, "/generate", _state(_with_node(_pkg(), "auxiliary", "n2")))
+    assert status == 409
+    assert "'auxiliary = demo_pkg.auxiliary:main'" in data["error"]
+    assert not (out / "demo_pkg/demo_pkg/auxiliary.py").exists()
+
+
+def test_renaming_a_node_updates_an_edited_launch_file_and_setup(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg(nodes=[_camera()])))[0] == 200
+    package = out / "demo_pkg"
+    for name in ("launch/launch.py", "setup.py"):
+        path = package / name
+        path.write_text(path.read_text() + "# edit\n")
+    status, data = _post(httpd, "/generate", _state(_pkg(nodes=[_camera("camera_renamed")])))
+    assert status == 200, data
+    launch = (package / "launch/launch.py").read_text()
+    assert "executable='camera_renamed'" in launch and "name='camera_renamed'" in launch
+    assert "camera_node" not in launch
+    assert console_scripts((package / "setup.py").read_text()) == {"camera_renamed"}
+
+
+def test_edited_launch_file_and_package_xml_warn_about_a_new_node(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    package = out / "demo_pkg"
+    for name in ("launch/launch.py", "package.xml"):
+        path = package / name
+        path.write_text(path.read_text() + "\n")
+    payload = _with_node(_pkg(), "auxiliary", "n2")
+    payload["nodes"][1]["publishers"][0]["msgType"] = "geometry_msgs/Twist"
+    status, data = _post(httpd, "/generate", _state(payload))
+    assert status == 200, data
+    assert data["warnings"] == [
+        "demo_pkg: launch/launch.py has your edits, so it does not start auxiliary; "
+        "add the node(s) to it yourself.",
+        "demo_pkg: package.xml has your edits and does not declare geometry_msgs; "
+        "add <depend> entries for them.",
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "setup(entry_points={'console_scripts': ['a = p.a:main']})\n",
+        "setup(entry_points={'console_scripts': [\n    'a = p.a:main',\n]})\n",
+        "setup(entry_points={'console_scripts': []})\n",
+        "setup(entry_points={\n    'console_scripts': [\n        'a = p.a:main'  # mine\n"
+        "    ],\n})\n",
+    ],
+)
+def test_console_scripts_are_appended_without_touching_the_rest(source: str) -> None:
+    updated = add_console_scripts(source, ["b = p.b:main"])
+    assert updated is not None
+    assert console_scripts(updated) == (console_scripts(source) or set()) | {"b"}
+
+    def tokens(text: str) -> str:
+        return "".join(text.replace(",", "").split())
+
+    assert tokens(updated.replace("'b = p.b:main'", "")) == tokens(source)

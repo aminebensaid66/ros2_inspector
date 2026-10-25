@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -543,8 +544,95 @@ def _write_marker(package_dir: Path, files: dict[str, str], nodes: dict[str, str
     )
 
 
+def _console_scripts_list(tree: ast.AST) -> ast.List | None:
+    """The literal ``'console_scripts': [...]`` list of a setup.py, if it has exactly one."""
+    found = [
+        value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values, strict=True)
+        if isinstance(key, ast.Constant) and key.value == "console_scripts"
+    ]
+    if len(found) != 1 or not isinstance(found[0], ast.List):
+        return None
+    if not all(
+        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in found[0].elts
+    ):
+        return None
+    return found[0]
+
+
+def console_scripts(setup_py: str) -> set[str] | None:
+    """Executable names a setup.py registers, or None when they cannot be read statically."""
+    try:
+        listing = _console_scripts_list(ast.parse(setup_py))
+    except SyntaxError:
+        return None
+    if listing is None:
+        return None
+    return {
+        str(item.value).split("=", 1)[0].strip()
+        for item in listing.elts
+        if isinstance(item, ast.Constant)
+    }
+
+
+def add_console_scripts(setup_py: str, entries: list[str]) -> str | None:
+    """Insert entries at the end of setup.py's console_scripts list, leaving the rest as is.
+
+    Returns None when the list cannot be located safely, so the caller can ask the user to
+    add the entries by hand instead of guessing.
+    """
+    try:
+        listing = _console_scripts_list(ast.parse(setup_py))
+    except SyntaxError:
+        return None
+    if listing is None or listing.end_lineno is None or listing.end_col_offset is None:
+        return None
+    lines = setup_py.splitlines(keepends=True)
+
+    def offset(line: int, column: int) -> int:
+        # ast columns count UTF-8 bytes.
+        prefix = lines[line - 1].encode("utf-8")[:column].decode("utf-8")
+        return sum(len(text) for text in lines[: line - 1]) + len(prefix)
+
+    if listing.elts:
+        last = listing.elts[-1]
+        assert last.end_lineno is not None and last.end_col_offset is not None
+        position = offset(last.end_lineno, last.end_col_offset)
+        indent = re.match(r"[ \t]*", lines[last.lineno - 1]).group(0)  # type: ignore[union-attr]
+        rest = setup_py[position:]
+        comma = rest.lstrip(" \t").startswith(",")
+        after = position + len(rest) - len(rest.lstrip(" \t")) + 1 if comma else position
+        line_end = setup_py.find("\n", after)
+        tail = setup_py[after : line_end if line_end >= 0 else len(setup_py)].strip()
+        if line_end >= 0 and (not tail or tail.startswith("#")):
+            # One entry per line: new lines go after the last entry's line (and its comment).
+            lines_text = "".join(f"{indent}{entry!r},\n" for entry in entries)
+            updated = setup_py[: line_end + 1] + lines_text + setup_py[line_end + 1 :]
+            if not comma:
+                updated = updated[:position] + "," + updated[position:]
+        elif comma:
+            updated = setup_py[:after] + "".join(f" {e!r}," for e in entries) + setup_py[after:]
+        else:
+            joined = "".join(f", {entry!r}" for entry in entries)
+            updated = setup_py[:position] + joined + setup_py[position:]
+    else:
+        position = offset(listing.end_lineno, listing.end_col_offset) - 1
+        outer = re.match(r"[ \t]*", lines[listing.lineno - 1]).group(0)  # type: ignore[union-attr]
+        text = "".join(f"\n{outer}    {entry!r}," for entry in entries) + f"\n{outer}"
+        updated = setup_py[:position] + text + setup_py[position:]
+    names = console_scripts(updated)
+    wanted = {entry.split("=", 1)[0].strip() for entry in entries}
+    return updated if names is not None and wanted <= names else None
+
+
 def _launch_entry(field_name: str, value: str) -> re.Pattern[str]:
     return re.compile(rf"(\b{field_name}\s*=\s*(['\"])){re.escape(value)}(\2)")
+
+
+_LAUNCH_EXECUTABLE = re.compile(r"\bexecutable\s*=\s*(['\"])([^'\"]+)\1")
+_DEPEND = re.compile(r"<(?:depend|exec_depend|run_depend)>\s*([^<\s]+)\s*</")
 
 
 @dataclass
@@ -566,11 +654,12 @@ def plan_package_edits(
 ) -> EditPlan:
     """Decide what generation must change in files the user edited so the package still runs.
 
-    Edited files are never regenerated, but the module a node lives in is the design's:
-    an edited node module follows its node through a rename (and an edited launch file
-    gets the renamed executable), so the launched node still runs the user's code.
-    Whatever cannot be done safely is a problem, so nothing is reported as generated
-    while the package starts a module that does not hold the user's edits.
+    Edited files are never regenerated, but some of their content is the design's: the module
+    a node lives in, its ``console_scripts`` entry and the executables the launch file starts.
+    An edited node module follows its node through a rename, an edited ``setup.py`` gets the
+    missing entries appended to its list, and an edited launch file gets the renamed
+    executables. Whatever cannot be done safely is a problem, so nothing is reported as
+    generated while ``setup.py`` or the launch file points at code that is not there.
     ``read`` returns a file's current bytes (None if missing); ``manifest`` holds the hashes
     recorded at the last generation, under the package's current paths.
     """
@@ -623,6 +712,36 @@ def plan_package_edits(
         )
         plan.notes.append(f"moved your edited {old_rel} to {new_rel}")
 
+    entries = {label: f"{label} = {pkg}.{label}:main" for label in labels}
+    registered: set[str] | None = set(labels)
+    if edited("setup.py"):
+        original = text_of("setup.py")
+        setup_text = original or ""
+        for old, new in renamed.items():
+            setup_text = setup_text.replace(repr(f"{old} = {pkg}.{old}:main"), repr(entries[new]))
+        changed = sorted(new for old, new in renamed.items() if repr(entries[new]) in setup_text)
+        registered = console_scripts(setup_text) if original is not None else None
+        missing = [
+            entry
+            for label, entry in entries.items()
+            if registered is None or label not in registered
+        ]
+        if missing:
+            added = add_console_scripts(setup_text, missing) if original is not None else None
+            if added is None:
+                plan.problems.append(
+                    "setup.py has your edits and its console_scripts list could not be updated "
+                    f"automatically. Add {', '.join(repr(e) for e in missing)} to it, or undo "
+                    "your edits so it can be regenerated."
+                )
+            else:
+                setup_text = added
+                changed = sorted({*changed, *(e.split(" = ", 1)[0] for e in missing)})
+            registered = console_scripts(setup_text)
+        if original is not None and setup_text != original:
+            plan.patched["setup.py"] = setup_text
+            plan.notes.append(f"registered {', '.join(changed)} in your edited setup.py")
+
     launch_rel = "launch/launch.py"
     if edited(launch_rel):
         original = text_of(launch_rel)
@@ -630,10 +749,35 @@ def plan_package_edits(
         for old, new in renamed.items():
             for field_name in ("executable", "name"):
                 launch_text = _launch_entry(field_name, old).sub(rf"\g<1>{new}\g<3>", launch_text)
+        started = {match.group(2) for match in _LAUNCH_EXECUTABLE.finditer(launch_text)}
+        known = set(labels) | set(previous_nodes.values())
+        for executable in sorted(started & known):
+            if registered is not None and executable not in registered:
+                plan.problems.append(
+                    f"{launch_rel} has your edits and starts '{executable}', which setup.py "
+                    "does not register, so ros2 launch would fail. Update the launch file, or "
+                    "undo your edits so it can be regenerated."
+                )
+        not_started = [label for label in labels if label not in started]
+        if not_started:
+            plan.warnings.append(
+                f"{launch_rel} has your edits, so it does not start {', '.join(not_started)}; "
+                "add the node(s) to it yourself."
+            )
         if original is not None and launch_text != original:
             plan.patched[launch_rel] = launch_text
             plan.notes.append(f"renamed the node(s) in your edited {launch_rel}")
 
+    if edited("package.xml"):
+        declared = set(_DEPEND.findall(text_of("package.xml") or ""))
+        missing_deps = [
+            dep for dep in [*_dependencies(package), "launch", "launch_ros"] if dep not in declared
+        ]
+        if missing_deps:
+            plan.warnings.append(
+                "package.xml has your edits and does not declare "
+                f"{', '.join(missing_deps)}; add <depend> entries for them."
+            )
     return plan
 
 
