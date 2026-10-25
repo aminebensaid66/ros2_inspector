@@ -191,6 +191,15 @@ Opens a local browser-based package designer (bound to `127.0.0.1`, protected by
 
 Regenerating is safe: a file is rewritten only if you have not edited it since the last generation, files you added are never touched, and renaming a package moves its directory. Directories that were not created by the designer are never modified.
 
+Missing-peer findings affected by a failed or incomplete source analysis have
+`confidence: "uncertain"` and severity `info`. They describe an unproved absence and do
+not fail `--fail-on warning` or `--fail-on error`. A file that could not be inspected
+can contain peers for any workspace package, so its uncertainty is workspace-wide;
+attributed unresolved endpoints remain restricted to names they could supply.
+Proven interface conflicts, naming, dependencies and health checks remain enabled.
+SARIF represents uncertain findings as notes with a confidence property; a baseline
+for an uncertain finding cannot hide its later confirmed counterpart.
+
 ## Global options
 
 ```bash

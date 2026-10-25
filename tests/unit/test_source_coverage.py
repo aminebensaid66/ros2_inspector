@@ -57,9 +57,12 @@ def test_source_failure_keeps_other_nodes_and_cached_diagnostic(tmp_path: Path, 
     audit = CliRunner().invoke(app, ["audit", str(tmp_path), "-f", "json", "--no-cache"])
     report = json.loads(audit.stdout)
     assert any(d["code"] == "source_parse_failed" for d in report["diagnostics"])
-    # An unreadable file must not switch the check off; the finding says what was not seen.
+    # An unreadable source makes absence uncertain rather than proving a missing peer.
     [finding] = [f for f in report["findings"] if f["rule_type"] == "topic_connectivity"]
     assert "/chatter" in finding["message"]
+    assert finding["severity"] == "info"
+    assert finding["confidence"] == "uncertain"
+    assert "not proven" in finding["message"]
     assert "1 source file(s) could not be parsed" in finding["message"]
 
 

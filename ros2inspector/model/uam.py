@@ -351,7 +351,13 @@ class UnifiedArchitectureModel:
                     source_diagnostics: list[dict[str, Any]] = []
                     pkg_nodes = parse_python_nodes(
                         pkg_path, pkg.name, source_diagnostics
-                    ) + parse_cpp_nodes(pkg_path, pkg.name, cpp_bases, factory_patterns=patterns)
+                    ) + parse_cpp_nodes(
+                        pkg_path,
+                        pkg.name,
+                        cpp_bases,
+                        factory_patterns=patterns,
+                        diagnostics=source_diagnostics,
+                    )
                     pkg_ifaces = [
                         parse_interface_file(f, pkg.name) for f in find_interface_files(pkg_path)
                     ]

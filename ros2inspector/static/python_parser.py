@@ -139,6 +139,18 @@ class _NodeVisitor(ast.NodeVisitor):
         self._last_parameter: str | None = None
         self._last_name_source = "literal"
 
+    def visit_BinOp(self, node: ast.expr) -> None:
+        pending: list[ast.AST] = list(ast.iter_child_nodes(node))
+        while pending:
+            child = pending.pop()
+            if isinstance(child, (ast.Call, ast.Lambda, ast.NamedExpr)):
+                self.visit(child)
+            else:
+                pending.extend(ast.iter_child_nodes(child))
+
+    visit_UnaryOp = visit_BinOp
+    visit_BoolOp = visit_BinOp
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             if alias.asname:

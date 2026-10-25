@@ -309,12 +309,24 @@ def _could_be(endpoints: list[tuple[str, str | None]], rel: str, name: str) -> b
     return False
 
 
+def _source_gap(uam: UnifiedArchitectureModel) -> bool:
+    return any(
+        d.get("code") == "source_parse_failed"
+        or (d.get("code") == "source_analysis_incomplete" and not d.get("endpoint_kind"))
+        for d in uam.diagnostics()
+    )
+
+
 def _parse_gap_note(uam: UnifiedArchitectureModel) -> str:
-    """Suffix for missing-peer findings when some source files could not be parsed."""
     failed = {d.get("file") for d in uam.diagnostics() if d.get("code") == "source_parse_failed"}
-    if not failed:
-        return ""
-    return f"; {len(failed)} source file(s) could not be parsed, so a peer there was not seen"
+    if failed:
+        return (
+            f"; {len(failed)} source file(s) could not be parsed; missing peer is not proven "
+            "while source analysis is incomplete"
+        )
+    if _source_gap(uam):
+        return "; missing peer is not proven while source analysis is incomplete"
+    return ""
 
 
 def _unresolved_peers(uam: UnifiedArchitectureModel) -> dict[tuple[str, str], list[str | None]]:
@@ -445,7 +457,8 @@ def rule_topic_connectivity(
         ):
             violations.append(
                 PolicyViolation(
-                    severity=sev_no_pub,
+                    severity=ViolationSeverity.INFO if gap else sev_no_pub,
+                    confidence="uncertain" if gap else "known",
                     rule_type="topic_connectivity",
                     message=(
                         f"Topic '{topic_name}' has no publisher "
@@ -464,7 +477,8 @@ def rule_topic_connectivity(
         ):
             violations.append(
                 PolicyViolation(
-                    severity=sev_no_sub,
+                    severity=ViolationSeverity.INFO if gap else sev_no_sub,
+                    confidence="uncertain" if gap else "known",
                     rule_type="topic_connectivity",
                     message=(
                         f"Topic '{topic_name}' has no subscribers "
@@ -638,7 +652,8 @@ def rule_service_connectivity(
         ):
             violations.append(
                 PolicyViolation(
-                    severity=severity,
+                    severity=ViolationSeverity.INFO if gap else severity,
+                    confidence="uncertain" if gap else "known",
                     rule_type="service_connectivity",
                     message=(
                         f"Service '{svc_name}' has no callers "
@@ -655,7 +670,10 @@ def rule_service_connectivity(
         ):
             violations.append(
                 PolicyViolation(
-                    severity=missing_provider_severity,
+                    severity=ViolationSeverity.INFO
+                    if _source_gap(uam)
+                    else missing_provider_severity,
+                    confidence="uncertain" if gap else "known",
                     rule_type="service_connectivity",
                     message=(
                         f"Service '{svc_name}' has callers but no provider "
@@ -708,7 +726,8 @@ def rule_action_connectivity(
         ):
             violations.append(
                 PolicyViolation(
-                    severity=severity,
+                    severity=ViolationSeverity.INFO if gap else severity,
+                    confidence="uncertain" if gap else "known",
                     rule_type="action_connectivity",
                     message=(
                         f"Action '{action_name}' has no clients (server: {', '.join(servers)}{gap})"
@@ -724,7 +743,10 @@ def rule_action_connectivity(
         ):
             violations.append(
                 PolicyViolation(
-                    severity=missing_server_severity,
+                    severity=ViolationSeverity.INFO
+                    if _source_gap(uam)
+                    else missing_server_severity,
+                    confidence="uncertain" if gap else "known",
                     rule_type="action_connectivity",
                     message=(
                         f"Action '{action_name}' has clients but no server "
