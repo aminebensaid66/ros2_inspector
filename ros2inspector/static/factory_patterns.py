@@ -20,7 +20,12 @@ def load_factory_patterns(path: Path | None, preset: str | None) -> list[dict[st
     patterns = list(NAV2_PATTERNS) if preset == "nav2" else []
     if path is None:
         return patterns
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"factory patterns file is not valid UTF-8: {path}") from exc
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"cannot read factory patterns {path}: {exc}") from exc
     entries = raw.get("factories") if isinstance(raw, dict) else raw
     if not isinstance(entries, list):
         raise ValueError("factory patterns must be a list or a mapping with 'factories'")
@@ -30,7 +35,7 @@ def load_factory_patterns(path: Path | None, preset: str | None) -> list[dict[st
         call = entry.get("call")
         kind = entry.get("kind")
         index = entry.get("name_arg")
-        if not isinstance(call, str) or not call or kind not in _KINDS:
+        if not isinstance(call, str) or not call or not isinstance(kind, str) or kind not in _KINDS:
             raise ValueError("factory requires a nonempty call and supported kind")
         if not isinstance(index, int) or isinstance(index, bool) or index < 0:
             raise ValueError("factory name_arg must be a nonnegative integer")

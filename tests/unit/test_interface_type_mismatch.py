@@ -92,3 +92,37 @@ def test_type_mismatch_is_visible_in_graph_exports(tmp_path: Path) -> None:
     topic = next(n for n in json.loads(result.stdout)["nodes"] if n.get("kind") == "Topic")
     assert topic["interface_type_mismatch"] is True
     assert sorted(topic["observed_types"]) == ["std_msgs/Int32", "std_msgs/String"]
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        ("", ["error"]),
+        ("severity_type_mismatch: warning, ", ["warning"]),
+        ("type_mismatch: false, ", []),
+    ],
+)
+def test_type_mismatch_policy_keys_are_accepted(
+    tmp_path: Path, options: str, expected: list[str]
+) -> None:
+    launch = make_workspace(tmp_path)
+    launch.unlink(missing_ok=True)
+    (launch.parent.parent / "demo/node.py").write_text(
+        "from rclpy.node import Node\nfrom std_msgs.msg import String, Int32\n"
+        "class Talker(Node):\n def __init__(self):\n  super().__init__('talker')\n"
+        "  self.create_publisher(String, '/wire', 10)\n"
+        "class Listener(Node):\n def __init__(self):\n  super().__init__('listener')\n"
+        "  self.create_subscription(Int32, '/wire', print, 10)\n"
+    )
+    policy = tmp_path / "policy.yaml"
+    policy.write_text(
+        "version: 1\nrules:\n  - {type: topic_connectivity, " + options + "severity: info}\n"
+    )
+    result = CliRunner().invoke(
+        app, ["validate", str(tmp_path), "--policy", str(policy), "--no-cache", "-f", "json"]
+    )
+    assert result.exit_code in (0, 1), result.output
+    violations = json.loads(result.stdout)["violations"]
+    assert [
+        v["severity"] for v in violations if v["rule_type"] == "interface_type_mismatch"
+    ] == expected

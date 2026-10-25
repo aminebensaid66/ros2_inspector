@@ -8,75 +8,30 @@ import yaml
 
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.model.uam import UnifiedArchitectureModel
-from ros2inspector.policy.rules import _RULE_RUNNERS
+from ros2inspector.policy.rules import _RULE_RUNNERS, RULE_SCHEMAS
+from ros2inspector.policy.schema import FieldSpec, PolicyConfigError, validate_mapping
 
 
-class PolicyConfigError(ValueError):
-    """A stable, user-facing policy validation error."""
-
-
-def _validate_severity(value: object, location: str) -> None:
-    if value is not None and value not in {"error", "warning", "info"}:
-        raise PolicyConfigError(f"{location}: severity must be error, warning, or info")
-
-
-def _validate_policy_rules(rules: object, source: Path) -> list[dict[str, Any]]:
+def _validate_policy_rules(
+    rules: object, source: Path, lines: list[int] | None = None
+) -> list[dict[str, Any]]:
     if not isinstance(rules, list):
         raise PolicyConfigError(f"{source}: 'rules' must be a list")
     validated: list[dict[str, Any]] = []
     for index, raw_rule in enumerate(rules, start=1):
-        location = f"{source}: rule {index}"
+        line = lines[index - 1] if lines and index <= len(lines) else index
+        location = f"{source}: rule {index}, line {line}"
         if not isinstance(raw_rule, dict):
             raise PolicyConfigError(f"{location} must be a mapping")
-        rule = dict(raw_rule)
-        rule_type = rule.get("type")
+        rule_type = raw_rule.get("type")
         if not isinstance(rule_type, str) or not rule_type:
             raise PolicyConfigError(f"{location}: missing non-empty 'type'")
-        if rule_type not in _RULE_RUNNERS:
-            supported = ", ".join(sorted(_RULE_RUNNERS))
-            raise PolicyConfigError(
-                f"{location}: unknown rule type '{rule_type}'. Supported types: {supported}"
-            )
-        for key in (
-            "severity",
-            "severity_no_publisher",
-            "severity_no_subscriber",
-            "severity_type_mismatch",
-            "missing_provider_severity",
-            "missing_server_severity",
-        ):
-            _validate_severity(rule.get(key), f"{location}.{key}")
-        if rule_type == "naming":
-            for section in ("packages", "nodes", "topics", "services"):
-                cfg = rule.get(section)
-                if cfg is None:
-                    continue
-                if not isinstance(cfg, dict):
-                    raise PolicyConfigError(f"{location}.{section} must be a mapping")
-                pattern = cfg.get("pattern")
-                if pattern is not None:
-                    try:
-                        re.compile(str(pattern))
-                    except re.error as exc:
-                        raise PolicyConfigError(
-                            f"{location}.{section}.pattern is invalid: {exc}"
-                        ) from exc
-        if rule_type == "dependency":
-            for section, required_keys in (
-                ("forbidden", {"from", "to"}),
-                ("required", {"package", "depends_on"}),
-            ):
-                entries = rule.get(section, [])
-                if not isinstance(entries, list):
-                    raise PolicyConfigError(f"{location}.{section} must be a list")
-                for item_index, item in enumerate(entries, start=1):
-                    if not isinstance(item, dict) or not required_keys.issubset(item):
-                        needed = ", ".join(sorted(required_keys))
-                        raise PolicyConfigError(
-                            f"{location}.{section}[{item_index}] requires: {needed}"
-                        )
+        if rule_type not in RULE_SCHEMAS:
+            raise PolicyConfigError(f"{location}: unknown rule type '{rule_type}'")
+        validate_mapping(raw_rule, RULE_SCHEMAS[rule_type], f"{location} ({rule_type})")
+        rule = dict(raw_rule)
         rule["_source"] = str(source)
-        rule["_line"] = index
+        rule["_line"] = line
         validated.append(rule)
     return validated
 
@@ -86,26 +41,27 @@ def load_policy(policy_path: Path) -> list[dict[str, Any]]:
         source_text = policy_path.read_text(encoding="utf-8")
         raw = yaml.safe_load(source_text)
         root_node = yaml.compose(source_text)
+    except UnicodeDecodeError as exc:
+        raise PolicyConfigError(f"policy file is not valid UTF-8: {policy_path}") from exc
     except OSError as exc:
         raise PolicyConfigError(f"Cannot read policy file {policy_path}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise PolicyConfigError(f"Invalid YAML in {policy_path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise PolicyConfigError(f"Policy file {policy_path} must be a YAML mapping")
-    version = raw.get("version", 1)
-    if version != 1:
-        raise PolicyConfigError(
-            f"Policy file {policy_path} has unsupported version {version!r}; expected 1"
-        )
-    rules = _validate_policy_rules(raw.get("rules", []), policy_path)
+    validate_mapping(
+        raw,
+        {"version": FieldSpec("int", minimum=1, maximum=1), "rules": FieldSpec("list")},
+        str(policy_path),
+    )
+    lines: list[int] = []
     if isinstance(root_node, yaml.MappingNode):
         for key, value in root_node.value:
             if isinstance(key, yaml.ScalarNode) and key.value == "rules":
                 if isinstance(value, yaml.SequenceNode):
-                    for rule, node in zip(rules, value.value, strict=False):
-                        rule["_line"] = node.start_mark.line + 1
+                    lines = [node.start_mark.line + 1 for node in value.value]
                 break
-    return rules
+    return _validate_policy_rules(raw.get("rules", []), policy_path, lines)
 
 
 def run_policy(

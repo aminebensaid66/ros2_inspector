@@ -84,13 +84,13 @@ def validate(
     try:
         rules = load_policy(policy_path)
     except PolicyConfigError as exc:
-        err_console.print(f"[red]Policy error:[/red] {exc}")
+        err_console.print(f"Policy error: {exc}", markup=False, soft_wrap=True)
         raise typer.Exit(2) from exc
     uam = build_uam_or_exit(root, use_cache=not no_cache, show_progress=not state.quiet)
     try:
         violations = run_policy(uam, rules)
     except PolicyConfigError as exc:
-        err_console.print(f"[red]Policy error:[/red] {exc}")
+        err_console.print(f"Policy error: {exc}", markup=False, soft_wrap=True)
         raise typer.Exit(2) from exc
     summary = violation_summary(violations)
 
