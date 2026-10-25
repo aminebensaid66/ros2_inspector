@@ -337,21 +337,26 @@ class UnifiedArchitectureModel:
                 if _progress is not None and _task is not None:
                     _progress.update(_task, description=f"Parsing {pkg.name}...")
                 pkg_path = Path(pkg.path)
-                uam._entrypoints[pkg.name] = find_python_entrypoints(pkg_path)
+                uam._entrypoints[pkg.name] = find_python_entrypoints(pkg_path, uam._diagnostics)
                 uam._component_executables[pkg.name] = find_component_executables(pkg_path)
 
                 cached = cache.get(pkg_path) if cache is not None else None
                 if cached is not None:
                     pkg_nodes, pkg_ifaces = cached
-                else:
-                    pkg_nodes = parse_python_nodes(pkg_path, pkg.name) + parse_cpp_nodes(
-                        pkg_path, pkg.name, cpp_bases, factory_patterns=patterns
+                    uam._diagnostics.extend(
+                        cache.get_diagnostics(pkg_path) if cache is not None else []
                     )
+                else:
+                    source_diagnostics: list[dict[str, Any]] = []
+                    pkg_nodes = parse_python_nodes(
+                        pkg_path, pkg.name, source_diagnostics
+                    ) + parse_cpp_nodes(pkg_path, pkg.name, cpp_bases, factory_patterns=patterns)
                     pkg_ifaces = [
                         parse_interface_file(f, pkg.name) for f in find_interface_files(pkg_path)
                     ]
                     if cache is not None:
-                        cache.set(pkg_path, pkg_nodes, pkg_ifaces)
+                        cache.set(pkg_path, pkg_nodes, pkg_ifaces, source_diagnostics)
+                    uam._diagnostics.extend(source_diagnostics)
 
                 if include_tests:
                     all_nodes.extend(pkg_nodes)
@@ -371,6 +376,7 @@ class UnifiedArchitectureModel:
                         continue
                     try:
                         lg = analyze_launch_file(lf)
+                        uam._diagnostics.extend(lg.diagnostics)
                         uam._record_launch_uncertainty(lg)
                         for launch_node in lg.nodes:
                             launch_node.source_file = lg.source_file
@@ -584,6 +590,7 @@ class UnifiedArchitectureModel:
                 file_path=nd.file_path,
                 line=nd.line,
                 has_dynamic_names=nd.has_dynamic_names,
+                is_abstract=nd.is_abstract,
                 analysis_incomplete=nd.analysis_incomplete,
                 analysis_notes=list(nd.analysis_notes),
             )
@@ -591,6 +598,9 @@ class UnifiedArchitectureModel:
             pkg_id = _pkg_id(nd.package)
             if pkg_id in g:
                 self._add_edge(g, nid, pkg_id, rel="defined_in")
+
+            if nd.is_abstract:
+                continue
 
             package_path = Path(pkg_map[nd.package].path)
             matches = [

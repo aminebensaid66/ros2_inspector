@@ -5,11 +5,13 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
 from ros2inspector.discovery.file_walker import iter_package_files
 from ros2inspector.model.schemas import DYNAMIC_SENTINEL, UNKNOWN_SENTINEL
+from ros2inspector.static.python_source import read_python_tree, source_failure
 
 
 @dataclass
@@ -46,6 +48,7 @@ class LaunchInclude:
 
 @dataclass
 class LaunchGraph:
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
     nodes: list[LaunchNode] = field(default_factory=list)
     includes: list[LaunchInclude] = field(default_factory=list)
     source_file: str = ""
@@ -172,12 +175,17 @@ class _PythonLaunchVisitor(ast.NodeVisitor):
 
 
 def _analyze_python_launch(path: Path) -> LaunchGraph:
-    try:
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(path))
-    except (SyntaxError, UnicodeDecodeError, OSError):
-        return LaunchGraph(source_file=str(path), unresolved_branches=True)
+    errors: list[dict[str, Any]] = []
+    tree = read_python_tree(path, errors)
+    if tree is not None:
+        try:
+            return _analyze_python_tree(path, tree)
+        except (RecursionError, MemoryError) as exc:
+            source_failure(path, exc, errors)
+    return LaunchGraph(source_file=str(path), unresolved_branches=True, diagnostics=errors)
 
+
+def _analyze_python_tree(path: Path, tree: ast.Module) -> LaunchGraph:
     visitor = _PythonLaunchVisitor(str(path))
     visitor.visit(tree)
 

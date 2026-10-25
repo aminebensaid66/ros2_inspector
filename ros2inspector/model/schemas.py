@@ -53,6 +53,7 @@ class CommunicationEndpoint(BaseModel):
 
 
 class NodeDefinition(BaseModel):
+    is_abstract: bool = False
     name: str
     source_symbol: str | None = None
     declared_ros_name: str | None = None

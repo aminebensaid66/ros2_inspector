@@ -5,6 +5,9 @@ import configparser
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from ros2inspector.static.python_source import read_python_tree, source_failure
 
 
 @dataclass(frozen=True)
@@ -17,7 +20,9 @@ class PythonEntrypoint:
     source_file: str | None = None
 
 
-def find_python_entrypoints(package_path: Path) -> dict[str, PythonEntrypoint]:
+def find_python_entrypoints(
+    package_path: Path, diagnostics: list[dict[str, Any]] | None = None
+) -> dict[str, PythonEntrypoint]:
     """Collect Python console scripts without importing or executing package code.
 
     ROS 2 ``ament_python`` packages most commonly declare executables in ``setup.py``.
@@ -34,7 +39,13 @@ def find_python_entrypoints(package_path: Path) -> dict[str, PythonEntrypoint]:
         path = package_path / filename
         if not path.is_file():
             continue
-        for executable, target in parser(path).items():
+        errors = diagnostics if diagnostics is not None else []
+        try:
+            entries = _parse_setup_py(path, errors) if filename == "setup.py" else parser(path)
+        except (RecursionError, MemoryError, UnicodeDecodeError) as exc:
+            source_failure(path, exc, errors)
+            continue
+        for executable, target in entries.items():
             module, callable_name = _split_target(target)
             if not module:
                 continue
@@ -63,11 +74,9 @@ def _parse_entry_line(value: str) -> tuple[str, str] | None:
     return executable, target
 
 
-def _parse_setup_py(path: Path) -> dict[str, str]:
-    try:
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(path))
-    except (OSError, UnicodeDecodeError, SyntaxError):
+def _parse_setup_py(path: Path, diagnostics: list[dict[str, Any]] | None = None) -> dict[str, str]:
+    tree = read_python_tree(path, diagnostics if diagnostics is not None else [])
+    if tree is None:
         return {}
 
     assignments: dict[str, ast.expr] = {}
