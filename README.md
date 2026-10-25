@@ -223,6 +223,8 @@ default would otherwise cause. Computed defaults remain unresolved.
 Endpoint names are resolved the way rcl resolves them: the name and each remap rule are
 expanded with the node's namespace and name before matching, and node-qualified
 (`node:from:=to`) and `rostopic://`/`rosservice://` rules apply only where ROS applies them.
+A rule that names an action leaves that action unresolved, because Jazzy releases differ:
+rcl_action 9.2.7 ignores such a rule and 9.2.11 applies it.
 A namespace pushed by `PushRosNamespace` (or `push-ros-namespace` in XML and YAML) inside a
 group applies to the nodes in that group; one that cannot be read statically leaves the
 deployment unresolved instead of guessing.

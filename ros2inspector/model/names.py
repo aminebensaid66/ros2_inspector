@@ -60,20 +60,24 @@ def resolve_endpoint_name(
     node's namespace and name, compares the expanded names exactly, takes the first
     matching rule and expands its replacement the same way. ``node:from:=to`` rules only
     apply to the named node, and ``rostopic://``/``rosservice://`` rules only to that kind
-    of name. Action names are not remapped on Jazzy: rcl_action creates its topics and
-    services under ``NAME/_action/...``, which a rule naming the action never matches.
+    of name.
+
+    Whether a rule that names an action applies depends on the ROS release: Jazzy's rcl_action
+    9.2.7 leaves the action name alone (its topics and services live under
+    ``NAME/_action/...``, which the rule does not match), while 9.2.11 remaps it. Such an
+    action is therefore reported as unresolved rather than guessed.
     """
     expanded = _expand(name, namespace, node_name)
-    if expanded == DYNAMIC_SENTINEL or kind == "Action":
+    if expanded == DYNAMIC_SENTINEL:
         return expanded
     short_name = _short_name(node_name)
     for key, replacement in remaps.items():
         if key.startswith("rostopic://"):
-            if kind != "Topic":
+            if kind not in {"Topic", "Action"}:
                 continue
             key = key.removeprefix("rostopic://")
         elif key.startswith("rosservice://"):
-            if kind != "Service":
+            if kind not in {"Service", "Action"}:
                 continue
             key = key.removeprefix("rosservice://")
         elif ":" in key:
@@ -86,20 +90,20 @@ def resolve_endpoint_name(
         if match == DYNAMIC_SENTINEL:
             return DYNAMIC_SENTINEL
         if match == expanded:
+            if kind == "Action":
+                return DYNAMIC_SENTINEL
             return _expand(replacement, namespace, node_name)
     return expanded
 
 
-def unresolved_name_suffix(
-    name: str, remaps: dict[str, str], node_name: str | None, kind: str = "Topic"
-) -> str | None:
+def unresolved_name_suffix(name: str, remaps: dict[str, str], node_name: str | None) -> str | None:
     """Return the tail an endpoint's name must end with when only its namespace is unknown.
 
     ``None`` means the name could resolve to anything, for example because remap rules
     apply or the name itself is dynamic. Connectivity rules use this so that a peer an
     unresolved deployment could provide is not reported as definitely missing.
     """
-    if name in _UNKNOWN or (remaps and kind != "Action") or any(c in name for c in "{}*"):
+    if name in _UNKNOWN or remaps or any(c in name for c in "{}*"):
         return None
     if name.startswith("/"):
         return name

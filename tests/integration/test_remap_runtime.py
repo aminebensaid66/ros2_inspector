@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from ros2inspector.model.names import resolve_endpoint_name
+from ros2inspector.model.schemas import DYNAMIC_SENTINEL
 
 _REMAP_CASES = json.loads(
     (Path(__file__).parents[1] / "data/remap_cases.json").read_text(encoding="utf-8")
@@ -45,7 +46,7 @@ def test_remap_resolution_matches_rclpy(case: dict[str, str]) -> None:
 
 
 @pytest.mark.requires_ros2
-def test_action_names_are_not_remapped_like_topics() -> None:
+def test_remapped_action_names_are_left_unresolved() -> None:
     import rclpy
     from rclpy.action import ActionClient
     from rclpy.context import Context
@@ -66,7 +67,10 @@ def test_action_names_are_not_remapped_like_topics() -> None:
                 if "/_action/" in name
             }
             time.sleep(0.1)
-        assert services == {expected} == {"/robot/chatter"}
+        # Jazzy releases disagree (rcl_action 9.2.7 keeps the name, 9.2.11 remaps it), so the
+        # static result must be unresolved rather than either guess.
+        assert services in ({"/robot/chatter"}, {"/robot/out"})
+        assert expected == DYNAMIC_SENTINEL
     finally:
         client.destroy()
         node.destroy_node()

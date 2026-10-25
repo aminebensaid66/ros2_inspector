@@ -727,7 +727,7 @@ class UnifiedArchitectureModel:
                             # What the name must end with, so connectivity rules can tell
                             # which peers this deployment might still provide.
                             edge_attrs["name_suffix"] = unresolved_name_suffix(
-                                deployed_endpoint.name, remaps, node_name, kind
+                                deployed_endpoint.name, remaps, node_name
                             )
                         edge_attrs.update(
                             {

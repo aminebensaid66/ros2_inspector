@@ -32,7 +32,8 @@ def test_remap_matrix_matches_ros_names(tmp_path: Path, case: dict[str, str]) ->
         ("chatter", "rosservice://chatter", "Service", "/robot/out"),
         ("chatter", "rostopic://chatter", "Service", "/robot/chatter"),
         ("chatter", "other:chatter", "Topic", "/robot/chatter"),
-        ("chatter", "chatter", "Action", "/robot/chatter"),
+        ("chatter", "chatter", "Action", DYNAMIC_SENTINEL),
+        ("chatter", "other", "Action", "/robot/chatter"),
     ],
 )
 def test_remap_rules_apply_only_to_their_kind_and_node(
