@@ -22,22 +22,17 @@ from ros2inspector.discovery.paths import DirectoryKeys, visit_directory
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.policy import PolicyConfigError, load_policy, run_policy, violation_summary
 from ros2inspector.static.health_scorer import README_NAMES, TEST_DIR_NAMES
+from ros2inspector.static.source_kinds import CPP_SUFFIXES
 
 console = Console()
 err_console = Console(stderr=True)
 
+
 # Every input the analysis reads: sources, interfaces, build/launch/config files.
-WATCH_SUFFIXES = frozenset(
+WATCH_SUFFIXES = CPP_SUFFIXES | frozenset(
     {
         ".py",
-        ".cpp",
-        ".cc",
-        ".cxx",
         ".c",
-        ".hpp",
-        ".hh",
-        ".hxx",
-        ".h",
         ".msg",
         ".srv",
         ".action",

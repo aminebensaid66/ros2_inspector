@@ -24,6 +24,10 @@ The current alpha ships eleven commands: `scan`, `packages`, `nodes`, `graph`, `
 
 ROS 2 Inspector analyzes source files without executing or building the workspace. Unsupported or ambiguous constructs are reported through evidence, confidence, dynamic-name flags, or diagnostics rather than presented as complete architectural truth. Launch substitutions and unresolved interface types remain explicitly unresolved instead of being guessed from similar names.
 
+Python source decoding follows encoding cookies and BOMs. Parser resource limits and invalid source produce per-file `source_parse_failed` diagnostics; other files remain available, including on cached runs. Nodes prints these diagnostics on stderr and audit JSON includes them. A publisher, subscription, service, client or action endpoint that cannot be attributed to a node hides only the missing-peer findings it could explain: same kind and direction, and the same name when the name is a literal. Files that fail to parse do not switch connectivity checks off; each missing-peer finding instead notes how many files could not be read. Package-local node inheritance and literal procedural `Node()`/`rclpy.create_node()` assignments are supported; unresolved receivers or bases carry incomplete-analysis notes.
+
+C++ source scanning, cache invalidation and watch share these extensions: `.c++`, `.cpp`, `.cxx`, `.cc`, `.C`, `.hpp`, `.hh`, `.hxx`, `.h++`, `.h`, `.ipp`, `.tpp`.
+
 ## Installation
 
 Requires Python 3.10 or newer. A ROS 2 installation is not required for source analysis.

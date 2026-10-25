@@ -10,6 +10,7 @@ import diskcache
 
 from ros2inspector.discovery.file_walker import iter_package_files
 from ros2inspector.model.schemas import InterfaceDefinition, NodeDefinition
+from ros2inspector.static.source_kinds import CPP_SUFFIXES
 
 _LOG = logging.getLogger(__name__)
 
@@ -17,11 +18,9 @@ _DEFAULT_CACHE_DIR = (
     Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "ros2inspector"
 )
 
-_SOURCE_SUFFIXES = frozenset(
-    (".py", ".cpp", ".cxx", ".cc", ".hpp", ".h", ".msg", ".srv", ".action")
-)
+_SOURCE_SUFFIXES = CPP_SUFFIXES | frozenset((".py", ".msg", ".srv", ".action"))
 
-_CACHE_VERSION = "v10-python-qos-presets"
+_CACHE_VERSION = "v12-python-source-coverage"
 _CACHE_SIZE_LIMIT = 256 * 1024 * 1024
 _DIGEST_CACHE_SIZE_LIMIT = 128 * 1024 * 1024
 
@@ -129,7 +128,7 @@ class AnalysisCache:
             _LOG.debug("cache miss: %s", pkg_path)
             return None
         _LOG.debug("cache hit: %s", pkg_path)
-        nodes_raw, ifaces_raw = result
+        nodes_raw, ifaces_raw, _diagnostics = result
         nodes = [NodeDefinition.model_validate(item) for item in nodes_raw]
         ifaces = [InterfaceDefinition.model_validate(item) for item in ifaces_raw]
         return nodes, ifaces
@@ -139,6 +138,7 @@ class AnalysisCache:
         pkg_path: Path,
         nodes: list[NodeDefinition],
         ifaces: list[InterfaceDefinition],
+        diagnostics: list[dict[str, Any]] | None = None,
     ) -> None:
         key = self._fingerprint(pkg_path)
         self._cache.set(
@@ -146,8 +146,16 @@ class AnalysisCache:
             (
                 [node.model_dump(mode="json") for node in nodes],
                 [iface.model_dump(mode="json") for iface in ifaces],
+                diagnostics or [],
             ),
         )
+
+    def get_diagnostics(self, pkg_path: Path) -> list[dict[str, Any]]:
+        result: Any = self._cache.get(self._fingerprint(pkg_path))
+        if result is None:
+            return []
+        diagnostics: list[dict[str, Any]] = result[2]
+        return diagnostics
 
     def clear(self) -> None:
         self._cache.clear()
