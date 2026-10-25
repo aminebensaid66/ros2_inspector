@@ -594,8 +594,35 @@ function refreshStats(){
     .join('');
 }
 
+// Force-directed layouts stop with some nodes still stacked on large graphs (nav2), so the
+// free layouts finish with a pass that pushes overlapping nodes apart along the shorter
+// overlap, keeping the layout's shape.
+function removeOverlaps(margin){
+  const nodes=cy.nodes(':childless:visible');
+  const items=nodes.map(n=>{
+    const b=n.boundingBox({includeLabels:true,includeOverlays:false}), p=n.position();
+    return {n,x:p.x,y:p.y,w:b.w+margin,h:b.h+margin};
+  });
+  for(let sweep=0;sweep<200;sweep++){
+    let moved=false;
+    for(let i=0;i<items.length;i++) for(let j=i+1;j<items.length;j++){
+      const a=items[i], b=items[j];
+      let dx=b.x-a.x, dy=b.y-a.y;
+      const ox=(a.w+b.w)/2-Math.abs(dx), oy=(a.h+b.h)/2-Math.abs(dy);
+      if(ox<=0||oy<=0) continue;
+      moved=true;
+      if(!dx&&!dy){ dx=(i+j)%2?1:-1; }  // exactly stacked: pick a side deterministically
+      if(ox<oy){ const s=(dx<0?-1:1)*(ox/2+.5); a.x-=s; b.x+=s; }
+      else { const s=(dy<0?-1:1)*(oy/2+.5); a.y-=s; b.y+=s; }
+    }
+    if(!moved) break;
+  }
+  cy.batch(()=>items.forEach(it=>it.n.position({x:it.x,y:it.y})));
+}
+
 // Everything is on screen after a layout; zoom in with the wheel for detail.
 function afterLayout(){
+  if(!isGrouped) removeOverlaps(8);
   cy.fit(cy.nodes(':visible').length <= 80 ? 48 : 24);
 }
 
