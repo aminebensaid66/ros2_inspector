@@ -88,3 +88,26 @@ def resolve_endpoint_name(
         if match == expanded:
             return _expand(replacement, namespace, node_name)
     return expanded
+
+
+def unresolved_name_suffix(
+    name: str, remaps: dict[str, str], node_name: str | None, kind: str = "Topic"
+) -> str | None:
+    """Return the tail an endpoint's name must end with when only its namespace is unknown.
+
+    ``None`` means the name could resolve to anything, for example because remap rules
+    apply or the name itself is dynamic. Connectivity rules use this so that a peer an
+    unresolved deployment could provide is not reported as definitely missing.
+    """
+    if name in _UNKNOWN or (remaps and kind != "Action") or any(c in name for c in "{}*"):
+        return None
+    if name.startswith("/"):
+        return name
+    if name == "~" or name.startswith("~/"):
+        short_name = _short_name(node_name)
+        if short_name is None:
+            return None
+        return ("/" + short_name + name[1:]).rstrip("/")
+    if name.startswith("~"):
+        return None
+    return "/" + name.strip("/")

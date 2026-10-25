@@ -280,6 +280,29 @@ _DEFAULT_SYSTEM_TOPICS: frozenset[str] = frozenset(
 )
 
 
+def _unresolved_peers(uam: UnifiedArchitectureModel) -> dict[tuple[str, str], list[str | None]]:
+    """Name suffixes of endpoints whose deployment could not be resolved, by kind and role.
+
+    A ``None`` entry means the endpoint could take any name.
+    """
+    peers: dict[tuple[str, str], list[str | None]] = {}
+    for _, target, data in uam.graph.edges(data=True):
+        kind = uam.graph.nodes[target].get("kind")
+        if kind in {"Topic", "Service", "Action"} and data.get("resolution") == "unresolved":
+            suffix = data.get("name_suffix")
+            peers.setdefault((str(kind), str(data.get("rel"))), []).append(
+                str(suffix) if suffix else None
+            )
+    return peers
+
+
+def _may_be_provided(
+    peers: dict[tuple[str, str], list[str | None]], kind: str, rel: str, name: str
+) -> bool:
+    """True when an unresolved deployment could still be the missing peer on ``name``."""
+    return any(suffix is None or name.endswith(suffix) for suffix in peers.get((kind, rel), []))
+
+
 def rule_topic_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
@@ -299,6 +322,7 @@ def rule_topic_connectivity(
         | {f"/{name}" for name in user_exclude if not name.startswith(("/", "~"))}
     )
     violations: list[PolicyViolation] = []
+    unresolved = _unresolved_peers(uam)
 
     for nid, attrs in g.nodes(data=True):
         if attrs.get("kind") != "Topic":
@@ -323,7 +347,12 @@ def rule_topic_connectivity(
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "subscribes"
         ]
 
-        if flag_no_pub and sub_nodes and not possible_publishers:
+        if (
+            flag_no_pub
+            and sub_nodes
+            and not possible_publishers
+            and not _may_be_provided(unresolved, "Topic", "publishes", topic_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=sev_no_pub,
@@ -337,7 +366,12 @@ def rule_topic_connectivity(
                 )
             )
 
-        if flag_no_sub and pub_nodes and not possible_subscribers:
+        if (
+            flag_no_sub
+            and pub_nodes
+            and not possible_subscribers
+            and not _may_be_provided(unresolved, "Topic", "subscribes", topic_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=sev_no_sub,
@@ -441,10 +475,9 @@ def rule_qos_compatibility(
                     and (requested.get("reliability") or "reliable") == "reliable"
                 ):
                     failures.append("reliability")
-                if (
-                    (offered.get("durability") or "volatile") == "volatile"
-                    and requested.get("durability") == "transient_local"
-                ):
+                if (offered.get("durability") or "volatile") == "volatile" and requested.get(
+                    "durability"
+                ) == "transient_local":
                     failures.append("durability")
                 for policy in ("deadline", "liveliness_lease_duration"):
                     offer = offered.get(policy)
@@ -481,6 +514,7 @@ def rule_service_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
     """Flag services with a provider/caller mismatch in either direction."""
+    unresolved = _unresolved_peers(uam)
     g = uam.graph
     source = cfg.get("_source", "policy")
     severity = _sev(cfg.get("severity", "info"))
@@ -501,7 +535,11 @@ def rule_service_connectivity(
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "provides"
         ]
         callers = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "calls"]
-        if providers and not possible_caller:
+        if (
+            providers
+            and not possible_caller
+            and not _may_be_provided(unresolved, "Service", "calls", svc_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=severity,
@@ -513,7 +551,11 @@ def rule_service_connectivity(
                     affected_entities=[svc_name],
                 )
             )
-        if callers and not possible_provider:
+        if (
+            callers
+            and not possible_provider
+            and not _may_be_provided(unresolved, "Service", "provides", svc_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=missing_provider_severity,
@@ -534,6 +576,7 @@ def rule_action_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
     """Flag actions with a server/client mismatch in either direction."""
+    unresolved = _unresolved_peers(uam)
     g = uam.graph
     source = cfg.get("_source", "policy")
     severity = _sev(cfg.get("severity", "warning"))
@@ -555,7 +598,11 @@ def rule_action_connectivity(
         in_edges = definite
         servers = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "provides"]
         clients = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "calls"]
-        if servers and not possible_client:
+        if (
+            servers
+            and not possible_client
+            and not _may_be_provided(unresolved, "Action", "calls", action_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=severity,
@@ -567,7 +614,11 @@ def rule_action_connectivity(
                     affected_entities=[action_name],
                 )
             )
-        if clients and not possible_server:
+        if (
+            clients
+            and not possible_server
+            and not _may_be_provided(unresolved, "Action", "provides", action_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=missing_server_severity,

@@ -17,6 +17,7 @@ from ros2inspector.discovery import (
 )
 from ros2inspector.model.names import (
     resolve_endpoint_name,
+    unresolved_name_suffix,
 )
 from ros2inspector.model.schemas import (
     DYNAMIC_SENTINEL,
@@ -690,6 +691,12 @@ class UnifiedArchitectureModel:
                         )
                         presence = str(deployment_attrs.get("resolution", "known"))
                         edge_attrs = self._endpoint_edge_attrs(endpoint, actual, presence)
+                        if presence == "unresolved":
+                            # What the name must end with, so connectivity rules can tell
+                            # which peers this deployment might still provide.
+                            edge_attrs["name_suffix"] = unresolved_name_suffix(
+                                endpoint.name, remaps, node_name, kind
+                            )
                         edge_attrs.update(
                             {k: v for k, v in deployment_attrs.items() if k != "resolution"}
                         )

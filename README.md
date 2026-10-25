@@ -218,6 +218,9 @@ Literal Python and C++ parameter defaults can resolve endpoint names and are lab
 Endpoint names are resolved the way rcl resolves them: the name and each remap rule are
 expanded with the node's namespace and name before matching, and node-qualified
 (`node:from:=to`) and `rostopic://`/`rosservice://` rules apply only where ROS applies them.
+A namespace pushed by `PushRosNamespace` (or `push-ros-namespace` in XML and YAML) inside a
+group applies to the nodes in that group; one that cannot be read statically leaves the
+deployment unresolved instead of guessing.
 Literal Python `QoSProfile` settings and C++ `rclcpp::QoS(...)` settings are reported when
 available. The `qos_compatibility` rule reports only explicit reliability or durability
 mismatches; unknown QoS settings do not create findings.
