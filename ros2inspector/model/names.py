@@ -111,3 +111,20 @@ def unresolved_name_suffix(
     if name.startswith("~"):
         return None
     return "/" + name.strip("/")
+
+
+def canonical_interface(value: str) -> str:
+    """Drop the ``msg``/``srv``/``action`` segment so both spellings compare equal."""
+    parts = value.split("/")
+    if len(parts) == 3 and parts[1] in {"msg", "srv", "action"}:
+        return parts[0] + "/" + parts[2]
+    return value
+
+
+def compatible_interfaces(first: str, second: str) -> bool:
+    """True when two endpoints can talk: equal types, or one side's type is unknown."""
+    return (
+        first in {"unknown", ""}
+        or second in {"unknown", ""}
+        or canonical_interface(first) == canonical_interface(second)
+    )

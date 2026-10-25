@@ -41,6 +41,7 @@ def _validate_policy_rules(rules: object, source: Path) -> list[dict[str, Any]]:
             "severity",
             "severity_no_publisher",
             "severity_no_subscriber",
+            "severity_type_mismatch",
             "missing_provider_severity",
             "missing_server_severity",
         ):

@@ -5,6 +5,7 @@ from typing import Any
 
 import networkx as nx
 
+from ros2inspector.model.names import canonical_interface
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.model.uam import UnifiedArchitectureModel
 from ros2inspector.static import workspace_aggregate_score
@@ -303,6 +304,45 @@ def _may_be_provided(
     return any(suffix is None or name.endswith(suffix) for suffix in peers.get((kind, rel), []))
 
 
+def _interface_type_mismatches(
+    uam: UnifiedArchitectureModel, cfg: dict[str, Any]
+) -> list[PolicyViolation]:
+    findings = []
+    graph = uam.graph
+    for target, attrs in graph.nodes(data=True):
+        if attrs.get("kind") not in {"Topic", "Service", "Action"}:
+            continue
+        endpoints: dict[str, set[str]] = {}
+        for source, _, data in graph.in_edges(target, data=True):
+            value = canonical_interface(str(data.get("msg_type", "unknown")))
+            if value == "unknown" or data.get("resolution", "known") != "known":
+                continue
+            actor = graph.nodes[source]
+            name = str(actor.get("declared_ros_name") or actor.get("name", source))
+            endpoints.setdefault(value, set()).add(name)
+        if len(endpoints) > 1:
+            details = "; ".join(
+                f"{value} ({', '.join(sorted(names))})"
+                for value, names in sorted(endpoints.items())
+            )
+            findings.append(
+                PolicyViolation(
+                    severity=_sev(cfg.get("severity_type_mismatch", "error")),
+                    rule_type="interface_type_mismatch",
+                    policy_file=cfg.get("_source", "policy"),
+                    message=(
+                        f"{attrs['kind']} '{attrs['name']}' has incompatible interface types: "
+                        f"{details}"
+                    ),
+                    affected_entities=[
+                        str(attrs["name"]),
+                        *sorted({name for names in endpoints.values() for name in names}),
+                    ],
+                )
+            )
+    return findings
+
+
 def rule_topic_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
@@ -321,7 +361,7 @@ def rule_topic_connectivity(
         | user_exclude
         | {f"/{name}" for name in user_exclude if not name.startswith(("/", "~"))}
     )
-    violations: list[PolicyViolation] = []
+    violations = _interface_type_mismatches(uam, cfg) if cfg.get("type_mismatch", True) else []
     unresolved = _unresolved_peers(uam)
 
     for nid, attrs in g.nodes(data=True):

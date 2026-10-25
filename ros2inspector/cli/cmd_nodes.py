@@ -14,6 +14,7 @@ from ros2inspector.cli._output import OutputFormat, OutputWriteError, atomic_wri
 from ros2inspector.cli._state import state
 from ros2inspector.cli._workspace import build_uam_or_exit
 from ros2inspector.discovery import find_workspace_root
+from ros2inspector.model.names import compatible_interfaces
 from ros2inspector.model.schemas import CommunicationEndpoint, NodeDefinition
 from ros2inspector.model.uam import UnifiedArchitectureModel
 
@@ -174,30 +175,52 @@ def _node_with_connections(nd: NodeDefinition, uam: UnifiedArchitectureModel) ->
                 item["deployment"] = deployment
 
             if kind == "Topic":
-                item["msg_type"] = target.get("msg_type", "unknown")
+                item["msg_type"] = edge_data.get("msg_type", target.get("msg_type", "unknown"))
                 item["other_publishers"] = [
                     _actor_name(g, source)
                     for source, _, data in g.in_edges(target_id, data=True)
-                    if data.get("rel") == "publishes" and source != actor_id
+                    if data.get("rel") == "publishes"
+                    and source != actor_id
+                    and compatible_interfaces(
+                        str(edge_data.get("msg_type", "unknown")),
+                        str(data.get("msg_type", "unknown")),
+                    )
                 ]
                 item["other_subscribers"] = [
                     _actor_name(g, source)
                     for source, _, data in g.in_edges(target_id, data=True)
-                    if data.get("rel") == "subscribes" and source != actor_id
+                    if data.get("rel") == "subscribes"
+                    and source != actor_id
+                    and compatible_interfaces(
+                        str(edge_data.get("msg_type", "unknown")),
+                        str(data.get("msg_type", "unknown")),
+                    )
                 ]
             elif kind == "Service":
-                item["srv_type"] = target.get("srv_type", "unknown")
+                item["srv_type"] = edge_data.get("msg_type", target.get("srv_type", "unknown"))
                 item["other_callers"] = [
                     _actor_name(g, source)
                     for source, _, data in g.in_edges(target_id, data=True)
-                    if data.get("rel") == "calls" and source != actor_id
+                    if data.get("rel") == "calls"
+                    and source != actor_id
+                    and compatible_interfaces(
+                        str(edge_data.get("msg_type", "unknown")),
+                        str(data.get("msg_type", "unknown")),
+                    )
                 ]
             else:
-                item["action_type"] = target.get("action_type", "unknown")
+                item["action_type"] = edge_data.get(
+                    "msg_type", target.get("action_type", "unknown")
+                )
                 item["other_clients"] = [
                     _actor_name(g, source)
                     for source, _, data in g.in_edges(target_id, data=True)
-                    if data.get("rel") == "calls" and source != actor_id
+                    if data.get("rel") == "calls"
+                    and source != actor_id
+                    and compatible_interfaces(
+                        str(edge_data.get("msg_type", "unknown")),
+                        str(data.get("msg_type", "unknown")),
+                    )
                 ]
             connections.append(item)
 
@@ -240,28 +263,30 @@ def _render_connections_str(node_list: list[NodeDefinition], uam: UnifiedArchite
                 name = target.get("name", target_id)
 
                 if kind == "Topic":
-                    msg_type = target.get("msg_type", "unknown")
+                    msg_type = edge_data.get("msg_type", target.get("msg_type", "unknown"))
                     icon = "→" if rel == "publishes" else "←"
-                    peer_text = _peer_text(g, target_id, actor_id, _TOPIC_PEERS)
+                    peer_text = _peer_text(g, target_id, actor_id, _TOPIC_PEERS, str(msg_type))
                     rows.append(
                         f"  {deployment_prefix}{icon} [green]{name}[/green]  "
                         f"[dim]{msg_type}[/dim]{peer_text}"
                     )
                 elif kind == "Service":
-                    service_type = target.get("srv_type", "unknown")
+                    service_type = edge_data.get("msg_type", target.get("srv_type", "unknown"))
                     icon = "⊕" if rel == "provides" else "⊙"
+                    peer_text = _peer_text(g, target_id, actor_id, _CALL_PEERS, str(service_type))
                     rows.append(
                         f"  {deployment_prefix}{icon} [yellow]{name}[/yellow]  "
                         f"[dim]{service_type}[/dim]  [dim]service[/dim]"
-                        f"{_peer_text(g, target_id, actor_id, _CALL_PEERS)}"
+                        f"{peer_text}"
                     )
                 else:
-                    action_type = target.get("action_type", "unknown")
+                    action_type = edge_data.get("msg_type", target.get("action_type", "unknown"))
                     icon = "▶" if rel == "provides" else "▷"
+                    peer_text = _peer_text(g, target_id, actor_id, _CALL_PEERS, str(action_type))
                     rows.append(
                         f"  {deployment_prefix}{icon} [magenta]{name}[/magenta]  "
                         f"[dim]{action_type}[/dim]  [dim]action[/dim]"
-                        f"{_peer_text(g, target_id, actor_id, _CALL_PEERS)}"
+                        f"{peer_text}"
                     )
 
         body = "\n".join(rows) if rows else "  [dim]no connections[/dim]"
@@ -274,14 +299,22 @@ _TOPIC_PEERS = (("publishes", "pub"), ("subscribes", "sub"))
 _CALL_PEERS = (("provides", "server"), ("calls", "client"))
 
 
-def _peer_text(g: Any, endpoint_id: str, actor_id: str, roles: tuple[tuple[str, str], ...]) -> str:
+def _peer_text(
+    g: Any,
+    endpoint_id: str,
+    actor_id: str,
+    roles: tuple[tuple[str, str], ...],
+    interface_type: str = "unknown",
+) -> str:
     """'  (pub: a; sub: b)' naming the other actors on a topic, service or action."""
     peers = []
     for rel, label in roles:
         names = [
             _actor_name(g, source)
             for source, _, data in g.in_edges(endpoint_id, data=True)
-            if data.get("rel") == rel and source != actor_id
+            if data.get("rel") == rel
+            and source != actor_id
+            and compatible_interfaces(interface_type, str(data.get("msg_type", "unknown")))
         ]
         if names:
             peers.append(f"{label}: {', '.join(names)}")

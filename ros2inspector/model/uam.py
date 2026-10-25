@@ -16,6 +16,7 @@ from ros2inspector.discovery import (
     find_package_xml_files,
 )
 from ros2inspector.model.names import (
+    canonical_interface,
     resolve_endpoint_name,
     unresolved_name_suffix,
 )
@@ -468,6 +469,7 @@ class UnifiedArchitectureModel:
         unresolved: bool = False,
     ) -> None:
         graph = self._graph
+        interface_type = canonical_interface(interface_type)
         explicit = interface_type != "unknown"
         if node_id not in graph:
             graph.add_node(
@@ -496,7 +498,8 @@ class UnifiedArchitectureModel:
             attrs[type_key] = interface_type
             attrs["type_source"] = "explicit"
             attrs["confidence"] = "high"
-        elif current != interface_type:
+        elif canonical_interface(current) != interface_type:
+            attrs["interface_type_mismatch"] = True
             self._diagnostics.append(
                 {
                     "severity": "warning",
@@ -519,6 +522,7 @@ class UnifiedArchitectureModel:
             "data_source": DataSource.STATIC.value,
             "remapped": actual_name != endpoint.name,
             "original_name": endpoint.name,
+            "msg_type": canonical_interface(endpoint.msg_type),
             "name_source": endpoint.name_source,
             "file_path": endpoint.file_path,
             "line": endpoint.line,
@@ -754,12 +758,12 @@ class UnifiedArchitectureModel:
                 continue
             dst_attrs = g.nodes[dst]
             dst_kind = dst_attrs.get("kind")
-            resolved: str | None = None
-            if dst_kind == "Topic":
+            resolved: str | None = edge_data.get("msg_type")
+            if not resolved and dst_kind == "Topic":
                 resolved = dst_attrs.get("msg_type")
-            elif dst_kind == "Service":
+            elif not resolved and dst_kind == "Service":
                 resolved = dst_attrs.get("srv_type")
-            elif dst_kind == "Action":
+            elif not resolved and dst_kind == "Action":
                 resolved = dst_attrs.get("action_type")
             if not resolved or resolved == "unknown":
                 continue

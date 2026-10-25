@@ -277,12 +277,18 @@ rules:
   - type: topic_connectivity
     no_publisher: true
     no_subscriber: true
+    type_mismatch: true
     exclude: [/rosout, /clock]
 
   - type: maintainer_required
     require_email: true
     severity: warning
 ```
+
+`topic_connectivity` also reports `interface_type_mismatch` (severity
+`severity_type_mismatch`, default `error`) when endpoints on one topic, service or action
+use different interface types; `type_mismatch: false` turns it off. Connection output lists
+each endpoint with its own type and only names peers whose type is compatible.
 
 Supported rule types are `health_threshold`, `license`, `naming`, `dependency`, `no_circular_deps`, `topic_connectivity`, `node_isolation`, `service_connectivity`, `action_connectivity`, `qos_compatibility`, `maintainer_required`, and `version_not_default`.
 
