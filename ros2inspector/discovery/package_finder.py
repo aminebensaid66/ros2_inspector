@@ -5,6 +5,7 @@ from collections.abc import Collection
 from pathlib import Path
 
 from .errors import WorkspaceAccessError
+from .paths import DirectoryKeys, visit_directory
 
 _STOP_MARKERS = frozenset({"COLCON_IGNORE", ".rosignore"})
 DEFAULT_EXCLUDED_DIRS = frozenset(
@@ -60,6 +61,7 @@ def find_package_xml_files(
     results: list[Path] = []
     queue: deque[Path] = deque([scan_root])
     excluded = frozenset(excluded_dirs)
+    visited: DirectoryKeys = set()
 
     while queue:
         current = queue.popleft()
@@ -67,6 +69,8 @@ def find_package_xml_files(
             if not current.is_dir() or current.name in excluded:
                 continue
             if any((current / marker).exists() for marker in _STOP_MARKERS):
+                continue
+            if not visit_directory(current, visited):
                 continue
 
             pkg_xml = current / "package.xml"
@@ -90,4 +94,4 @@ def find_package_xml_files(
             if is_directory and not child.name.startswith(".") and child.name not in excluded:
                 queue.append(child)
 
-    return results
+    return sorted(set(results))

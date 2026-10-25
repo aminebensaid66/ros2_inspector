@@ -16,8 +16,7 @@ from rich.text import Text
 from ros2inspector import __version__
 from ros2inspector.cli._output import health_bar
 from ros2inspector.cli._state import state
-from ros2inspector.cli._workspace import build_uam_or_exit
-from ros2inspector.discovery import find_workspace_root
+from ros2inspector.cli._workspace import build_uam_or_exit, find_workspace_root
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.policy.rules import (
     rule_action_connectivity,

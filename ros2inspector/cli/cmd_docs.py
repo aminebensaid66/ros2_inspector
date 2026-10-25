@@ -14,8 +14,8 @@ from rich.console import Console
 
 from ros2inspector.cli._output import OutputWriteError, atomic_write_text
 from ros2inspector.cli._state import state
-from ros2inspector.cli._workspace import build_uam_or_exit, pick_path
-from ros2inspector.discovery import find_workspace_root, get_ros_distro
+from ros2inspector.cli._workspace import build_uam_or_exit, find_workspace_root, pick_path
+from ros2inspector.discovery import get_ros_distro
 from ros2inspector.graph.renderer import render_mermaid
 from ros2inspector.model.schemas import (
     DYNAMIC_SENTINEL,
