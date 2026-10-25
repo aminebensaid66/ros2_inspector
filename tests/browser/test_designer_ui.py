@@ -594,3 +594,36 @@ def test_toolbar_fits_at_800_and_show_all_centres_a_small_design(
     )
     assert colours == ["rgb(124, 138, 160)"] * 2
     context.close()
+
+
+def test_failed_save_keeps_a_banner_with_export_until_saved(
+    page: Page, designer: dict[str, Any], shot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ros2inspector.design import server as design_server
+
+    def fail(*_: object) -> None:
+        raise OSError(27, "File too large")
+
+    monkeypatch.setattr(design_server, "_save_state", fail)
+    _open(page, designer)
+    page.click("#gb")
+    banner = page.locator("#banner")
+    expect(banner).to_be_visible()
+    expect(banner).to_contain_text("Files were generated, but the design could not be saved")
+    expect(banner).to_contain_text("File too large")
+    expect(banner).to_contain_text("Do not reload")
+    assert "NOT saved" in _toast(page, "err")
+    assert (designer["out"] / "my_package" / "my_package" / "camera_node.py").is_file()
+    shot(page, "designer-08-unsaved-banner")
+
+    with page.expect_download() as download:
+        page.click("#bexp")
+    exported = json.loads(Path(download.value.path()).read_text())
+    assert [p["pkg_name"] for p in exported["packages"]] == ["my_package"]
+    assert len(exported["packages"][0]["nodes"]) == 2
+
+    monkeypatch.undo()
+    page.click("#bretry")
+    expect(banner).to_be_hidden()
+    assert "Design saved" in _toast(page, "ok")
+    assert json.loads((designer["out"] / STATE_FILE).read_text())["packages"]

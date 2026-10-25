@@ -279,7 +279,7 @@ def test_server_enforces_token_content_type_and_origin(tmp_path: Path) -> None:
         assert code == 403
         code, response = _request(url, _state_payload(), token=token)
         assert code == 200
-        assert response == {"ok": True}
+        assert response == {"ok": True, "state_saved": True}
     finally:
         server.shutdown()
         server.server_close()

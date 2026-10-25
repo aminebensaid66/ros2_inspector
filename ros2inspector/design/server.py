@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import secrets
 import shutil
 import tempfile
@@ -181,11 +182,20 @@ def _quarantine_state(path: Path, reason: str, console: Console | None) -> None:
 
 
 def _save_state(output_dir: Path, state: dict[str, Any]) -> None:
+    """Write the design atomically: a failed write never truncates the previous state."""
     output_dir.mkdir(parents=True, exist_ok=True)
     state_path = output_dir / STATE_FILE
-    temp_path = output_dir / f".{STATE_FILE}.tmp"
-    temp_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
-    temp_path.replace(state_path)
+    data = json.dumps(state, indent=2, sort_keys=True).encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(prefix=f".{STATE_FILE}.", suffix=".tmp", dir=output_dir)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, state_path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
 
 
 def _issue_message(issue: ErrorDetails) -> str:
@@ -343,12 +353,19 @@ def _make_handler(
                 self._handle_generate(payload, state.packages)
 
         def _handle_save(self, payload: dict[str, Any]) -> None:
-            try:
-                _merge_generated_names(payload, _load_state(self._out))
-                _save_state(self._out, payload)
-                self._respond(200, {"ok": True})
-            except (OSError, ValueError) as exc:
-                self._respond(500, {"error": str(exc)})
+            _merge_generated_names(payload, _load_state(self._out))
+            error = self._try_save(payload)
+            if error is None:
+                self._respond(200, {"ok": True, "state_saved": True})
+            else:
+                self._respond(
+                    500,
+                    {
+                        "error": f"The design could not be saved: {error}",
+                        "state_saved": False,
+                        "state_error": error,
+                    },
+                )
 
         def _handle_generate(
             self,
@@ -409,13 +426,18 @@ def _make_handler(
                     self._report(result)
             except (OSError, ValueError, KeyError) as exc:
                 self._con.print(f"[red]✗ Error:[/red] {exc}")
-                self._save_quietly(payload)
+                state_error = self._try_save(payload)
                 self._respond(
                     400,
-                    {"error": str(exc), "packages": [result.to_dict() for result in results]},
+                    {
+                        "error": str(exc),
+                        "packages": [result.to_dict() for result in results],
+                        "state_saved": state_error is None,
+                        "state_error": state_error,
+                    },
                 )
                 return
-            self._save_quietly(payload)
+            state_error = self._try_save(payload)
             files = [f"{r.package}/{path}" for r in results for path in r.written + r.unchanged]
             self._respond(
                 200,
@@ -427,6 +449,8 @@ def _make_handler(
                         f"{r.package}/{path}" for r in results for path in r.kept_modified
                     ],
                     "renamed_in": renamed_in,
+                    "state_saved": state_error is None,
+                    "state_error": state_error,
                 },
             )
 
@@ -439,11 +463,14 @@ def _make_handler(
             for path in result.kept_modified:
                 self._con.print(f"  [yellow]kept your edits:[/yellow] {result.package}/{path}")
 
-        def _save_quietly(self, payload: dict[str, Any]) -> None:
+        def _try_save(self, payload: dict[str, Any]) -> str | None:
+            """Save the design; return why it failed, or None. The old state is kept on failure."""
             try:
                 _save_state(self._out, payload)
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 self._con.print(f"[red]✗ Could not save design state:[/red] {exc}")
+                return str(exc)
+            return None
 
         def _respond(self, code: int, data: dict[str, Any]) -> None:
             body = json.dumps(data).encode("utf-8")

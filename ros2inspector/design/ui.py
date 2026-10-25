@@ -179,6 +179,21 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 #toast.show{opacity:1;transform:translateY(0)}
 #toast.ok{border-color:rgba(52,211,153,.4);color:#34d399}
 #toast.err{border-color:rgba(248,113,113,.4);color:#f87171}
+#toast.warn{border-color:rgba(251,191,36,.45);color:#fbbf24}
+/* Errors and warnings stay until clicked, so a long message can be read in full. */
+#toast.show.err,#toast.show.warn{pointer-events:auto;cursor:pointer}
+
+/* unsaved-design banner: stays until the design is saved */
+#banner{display:none;flex-shrink:0;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:10px 16px;background:rgba(248,113,113,.1);
+  border-bottom:1px solid rgba(248,113,113,.45);color:#fecaca;font-size:13px;line-height:1.5}
+#banner.show{display:flex}
+#banner .bmsg{flex:1 1 320px;min-width:0;overflow-wrap:anywhere}
+#banner .bmsg strong{color:#f87171}
+.btn-warn{background:rgba(248,113,113,.14);border:1px solid rgba(248,113,113,.45);
+  border-radius:8px;color:#fecaca;padding:6px 14px;font-size:12px;font-weight:600;
+  cursor:pointer;white-space:nowrap}
+.btn-warn:hover{background:rgba(248,113,113,.26)}
 </style>
 </head>
 <body>
@@ -194,6 +209,12 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   <button class="btn-p" id="gb" disabled>↓ Generate All</button>
   <button class="btn" id="fit" title="Bring the design back into view: centred when it fits, otherwise from its top-left node">⊡ Show all</button>
   <span class="tb-hint">Click node to configure · Drag cyan handles to connect · Drag the background or scroll to pan · Ctrl+S to save</span>
+</div>
+
+<div id="banner" role="alert">
+  <span class="bmsg" id="bmsg"></span>
+  <button class="btn-warn" id="bexp" title="Download the current design as JSON">⤓ Export design</button>
+  <button class="btn-warn" id="bretry">↻ Try saving again</button>
 </div>
 
 <div id="pt"></div>
@@ -262,6 +283,8 @@ const GB  = document.getElementById('gb');
 const PT  = document.getElementById('pt');
 const PN  = document.getElementById('pn');
 const TOAST = document.getElementById('toast');
+const BANNER = document.getElementById('banner');
+
 
 // ── view (pan) ─────────────────────────────────────────────────────────────
 // Node x/y are world coordinates; the screen shows the world shifted by VIEW.
@@ -991,8 +1014,35 @@ function showToast(msg,type){
   TOAST.textContent=msg;
   TOAST.className='show '+(type||'ok');
   clearTimeout(showToast._t);
-  showToast._t=setTimeout(()=>{ TOAST.className=''; },5000);
+  // Successes fade; errors and warnings stay until clicked or replaced.
+  if(!type||type==='ok') showToast._t=setTimeout(()=>{ TOAST.className=''; },5000);
+  else TOAST.title='Click to dismiss';
 }
+TOAST.addEventListener('click',()=>{ TOAST.className=''; });
+
+// ── unsaved design banner ─────────────────────────────────────────────────
+function showSaveProblem(error,generated){
+  const bmsg=document.getElementById('bmsg');
+  bmsg.innerHTML=(generated
+      ? '<strong>Files were generated, but the design could not be saved:</strong> '
+      : '<strong>The design could not be saved:</strong> ')
+    +esc(error)+'. Do not reload this page, or the unsaved changes are lost. '
+    +'Use <em>Export design</em> to keep a copy (put it back in the output folder as '
+    +'<code>.ros2inspector_design.json</code> to restore it), fix the problem, then try saving again.';
+  BANNER.classList.add('show');
+}
+function hideSaveProblem(){ BANNER.classList.remove('show'); }
+function exportDesign(){
+  const blob=new Blob([JSON.stringify(snapshot(),null,2)],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='ros2inspector_design.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),0);
+}
+document.getElementById('bexp').addEventListener('click',exportDesign);
+document.getElementById('bretry').addEventListener('click',()=>saveState());
+
 
 // ── server errors ─────────────────────────────────────────────────────────
 // Turn "packages.0.nodes.1.label" into "my_package › talker › label".
@@ -1041,9 +1091,10 @@ async function saveState(){
       headers:{'Content-Type':'application/json','X-ROS2Inspector-Token':SESSION_TOKEN},
       body:JSON.stringify(state),
     });
-    if(res.ok){ markSaved(); showToast('💾 Design saved.','ok'); }
+    if(res.ok){ markSaved(); hideSaveProblem(); showToast('💾 Design saved.','ok'); }
     else {
       const data=await res.json().catch(()=>({error:`HTTP ${res.status}`}));
+      if(data.state_saved===false) showSaveProblem(data.state_error||data.error,false);
       showToast(`✗ ${errorText(data,state)}`,'err');
     }
   }catch(err){
@@ -1072,15 +1123,19 @@ GB.addEventListener('click',async()=>{
     });
     const data=await res.json().catch(()=>({error:`HTTP ${res.status}`}));
     if(res.ok){
-      markSaved();
+      const saved=data.state_saved!==false;
+      if(saved){ markSaved(); hideSaveProblem(); }
+      else showSaveProblem(data.state_error||'unknown error',true);
       const kept=data.kept_modified||[], renamedIn=data.renamed_in||[];
       const written=(data.packages||[]).reduce((n,r)=>n+r.written.length,0);
       let msg=kept.length
-        ? `✓ ${written} file(s) written → ${data.output_dir}. Kept your edits in ${kept.length} file(s): ${kept.join(', ')}`
-        : `✓ ${written} file(s) written, ${data.files.length-written} unchanged → ${data.output_dir}`;
+        ? `${written} file(s) written → ${data.output_dir}. Kept your edits in ${kept.length} file(s): ${kept.join(', ')}`
+        : `${written} file(s) written, ${data.files.length-written} unchanged → ${data.output_dir}`;
       if(renamedIn.length) msg+=`. Updated the package name in your edited file(s): ${renamedIn.join(', ')}`;
-      showToast(msg,'ok');
+      if(!saved) showToast(`⚠ ${msg}. The design itself was NOT saved; see the banner.`,'err');
+      else showToast('✓ '+msg,'ok');
     } else {
+      if(data.state_saved===false) showSaveProblem(data.state_error||'unknown error',true);
       showToast(`✗ ${errorText(data,payload)}`,'err');
     }
   }catch(err){
