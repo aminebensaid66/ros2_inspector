@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from ros2inspector.utils.enums import StrEnum
+from ros2inspector.utils.files import default_file_mode
 
 
 class OutputFormat(StrEnum):
@@ -38,6 +39,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     if path.exists() and path.is_dir():
         raise OutputWriteError(f"output path is a directory: {path}")
     temp_name: str | None = None
+    mode = default_file_mode(path)
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=parent, prefix=f".{path.name}.", delete=False
@@ -45,6 +47,7 @@ def atomic_write_text(path: Path, text: str) -> None:
             temp_name = stream.name
             stream.write(text)
             stream.flush()
+            os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
         os.replace(temp_name, path)
     except OSError as exc:

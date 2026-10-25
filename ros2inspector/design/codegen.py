@@ -18,6 +18,7 @@ from ros2inspector.design.models import (
     PackageSpec,
     split_interface,
 )
+from ros2inspector.utils.files import default_file_mode
 
 _GENERATED_MARKER = ".ros2inspector_generated"
 _MARKER_FORMAT = 2
@@ -514,9 +515,10 @@ def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> 
     The manifest is rewritten to the new paths, so files the user edited keep counting as
     edited (and are never overwritten) under the new module name instead of being stranded
     in a folder that ``setup.py`` no longer installs. Unedited files are regenerated anyway;
-    in generated files the user edited, the old package name is replaced as a whole word, so
-    ``setup.py``, ``package.xml`` and launch files keep pointing at the package. Files the
-    user added are never touched. Returns the files that were rewritten.
+    in the edited ``setup.py``, ``setup.cfg`` and ``package.xml`` the old package name is
+    replaced as a whole word, and in edited launch files only the ``package=`` entries are,
+    so the package still builds and launches. Node code and files the user added are never
+    touched. Returns the files that were rewritten.
     """
     if old_name == new_name:
         return []
@@ -560,12 +562,54 @@ def rename_blockers(package_dir: Path, old_name: str, new_name: str) -> list[str
     return blockers
 
 
+# Files whose every whole-word mention of the package name names the package itself.
+_PACKAGE_NAME_FILES = frozenset({"setup.py", "setup.cfg", "package.xml"})
+
+
+def _launch_package_pattern(old_name: str) -> re.Pattern[str]:
+    """``package='old'`` (Python), ``pkg="old"`` (XML) and ``pkg: old`` (YAML) launch entries."""
+    name = re.escape(old_name)
+    return re.compile(
+        rf"(?P<head>\bpackage\s*=\s*(?P<q>['\"])){name}(?P=q)"
+        rf"|(?P<xhead>\bpkg\s*=\s*(?P<xq>['\"])){name}(?P=xq)"
+        rf"|(?P<yhead>\bpkg\s*:\s*(?P<yq>['\"]?)){name}(?P=yq)(?![A-Za-z0-9_])"
+    )
+
+
+def _is_launch_file(relative: str) -> bool:
+    parts = relative.split("/")
+    return parts[0] == "launch" or ".launch." in parts[-1]
+
+
 def _replace_package_name(
     package_dir: Path, manifest: dict[str, str], old_name: str, new_name: str
 ) -> list[str]:
+    """Point the build files and launch ``package=`` entries the user edited at the new name.
+
+    Only ``setup.py``, ``setup.cfg`` and ``package.xml`` (whole words) and the package
+    entries of launch files are rewritten. Node code and every other file are never touched:
+    the old name there is the user's own text (a topic such as ``/perception/obstacles``),
+    and rewriting it would silently disconnect the node at runtime.
+    """
     word = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(old_name)}(?![A-Za-z0-9_])")
+    launch_entry = _launch_package_pattern(old_name)
+
+    def replace_entry(match: re.Match[str]) -> str:
+        if match.group("head") is not None:
+            return f"{match.group('head')}{new_name}{match.group('q')}"
+        if match.group("xhead") is not None:
+            return f"{match.group('xhead')}{new_name}{match.group('xq')}"
+        return f"{match.group('yhead')}{new_name}{match.group('yq')}"
+
+    def rewrite(relative: str, text: str) -> str:
+        if relative in _PACKAGE_NAME_FILES:
+            return word.sub(new_name, text)
+        return launch_entry.sub(replace_entry, text)
+
     rewritten: list[str] = []
     for relative, digest in sorted(manifest.items()):
+        if relative not in _PACKAGE_NAME_FILES and not _is_launch_file(relative):
+            continue
         path = package_dir / relative
         if path.is_symlink() or not path.is_file():
             continue
@@ -576,7 +620,7 @@ def _replace_package_name(
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             continue
-        updated = word.sub(new_name, text)
+        updated = rewrite(relative, text)
         if updated != text:
             _write_atomic(path, updated.encode("utf-8"))
             rewritten.append(relative)
@@ -585,10 +629,12 @@ def _replace_package_name(
 
 def _write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    mode = default_file_mode(path)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
+            os.fchmod(stream.fileno(), mode)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

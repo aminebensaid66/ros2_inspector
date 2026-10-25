@@ -368,6 +368,107 @@ def test_rename_updates_the_package_name_in_edited_files(server: Any) -> None:
     assert "new_name/setup.py" in data["kept_modified"]
 
 
+def test_rename_never_rewrites_node_code_or_launch_topics(server: Any) -> None:
+    """Regression (B1): a topic like /perception/obstacles must survive renaming 'perception'.
+
+    Rewriting node code compiles and passes colcon test, but silently cuts the publisher off
+    from its subscribers at runtime, so only package entries may change.
+    """
+    httpd, out = server
+    node = _node("detector")
+    node["publishers"] = [
+        {"id": "t1", "name": "/perception/obstacles", "msgType": "std_msgs/String"}
+    ]
+    _post(httpd, "/generate", _state(_pkg("perception", nodes=[node])))
+    package = out / "perception"
+    node_file = package / "perception" / "detector.py"
+    node_source = node_file.read_text() + "\n# perception tuning\n"
+    assert "'/perception/obstacles'" in node_source
+    node_file.write_text(node_source)
+    launch_file = package / "launch" / "launch.py"
+    launch_source = launch_file.read_text().replace(
+        "        ),",
+        "            remappings=[('/perception/obstacles', '/perception/raw')],\n        ),",
+    )
+    assert launch_source != launch_file.read_text()
+    launch_file.write_text(launch_source)
+
+    status, data = _post(httpd, "/generate", _state(_pkg("perception_stack", nodes=[node])))
+    assert status == 200, data
+    package = out / "perception_stack"
+    assert (package / "perception_stack" / "detector.py").read_text() == node_source
+    launch = (package / "launch" / "launch.py").read_text()
+    assert "package='perception_stack'" in launch
+    assert "package='perception'" not in launch
+    assert "remappings=[('/perception/obstacles', '/perception/raw')]" in launch
+    assert data["renamed_in"] == ["perception_stack/launch/launch.py"]
+
+
+def test_rename_rewrites_only_package_entries_in_launch_files(tmp_path: Path) -> None:
+    from ros2inspector.design.codegen import _MARKER_FORMAT, _digest, rename_package_contents
+
+    def check(tmp: Path, relative: str, before: str, after: str) -> None:
+        package = tmp / relative.replace("/", "_")
+        path = package / relative
+        path.parent.mkdir(parents=True)
+        path.write_text(before)
+        marker = {
+            "generated_by": "ros2inspector",
+            "format": _MARKER_FORMAT,
+            "files": {relative: _digest(b"original")},
+        }
+        (package / _GENERATED_MARKER).write_text(json.dumps(marker))
+        rename_package_contents(package, "old", "new")
+        moved = package / re.sub(r"^old/", "new/", relative)  # the module folder moves
+        assert moved.read_text() == after, relative
+
+    check(
+        tmp_path,
+        "launch/a.launch.py",
+        "Node(package=\"old\", namespace='old', parameters=[{'old': 1}])\n",
+        "Node(package=\"new\", namespace='old', parameters=[{'old': 1}])\n",
+    )
+    check(
+        tmp_path,
+        "launch/b.launch.xml",
+        '<node pkg="old" exec="old" name="old_node"/>\n',
+        '<node pkg="new" exec="old" name="old_node"/>\n',
+    )
+    check(
+        tmp_path,
+        "launch/c.launch.yaml",
+        "- node:\n    pkg: old\n    exec: old\n    pkg: older\n",
+        "- node:\n    pkg: new\n    exec: old\n    pkg: older\n",
+    )
+    node = "self.create_publisher(S, '/old/x', 10)\n"
+    check(tmp_path, "old/node.py", node, node)
+    check(tmp_path, "README.md", "# old\n", "# old\n")
+
+
+def test_generated_files_are_readable_by_other_users(server: Any) -> None:
+    """Regression (M2): files moved into place from a temp file must not stay 0600."""
+    import os
+
+    httpd, out = server
+    _post(httpd, "/generate", _state(_pkg("perm_pkg")))
+    package = out / "perm_pkg"
+    umask = os.umask(0)
+    os.umask(umask)
+    expected = 0o666 & ~umask
+    for path in package.rglob("*"):
+        if path.is_file():
+            assert path.stat().st_mode & 0o777 == expected, path
+    # A file the user made executable keeps its mode when it is regenerated.
+    launch = package / "launch" / "launch.py"
+    launch.chmod(0o755)
+    original = launch.read_text()
+    launch.write_text(original + "# edit\n")
+    from ros2inspector.design.codegen import _write_atomic
+
+    _write_atomic(launch, original.encode())
+    assert launch.stat().st_mode & 0o777 == 0o755
+
+
 def test_rename_refuses_when_the_module_folder_cannot_move(server: Any) -> None:
     httpd, out = server
     _post(httpd, "/generate", _state(_pkg("old_name")))
