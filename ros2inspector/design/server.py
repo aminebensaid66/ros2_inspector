@@ -23,6 +23,7 @@ from rich.console import Console
 from ros2inspector.design.codegen import (
     _GENERATED_MARKER,
     GenerateResult,
+    package_name_edits,
     plan_package_edits,
     previous_node_labels,
     read_manifest,
@@ -109,6 +110,8 @@ def _apply_renames(
     moves = _rename_plan(packages, output_dir, old_state)
     if not moves:
         return []
+    for old_dir, new_dir in moves:
+        package_name_edits(old_dir, old_dir.name, new_dir.name)
     staging = Path(tempfile.mkdtemp(prefix=".ros2inspector-rename-", dir=output_dir))
     (staging / "COLCON_IGNORE").write_text("", encoding="utf-8")
     staged: list[tuple[Path, Path, Path]] = []
@@ -288,6 +291,11 @@ def _edit_problems(
         if manifest is None:
             continue
         old_name, new_name = source.name, package.pkg_name
+        try:
+            metadata = package_name_edits(source, old_name, new_name)
+        except ValueError as exc:
+            problems.append(f"{package.pkg_name}: {exc}")
+            continue
         # Before a pending package rename, the module folder and resource marker still use
         # the old name; view the package as it will look after the rename.
         moves = [(old_name, new_name), (f"resource/{old_name}", f"resource/{new_name}")]
@@ -299,14 +307,17 @@ def _edit_problems(
             return relative
 
         def read(
-            relative: str, source: Path = source, moves: list[tuple[str, str]] = moves
+            relative: str,
+            source: Path = source,
+            moves: list[tuple[str, str]] = moves,
+            metadata: dict[str, bytes] = metadata,
         ) -> bytes | None:
             for old, new in moves:
                 if relative == new or relative.startswith(f"{new}/"):
                     relative = old + relative[len(new) :]
                     break
             path = source / relative
-            return path.read_bytes() if path.is_file() else None
+            return metadata.get(relative, path.read_bytes()) if path.is_file() else None
 
         translated = {renamed(key): digest for key, digest in manifest.items()}
         plan = plan_package_edits(

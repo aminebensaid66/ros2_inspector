@@ -141,6 +141,8 @@ def _edited_scenario(src: Path) -> PackageSpec:
             "# TODO: fill in message fields", "msg.data = 'USER_EDIT_RETAINED'"
         )
     )
+    user_literal = b"\nUSER_TEXT = \"super().__init__('camera_node')\"\n"
+    module.write_bytes(module.read_bytes() + user_literal)
     (package / "setup.py").write_text((package / "setup.py").read_text() + "# User edit\n")
     second = PackageSpec.model_validate(
         {
@@ -156,6 +158,7 @@ def _edited_scenario(src: Path) -> PackageSpec:
         "moved your edited edited_demo/camera_node.py to edited_demo/camera_renamed.py",
         "registered auxiliary, camera_renamed in your edited setup.py",
     ]
+    assert (package / "edited_demo/camera_renamed.py").read_bytes().endswith(user_literal)
     return second
 
 
@@ -302,3 +305,71 @@ def test_name_length_limits_match_rclpy(role: str, ros_domain: int) -> None:
     finally:
         node.destroy_node()
         rclpy.shutdown(context=context)
+
+
+@pytest.mark.requires_ros2
+def test_renamed_node_runs_with_user_literal_unchanged(
+    tmp_path: Path,
+    ros_domain: int,
+    ros_environment: dict[str, str],
+    ros_process: Callable[..., subprocess.Popen[bytes]],
+) -> None:
+    import rclpy
+    from rclpy.executors import SingleThreadedExecutor
+
+    workspace = tmp_path / "ws"
+    _edited_scenario(workspace / "src")
+    module = workspace / "src/edited_demo/edited_demo/camera_renamed.py"
+    literal = b"USER_TEXT = \"super().__init__('camera_node')\"\n"
+    assert module.read_bytes().endswith(literal)
+    for command in (
+        ["colcon", "build"],
+        ["colcon", "test"],
+        ["colcon", "test-result", "--verbose"],
+    ):
+        result = subprocess.run(
+            command, cwd=workspace, env=ros_environment, capture_output=True, text=True, timeout=180
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    check = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source install/setup.bash && python3 -c "
+            "'from edited_demo.camera_renamed import USER_TEXT; print(USER_TEXT)'",
+        ],
+        cwd=workspace,
+        env=ros_environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert check.returncode == 0, check.stderr
+    assert check.stdout == "super().__init__('camera_node')\n"
+    process = ros_process(
+        ["bash", "-c", "source install/setup.bash && exec ros2 run edited_demo camera_renamed"],
+        cwd=workspace,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    context = rclpy.Context()
+    rclpy.init(context=context, domain_id=ros_domain)
+    observer = rclpy.create_node("rename_observer", context=context)
+    executor = SingleThreadedExecutor(context=context)
+    try:
+        names = set()
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            rclpy.spin_once(observer, executor=executor, timeout_sec=0.2)
+            names = set(observer.get_node_names())
+            if names == {"camera_renamed", "rename_observer"} and dict(
+                observer.get_topic_names_and_types()
+            ).get("/cam") == ["std_msgs/msg/String"]:
+                break
+        assert process.poll() is None
+        assert names == {"camera_renamed", "rename_observer"}
+        assert dict(observer.get_topic_names_and_types())["/cam"] == ["std_msgs/msg/String"]
+    finally:
+        executor.shutdown()
+        observer.destroy_node()
+        context.shutdown()
