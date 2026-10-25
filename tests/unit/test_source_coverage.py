@@ -142,7 +142,7 @@ def test_procedural_nodes_keep_endpoints_and_entrypoint(
     launch.parent.mkdir()
     launch.write_text("Node(package='demo', executable='factory', name='deployed')\n")
     model = UAM.build(tmp_path, use_cache=False)
-    assert [deployment["name"] for deployment in model.deployments()] == ["/deployed"]
+    assert [deployment["name"] for deployment in model.deployments()] == ["deployed"]
     node = model.nodes()[0]
     assert node.declared_ros_name == "factory"
     for attr, name in [

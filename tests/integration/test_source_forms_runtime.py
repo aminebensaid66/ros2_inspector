@@ -157,14 +157,16 @@ def test_source_forms_match_built_executables(tmp_path: Path) -> None:
         while time.monotonic() < deadline:
             rclpy.spin_once(observer, timeout_sec=0.2)
             topics = dict(observer.get_topic_names_and_types())
-            if all(f"/{name}_topic" in topics for name in names):
+            runtime_names = set(observer.get_node_names())
+            if set(names) <= runtime_names and all(f"/{name}_topic" in topics for name in names):
                 break
         errors = {
             name: process.stderr.read().decode()
             for name, process in zip(names, processes, strict=True)
             if process.poll() is not None and process.stderr is not None
         }
-        assert set(names) <= set(observer.get_node_names()), errors
+        assert set(names) <= runtime_names, errors
+        assert all(process.poll() is None for process in processes), errors
         for name in names:
             assert topics[f"/{name}_topic"] == ["std_msgs/msg/String"]
     finally:
