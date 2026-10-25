@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import os
-import signal
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -18,7 +17,12 @@ def _write(root: Path, relative: str, text: str) -> None:
 
 
 @pytest.mark.requires_ros2
-def test_source_forms_match_built_executables(tmp_path: Path) -> None:
+def test_source_forms_match_built_executables(
+    tmp_path: Path,
+    ros_domain: int,
+    ros_environment: dict[str, str],
+    ros_process: Callable[..., subprocess.Popen[bytes]],
+) -> None:
     import rclpy
 
     names = ["factory", "direct", "child", "speaker_hh", "speaker_hxx"]
@@ -124,9 +128,11 @@ def test_source_forms_match_built_executables(tmp_path: Path) -> None:
         ["colcon", "test"],
         ["colcon", "test-result", "--verbose"],
     ]:
-        result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(
+            command, cwd=tmp_path, env=ros_environment, capture_output=True, text=True, timeout=120
+        )
         assert result.returncode == 0, result.stdout + result.stderr
-    env = dict(os.environ)
+    env = dict(ros_environment)
     env["AMENT_PREFIX_PATH"] = (
         ":".join(str(tmp_path / "install" / p) for p in ["forms", "speaker_hh", "speaker_hxx"])
         + ":"
@@ -138,14 +144,14 @@ def test_source_forms_match_built_executables(tmp_path: Path) -> None:
         + env.get("PYTHONPATH", "")
     )
     processes = []
-    rclpy.init()
+    rclpy.init(domain_id=ros_domain)
     observer = rclpy.create_node("source_forms_observer")
     try:
         for name in names:
             pkg = "forms" if name in ["factory", "direct", "child"] else name
             executable = name if pkg == "forms" else "speaker"
             processes.append(
-                subprocess.Popen(
+                ros_process(
                     ["ros2", "run", pkg, executable],
                     env=env,
                     stdout=subprocess.DEVNULL,
@@ -170,13 +176,5 @@ def test_source_forms_match_built_executables(tmp_path: Path) -> None:
         for name in names:
             assert topics[f"/{name}_topic"] == ["std_msgs/msg/String"]
     finally:
-        for process in processes:
-            os.killpg(process.pid, signal.SIGTERM)
-        for process in processes:
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5)
         observer.destroy_node()
         rclpy.shutdown()

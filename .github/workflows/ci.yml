@@ -144,6 +144,7 @@ jobs:
           # The project venv may use a newer pytest, so load only the plugin
           # required by this repository's pytest configuration.
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          ROS_AUTOMATIC_DISCOVERY_RANGE: "LOCALHOST"
         run: |
           source /opt/ros/jazzy/setup.bash
           /tmp/ros2inspector-venv/bin/python -m pytest -p pytest_cov.plugin \
