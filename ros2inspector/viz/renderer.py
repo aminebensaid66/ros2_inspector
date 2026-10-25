@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html as _html
-import json
 import re
 from importlib.resources import files
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Any
 
 from ros2inspector.graph.renderer import _subgraph, flow_direction
 from ros2inspector.model.uam import UAM
+from ros2inspector.utils.html import json_for_script
 
 
 def _cytoscape_script_tag() -> str:
@@ -181,10 +181,10 @@ def generate_html(uam: UAM, workspace_root: Path) -> str:
     }
     summary = uam.summary()
 
-    # Replace </ with <\/ so that node names containing "</script>" cannot
-    # break out of the embedded <script> block in the generated HTML.
-    graphs_json = json.dumps(graphs, separators=(",", ":")).replace("</", "<\\/")
-    summary_json = json.dumps(summary, separators=(",", ":")).replace("</", "<\\/")
+    # Names, paths and diagnostics are source data: none of their characters may change
+    # how the browser parses the <script> blocks they are embedded in.
+    graphs_json = json_for_script(graphs)
+    summary_json = json_for_script(summary)
     # HTML-escape the path so characters like <, >, & in directory names cannot
     # break the generated markup (e.g. in <title> and the workspace <div>).
     workspace_html = _html.escape(str(workspace_root))
@@ -193,9 +193,7 @@ def generate_html(uam: UAM, workspace_root: Path) -> str:
         "__CYTOSCAPE_SCRIPT_TAG__": _cytoscape_script_tag(),
         "__GRAPHS_JSON__": graphs_json,
         "__SUMMARY_JSON__": summary_json,
-        "__DIAGNOSTICS_JSON__": json.dumps(
-            uam.to_dict().get("diagnostics", []), separators=(",", ":")
-        ).replace("</", "<\\/"),
+        "__DIAGNOSTICS_JSON__": json_for_script(uam.to_dict().get("diagnostics", [])),
         "__WORKSPACE__": workspace_html,
     }
     placeholders = re.compile(
@@ -222,9 +220,12 @@ __CYTOSCAPE_SCRIPT_TAG__
 body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;flex-direction:column;height:100vh;overflow:hidden}
 
 /* ── header ── */
-#hdr{height:52px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;padding:0 14px;gap:12px;flex-shrink:0;overflow:hidden}
+/* The header wraps instead of clipping, so every control stays reachable on a phone; the
+   graph below takes whatever height is left. */
+#hdr{min-height:52px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;flex-wrap:wrap;padding:8px 14px;gap:8px 12px;flex-shrink:0}
 #brand{font-weight:700;font-size:15px;color:#58a6ff;white-space:nowrap}
-#ws{font-size:11px;color:#8b949e;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#ws{font-size:11px;color:#8b949e;flex:1 1 120px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 
 .tab-group{display:flex;gap:2px;background:#0d1117;border-radius:6px;padding:3px;flex-shrink:0}
 .tab{padding:4px 12px;border:none;background:transparent;color:#8b949e;border-radius:4px;cursor:pointer;font-size:13px;font-weight:500;transition:all .15s}
@@ -268,6 +269,16 @@ select:focus{outline:none;border-color:#388bfd}
 /* ── canvas ── */
 #cy{flex:1;background:#0d1117}
 
+/* ── narrow screens: graph first, panel below ── */
+@media (max-width:640px){
+  #brand{display:none}
+  #hdr{padding:8px 10px}
+  #ws{flex-basis:100%}
+  #main{flex-direction:column}
+  #cy{order:1;min-height:0}
+  #sb{order:2;width:auto;max-height:40%;border-right:none;border-top:1px solid #30363d}
+}
+
 /* ── tooltip ── */
 #tip{position:fixed;background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:6px 10px;font-size:12px;pointer-events:none;display:none;z-index:999;max-width:260px;line-height:1.4}
 </style>
@@ -284,7 +295,8 @@ select:focus{outline:none;border-color:#388bfd}
     <button class="tab" data-g="full">Full</button>
   </div>
 
-  <select id="lay-sel">
+  <div class="ctl">
+  <select id="lay-sel" aria-label="Layout">
     <option value="compound">📦 Grouped</option>
     <option value="cose">⚛ Force</option>
     <option value="breadthfirst" selected>⬇ Hierarchy</option>
@@ -294,6 +306,7 @@ select:focus{outline:none;border-color:#388bfd}
   </select>
   <button class="btn" id="fit-btn">⊡ Fit</button>
   <button class="btn" id="png-btn">📷 PNG</button>
+  </div>
 </div>
 
 <div id="main">
@@ -716,6 +729,12 @@ function _renderRows(d){
     .join('');
 }
 
+// On a phone the panel sits under the graph: bring the details into view when they change.
+function revealDetails(){
+  if(window.matchMedia('(max-width:640px)').matches)
+    document.getElementById('det').scrollIntoView({block:'start'});
+}
+
 function showDetails(node){
   if(node.isParent()&&node.data('kind')==='Package') return; // don't inspect container frames
   const d=node.data();
@@ -725,6 +744,7 @@ function showDetails(node){
   document.getElementById('det-body').innerHTML=
     `<div id="det-name" style="color:${v.border}">${_esc(d.label)}</div>`+
     `<div id="det-kind">${_esc(d.kind||'')}</div>`+_renderRows(d);
+  revealDetails();
   cy.elements().addClass('faded');
   node.removeClass('faded');
   node.ancestors().removeClass('faded');   // keep parent containers visible
@@ -753,6 +773,7 @@ function showEdgeDetails(edge){
       `<div class="drow"><div class="dk">dst pkg</div><div class="dv">${_esc(tgtD.package||tgt.ancestors('[kind="Package"]').first().data('label')||'—')}</div></div>`
     :'')+
     _renderRows(d);
+  revealDetails();
 
   // Fade everything; keep source + target + all their ancestor containers + the edge
   cy.elements().addClass('faded');

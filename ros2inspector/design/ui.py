@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import re
 
 from ros2inspector.design.models import known_interfaces_json
+from ros2inspector.utils.html import json_for_script
 
 _TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -1281,8 +1281,8 @@ for(const [id,list] of [['dl-msg',MSGS],['dl-srv',SRVS],['dl-action',ACTIONS]]){
 
 
 def _script_json(value: object) -> str:
-    """JSON that is safe inside an inline <script> block (no '</' or '<!--')."""
-    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    """JSON that is safe inside an inline <script> block."""
+    return json_for_script(value, compact=False)
 
 
 def build_html(

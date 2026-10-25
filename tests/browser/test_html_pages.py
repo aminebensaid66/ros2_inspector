@@ -267,3 +267,55 @@ def test_viz_labels_fit_their_shapes_without_style_warnings(page: Page, workspac
     assert ratio >= 1.9
     warnings = [m for m in page.errors.messages if "deprecated" in m]  # type: ignore[attr-defined]
     assert warnings == []
+
+
+def _viz_page(workspace: Path) -> Path:
+    target = workspace.parent / "graph.html"
+    result = runner.invoke(
+        app, ["-q", "viz", "-C", str(workspace), "-o", str(target), "--no-open", "--no-cache"]
+    )
+    assert result.exit_code == 0, result.output
+    return target
+
+
+def test_viz_renders_a_workspace_whose_path_opens_a_script_comment(
+    page: Page, workspace: Path, shot: Any
+) -> None:
+    hostile = workspace.parent / "ws<!--<script>name</script>x" / "workspace_a"
+    hostile.parent.mkdir(parents=True)
+    workspace.rename(hostile)
+    page.goto(_viz_page(hostile).as_uri())
+    page.wait_for_function(
+        "() => typeof cy !== 'undefined' && cy && typeof cy.nodes === 'function'",
+        timeout=10000,
+    )
+    assert page.evaluate("cy.nodes().length") == 3
+    assert "ws<!--<script>name</script>x" in page.locator("#ws").inner_text()
+    shot(page, "viz-07-hostile-path")
+    errors = [m for m in page.errors.messages if not m.startswith("console.warning")]  # type: ignore[attr-defined]
+    assert errors == []
+
+
+@pytest.mark.parametrize("width", [320, 375, 768])
+def test_viz_toolbar_controls_stay_on_screen(
+    page: Page, workspace: Path, width: int, shot: Any
+) -> None:
+    page.set_viewport_size({"width": width, "height": 800})
+    page.goto(_viz_page(workspace).as_uri())
+    page.wait_for_function("() => typeof cy !== 'undefined' && cy && cy.nodes().length > 0")
+    controls = ["#lay-sel", "#fit-btn", "#png-btn", ".tab[data-g='deps']", ".tab[data-g='full']"]
+    for selector in controls:
+        box = page.locator(selector).bounding_box()
+        assert box is not None, selector
+        assert box["x"] >= 0 and box["x"] + box["width"] <= width, (selector, box)
+        assert box["y"] >= 0 and box["y"] + box["height"] <= 800, (selector, box)
+    assert page.evaluate("document.documentElement.scrollWidth") <= width
+    graph = page.locator("#cy").bounding_box()
+    assert graph is not None and graph["width"] >= min(width, 500) and graph["height"] >= 300
+    shot(page, f"viz-08-toolbar-{width}")
+    page.locator("#fit-btn").click()
+    with page.expect_download() as download:
+        page.locator("#png-btn").click()
+    assert download.value.suggested_filename.endswith(".png")
+    page.locator("#lay-sel").select_option("grid")
+    assert page.evaluate("cy.nodes().length") > 0
