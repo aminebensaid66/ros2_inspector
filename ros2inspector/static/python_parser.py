@@ -528,18 +528,39 @@ class _NodeVisitor(ast.NodeVisitor):
                     setattr(profile, kw.arg, value)
         return profile
 
+    def _endpoint_method(self, func: ast.expr) -> str:
+        canonical = self._canonical_name(_get_attr_name(func))
+        if canonical in {
+            "rclpy.action.ActionClient",
+            "rclpy.action.client.ActionClient",
+            "rclpy.action.ActionServer",
+            "rclpy.action.server.ActionServer",
+        }:
+            return canonical.rsplit(".", 1)[-1]
+        return _get_attr_name(func).rsplit(".", 1)[-1]
+
     def visit_Call(self, node: ast.Call) -> None:
         canonical = self._canonical_name(_get_attr_name(node.func))
         self.instantiated_symbols.add(
             canonical if canonical in self._known else f"{self.module}.{canonical}"
         )
         previous = self._current_node
-        method = _get_attr_name(node.func).split(".")[-1]
+        method = self._endpoint_method(node.func)
         receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
         if method in {"ActionServer", "ActionClient"} and node.args:
             receiver = node.args[0]
         if isinstance(receiver, ast.Name) and receiver.id in self._variables:
             self._current_node = self._variables[receiver.id]
+        if method not in _ENDPOINT_FACTORIES and len(node.args) >= 2:
+            first = node.args[0]
+            owner = self._variables.get(first.id) if isinstance(first, ast.Name) else None
+            if isinstance(first, ast.Name) and first.id == "self":
+                owner = previous
+            if owner is not None and self._extract_type_arg(node, 1) != "unknown":
+                owner.analysis_incomplete = True
+                note = "Cannot resolve endpoint constructor: " + ast.unparse(node.func)
+                if note not in owner.analysis_notes:
+                    owner.analysis_notes.append(note)
         factory = _ENDPOINT_FACTORIES.get(method)
         name_arg: ast.expr | None = None
         if factory is not None:
@@ -586,7 +607,7 @@ class _NodeVisitor(ast.NodeVisitor):
             self.generic_visit(node)
             return
 
-        func_name = _get_attr_name(node.func).split(".")[-1]
+        func_name = self._endpoint_method(node.func)
 
         if func_name == "declare_parameter" and len(node.args) > 1:
             key = self._resolve_name(node.args[0])

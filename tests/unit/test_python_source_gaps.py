@@ -74,3 +74,43 @@ def test_cpp_parse_gap_keeps_proven_type_conflicts_enabled(tmp_path: Path) -> No
     mismatch = next(f for f in findings if f.rule_type == "interface_type_mismatch")
     assert mismatch.severity == "error"
     assert mismatch.confidence == "known"
+
+
+@pytest.mark.parametrize(
+    "imports, constructor",
+    [
+        ("from rclpy.action import ActionClient as AC", "AC"),
+        ("import rclpy.action as ra", "ra.ActionClient"),
+        ("from rclpy.action.client import ActionClient as AC", "AC"),
+        ("from rclpy.action.server import ActionServer as AS", "AS"),
+    ],
+)
+def test_action_import_aliases_keep_endpoints(
+    tmp_path: Path, imports: str, constructor: str
+) -> None:
+    make_workspace(tmp_path)
+    source = tmp_path / "src/demo/demo/node.py"
+    source.write_text(
+        "from rclpy.node import Node\nfrom example_interfaces.action import Fibonacci\n"
+        + imports
+        + "\nclass Talker(Node):\n def __init__(self):\n"
+        "  super().__init__('talker')\n"
+        f"  self.action = {constructor}(self, Fibonacci, '/work')\n"
+    )
+    model = UAM.build(tmp_path, use_cache=False)
+    assert len(model.actions()) == 1
+    assert model.actions()[0]["name"] == "/work"
+    assert model.actions()[0]["action_type"] == "example_interfaces/Fibonacci"
+    assert not model.nodes()[0].analysis_incomplete
+    assert not model.diagnostics()
+
+
+def test_unknown_constructor_with_node_and_type_is_incomplete(tmp_path: Path) -> None:
+    make_workspace(tmp_path)
+    source = tmp_path / "src/demo/demo/node.py"
+    source.write_text(
+        source.read_text() + "  self.client = UnknownFactory(self, String, '/work')\n"
+    )
+    model = UAM.build(tmp_path, use_cache=False)
+    assert model.nodes()[0].analysis_incomplete
+    assert any(d["code"] == "source_analysis_incomplete" for d in model.diagnostics())
