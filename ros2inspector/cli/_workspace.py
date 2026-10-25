@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 from typing import NoReturn
 
@@ -14,6 +15,9 @@ from ros2inspector.discovery import (
     WorkspaceAnalysisError,
     find_package_xml_files,
 )
+from ros2inspector.discovery import (
+    find_workspace_root as _find_workspace_root,
+)
 from ros2inspector.model.schemas import PackageMetadata
 from ros2inspector.model.uam import UAM, UnifiedArchitectureModel
 from ros2inspector.static import parse_package_xml
@@ -22,8 +26,40 @@ _err_console = Console(stderr=True)
 
 
 def _exit_workspace_error(exc: WorkspaceAnalysisError) -> NoReturn:
-    _err_console.print(f"[red]Workspace error:[/red] {exc}")
+    _err_console.print(f"[red]Workspace error:[/red] {exc}", soft_wrap=True)
     raise typer.Exit(3) from exc
+
+
+def find_workspace_root(path: Path, *, warn: bool = True) -> Path:
+    """Validate the supplied path before attempting upward workspace discovery."""
+    try:
+        expanded = path.expanduser()
+        expanded.stat()
+        if not expanded.is_dir():
+            _exit_workspace_error(
+                WorkspaceAnalysisError(f"Workspace path '{path}' is not a directory.")
+            )
+        return _find_workspace_root(expanded, warn=warn)
+    except FileNotFoundError:
+        _exit_workspace_error(WorkspaceAnalysisError(f"Workspace path '{path}' does not exist."))
+    except (OSError, WorkspaceAnalysisError) as exc:
+        _exit_workspace_error(WorkspaceAnalysisError(str(exc)))
+
+
+def check_package_filter(package: str | None, uam: UnifiedArchitectureModel) -> None:
+    if package is None:
+        return
+    names = sorted(p.name for p in uam.packages())
+    if package in names:
+        return
+    matches = difflib.get_close_matches(package, names, n=1)
+    hint = f"; did you mean '{matches[0]}'?" if matches else ""
+    _err_console.print(
+        f"Unknown package '{package}'. Available: {', '.join(names)}{hint}",
+        markup=False,
+        soft_wrap=True,
+    )
+    raise typer.Exit(2)
 
 
 def load_packages_or_exit(root: Path) -> list[PackageMetadata]:

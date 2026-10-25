@@ -7,8 +7,7 @@ from rich.console import Console
 
 from ros2inspector.cli._output import OutputWriteError, atomic_write_text
 from ros2inspector.cli._state import state
-from ros2inspector.cli._workspace import build_uam_or_exit
-from ros2inspector.discovery import find_workspace_root
+from ros2inspector.cli._workspace import build_uam_or_exit, find_workspace_root
 from ros2inspector.viz import generate_html
 
 app = typer.Typer(

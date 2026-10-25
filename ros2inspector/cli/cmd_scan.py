@@ -11,8 +11,8 @@ from rich.table import Table
 
 from ros2inspector.cli._output import OutputFormat, health_bar
 from ros2inspector.cli._state import state
-from ros2inspector.cli._workspace import load_packages_or_exit
-from ros2inspector.discovery import find_workspace_root, get_ros_distro
+from ros2inspector.cli._workspace import find_workspace_root, load_packages_or_exit
+from ros2inspector.discovery import get_ros_distro
 from ros2inspector.model.schemas import PackageMetadata
 from ros2inspector.static import score_workspace, workspace_aggregate_score
 

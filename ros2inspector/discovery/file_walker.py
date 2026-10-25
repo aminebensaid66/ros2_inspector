@@ -5,6 +5,8 @@ from collections.abc import Iterable, Iterator
 from fnmatch import fnmatch
 from pathlib import Path
 
+from .paths import DirectoryKeys, visit_directory
+
 _DEFAULT_PRUNE_DIRS = frozenset(
     {
         ".git",
@@ -66,11 +68,19 @@ def iter_package_files(
     name_set = frozenset(names or ())
     patterns = _load_patterns(root)
 
-    for dirpath_str, dirnames, filenames in os.walk(root):
+    visited: DirectoryKeys = set()
+    for dirpath_str, dirnames, filenames in os.walk(root, followlinks=True):
         dirpath = Path(dirpath_str)
         relative_dir = dirpath.relative_to(root)
 
         if dirpath != root and any((dirpath / marker).exists() for marker in _IGNORE_MARKERS):
+            dirnames[:] = []
+            continue
+        try:
+            if not visit_directory(dirpath, visited):
+                dirnames[:] = []
+                continue
+        except OSError:
             dirnames[:] = []
             continue
 
@@ -80,7 +90,7 @@ def iter_package_files(
             if dirname in _DEFAULT_PRUNE_DIRS or _matches_ignore(relative, patterns):
                 continue
             kept_dirs.append(dirname)
-        dirnames[:] = kept_dirs
+        dirnames[:] = sorted(kept_dirs)
 
         for filename in filenames:
             path = dirpath / filename

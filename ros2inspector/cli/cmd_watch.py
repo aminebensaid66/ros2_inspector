@@ -11,8 +11,14 @@ import typer
 from rich.console import Console
 
 from ros2inspector.cli._state import state
-from ros2inspector.cli._workspace import build_uam, load_packages_or_exit, pick_path
-from ros2inspector.discovery import DEFAULT_EXCLUDED_DIRS, find_workspace_root, source_search_root
+from ros2inspector.cli._workspace import (
+    build_uam,
+    find_workspace_root,
+    load_packages_or_exit,
+    pick_path,
+)
+from ros2inspector.discovery import DEFAULT_EXCLUDED_DIRS, source_search_root
+from ros2inspector.discovery.paths import DirectoryKeys, visit_directory
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.policy import PolicyConfigError, load_policy, run_policy, violation_summary
 from ros2inspector.static.health_scorer import README_NAMES, TEST_DIR_NAMES
@@ -70,11 +76,19 @@ def _snapshot(root: Path, extra: tuple[Path, ...] = ()) -> Snapshot:
     """
     source_root = source_search_root(root)
     snap: Snapshot = {}
-    for dirpath, dirnames, filenames in os.walk(source_root):
+    visited: DirectoryKeys = set()
+    for dirpath, dirnames, filenames in os.walk(source_root, followlinks=True):
         dirnames[:] = sorted(
             d for d in dirnames if d not in DEFAULT_EXCLUDED_DIRS and not d.startswith(".")
         )
         base = Path(dirpath)
+        try:
+            if not visit_directory(base, visited):
+                dirnames[:] = []
+                continue
+        except OSError:
+            dirnames[:] = []
+            continue
         if base != source_root and any(marker in filenames for marker in _STOP_MARKERS):
             # Ignored subtree: only watch the marker itself, so removing it is noticed.
             dirnames[:] = []

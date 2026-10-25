@@ -12,8 +12,11 @@ from rich.table import Table
 
 from ros2inspector.cli._output import OutputFormat, OutputWriteError, atomic_write_text
 from ros2inspector.cli._state import state
-from ros2inspector.cli._workspace import build_uam_or_exit
-from ros2inspector.discovery import find_workspace_root
+from ros2inspector.cli._workspace import (
+    build_uam_or_exit,
+    check_package_filter,
+    find_workspace_root,
+)
 from ros2inspector.model.schemas import CommunicationEndpoint, NodeDefinition
 from ros2inspector.model.uam import UnifiedArchitectureModel
 
@@ -61,6 +64,7 @@ def nodes(
     """
     root = find_workspace_root(path, warn=not state.quiet)
     uam = build_uam_or_exit(root, use_cache=not no_cache, show_progress=not state.quiet)
+    check_package_filter(package, uam)
 
     node_list = uam.nodes()
     if package:
