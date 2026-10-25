@@ -35,7 +35,6 @@ from ros2inspector.static import (
     parse_cpp_nodes,
     parse_interface_file,
     parse_package_xml,
-    parse_python_nodes,
     score_workspace,
 )
 from ros2inspector.static.cmake_components import find_component_executables
@@ -43,6 +42,7 @@ from ros2inspector.static.cpp_parser import discover_workspace_node_bases
 from ros2inspector.static.factory_patterns import load_factory_patterns
 from ros2inspector.static.launch_analyzer import LaunchGraph, LaunchNode
 from ros2inspector.static.python_entrypoints import PythonEntrypoint
+from ros2inspector.static.python_parser import parse_python_workspace_nodes
 
 
 def _pkg_id(name: str) -> str:
@@ -309,8 +309,16 @@ class UnifiedArchitectureModel:
             if cache is not None
             else discover_workspace_node_bases(cpp_package_paths)
         )
+        source_paths = {p.name: Path(p.path) for p in packages}
         if cache is not None:
-            cache.set_context("|".join(sorted(cpp_bases)) + json.dumps(patterns, sort_keys=True))
+            python_nodes, python_diagnostics, python_context = cache.get_python_nodes(source_paths)
+            cache.set_context(
+                "|".join(sorted(cpp_bases)) + json.dumps(patterns, sort_keys=True) + python_context
+            )
+        else:
+            python_diagnostics = []
+            python_nodes = parse_python_workspace_nodes(source_paths, python_diagnostics)
+        uam._diagnostics.extend(python_diagnostics)
 
         _progress = None
         _task = None
@@ -349,9 +357,7 @@ class UnifiedArchitectureModel:
                     )
                 else:
                     source_diagnostics: list[dict[str, Any]] = []
-                    pkg_nodes = parse_python_nodes(
-                        pkg_path, pkg.name, source_diagnostics
-                    ) + parse_cpp_nodes(
+                    pkg_nodes = python_nodes[pkg.name] + parse_cpp_nodes(
                         pkg_path,
                         pkg.name,
                         cpp_bases,

@@ -200,6 +200,11 @@ Proven interface conflicts, naming, dependencies and health checks remain enable
 SARIF represents uncertain findings as notes with a confidence property; a baseline
 for an uncertain finding cannot hide its later confirmed counterpart.
 
+Python node inheritance is resolved across workspace packages, including inherited
+endpoints and deployment entry points. The cache records workspace source dependencies
+and invalidates inheritance results when a base package changes. Unknown imported bases
+used by an entry point remain incomplete definitions rather than disappearing.
+
 ## Global options
 
 ```bash

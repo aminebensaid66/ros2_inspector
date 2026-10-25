@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import configparser
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from ros2inspector.model.schemas import (
     NodeDefinition,
     QoSProfile,
 )
+from ros2inspector.static.python_entrypoints import find_python_entrypoints
 from ros2inspector.static.python_source import read_python_tree, source_failure
 
 # (depth, reliability, durability) of the profiles shipped in rclpy.qos.
@@ -48,57 +50,134 @@ _CANONICAL_NODE_BASES = {
 def parse_python_nodes(
     package_path: Path, package_name: str, diagnostics: list[dict[str, Any]] | None = None
 ) -> list[NodeDefinition]:
+    return parse_python_workspace_nodes({package_name: package_path}, diagnostics)[package_name]
+
+
+def _package_directories(package_path: Path) -> dict[str, str]:
+    mappings: dict[str, str] = {}
+    setup = package_path / "setup.py"
+    try:
+        tree = ast.parse(setup.read_bytes())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "package_dir":
+                    value = ast.literal_eval(kw.value)
+                    if isinstance(value, dict):
+                        mappings.update(
+                            {
+                                k: v
+                                for k, v in value.items()
+                                if isinstance(k, str) and isinstance(v, str)
+                            }
+                        )
+    except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
+        pass
+    try:
+        config = configparser.ConfigParser(interpolation=None)
+        config.read_string((package_path / "setup.cfg").read_text(encoding="utf-8"))
+        for line in config.get("options", "package_dir", fallback="").splitlines():
+            prefix, separator, directory = line.partition("=")
+            if separator:
+                mappings[prefix.strip()] = directory.strip()
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        pass
+    return mappings
+
+
+def _module_name(path: Path, package_path: Path, directories: dict[str, str]) -> str:
+    relative = path.relative_to(package_path).with_suffix("")
+    candidates = [
+        (prefix, Path(directory))
+        for prefix, directory in directories.items()
+        if relative.is_relative_to(directory)
+    ]
+    if candidates:
+        prefix, directory = max(candidates, key=lambda item: len(item[1].parts))
+        parts = [*prefix.split("."), *relative.relative_to(directory).parts]
+    else:
+        parts = list(relative.parts[1:] if relative.parts[0] == "src" else relative.parts)
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(p for p in parts if p)
+
+
+def parse_python_workspace_nodes(
+    package_paths: dict[str, Path], diagnostics: list[dict[str, Any]] | None = None
+) -> dict[str, list[NodeDefinition]]:
     errors = diagnostics if diagnostics is not None else []
-    sources: list[tuple[Path, str, ast.Module]] = []
-    for path in iter_package_files(package_path, suffixes={".py"}):
-        tree = read_python_tree(path, errors)
-        if tree is not None:
-            relative = path.relative_to(package_path).with_suffix("")
-            module = ".".join(relative.parts)
-            if module.endswith(".__init__"):
-                module = module[:-9]
-            sources.append((path, module, tree))
+    sources: list[tuple[str, Path, str, ast.Module]] = []
+    entry_functions: dict[tuple[str, str], set[str]] = {}
+    for package, path in package_paths.items():
+        for entry in find_python_entrypoints(path).values():
+            if entry.callable:
+                entry_functions.setdefault((package, entry.module), {"main"}).add(entry.callable)
+    for package_name, package_path in package_paths.items():
+        directories = _package_directories(package_path)
+        for path in iter_package_files(package_path, suffixes={".py"}):
+            tree = read_python_tree(path, errors)
+            if tree is None:
+                continue
+            module = _module_name(path, package_path, directories)
+            sources.append((package_name, path, module, tree))
     known: dict[str, NodeDefinition] = {}
-    results: dict[Path, list[NodeDefinition]] = {}
     failed: set[Path] = set()
     inherited_symbols: set[str] = set()
     instantiated_symbols: set[str] = set()
-    # Each pass proves another level of package-local inheritance.
+    workspace_modules = set(package_paths) | {module.split(".")[0] for _, _, module, _ in sources}
     while True:
         count = len(known)
-        for path, module, tree in sources:
+        for package_name, path, module, tree in sources:
             if path in failed:
                 continue
-            visitor = _NodeVisitor(package_name, path, module, known)
+            visitor = _NodeVisitor(
+                package_name,
+                path,
+                module,
+                known,
+                workspace_modules,
+                entry_functions.get((package_name, module)),
+            )
             try:
                 visitor.visit(tree)
             except (RecursionError, MemoryError) as exc:
                 source_failure(path, exc, errors)
                 failed.add(path)
                 continue
-            results[path] = visitor.nodes
             inherited_symbols.update(visitor.inherited_symbols)
             instantiated_symbols.update(visitor.instantiated_symbols)
-            for item in visitor.unattributed:
-                diagnostic = {
-                    "severity": "warning",
-                    "code": "source_analysis_incomplete",
-                    "file": str(path),
-                    **item,
-                }
-                if diagnostic not in errors:
-                    errors.append(diagnostic)
             for node in visitor.nodes:
                 if not node.analysis_incomplete:
                     known[f"{module}.{node.source_symbol}"] = node
         if len(known) == count:
             break
-    nodes = []
-    for path, module, _ in sources:
-        for node in results.get(path, []):
+    nodes: dict[str, list[NodeDefinition]] = {package: [] for package in package_paths}
+    for package, path, module, tree in sources:
+        if path in failed:
+            continue
+        visitor = _NodeVisitor(
+            package, path, module, known, workspace_modules, entry_functions.get((package, module))
+        )
+        try:
+            visitor.visit(tree)
+        except (RecursionError, MemoryError) as exc:
+            source_failure(path, exc, errors)
+            continue
+        for item in visitor.unattributed:
+            diagnostic = {
+                "severity": "warning",
+                "code": "source_analysis_incomplete",
+                "file": str(path),
+                "package": package,
+                **item,
+            }
+            if diagnostic not in errors:
+                errors.append(diagnostic)
+        for node in visitor.nodes:
             symbol = f"{module}.{node.source_symbol}"
             node.is_abstract = symbol in inherited_symbols and symbol not in instantiated_symbols
-            nodes.append(node)
+            nodes[package].append(node)
     return nodes
 
 
@@ -109,7 +188,11 @@ class _NodeVisitor(ast.NodeVisitor):
         file_path: Path,
         module: str = "",
         known: dict[str, NodeDefinition] | None = None,
+        workspace_modules: set[str] | None = None,
+        entry_functions: set[str] | None = None,
     ) -> None:
+        self._workspace_modules = workspace_modules or set()
+        self._entry_functions = entry_functions or {"main"}
         self.module = module
         self._known = known if known is not None else {}
         self._variables: dict[str, NodeDefinition] = {}
@@ -120,6 +203,7 @@ class _NodeVisitor(ast.NodeVisitor):
         self.unattributed: list[dict[str, Any]] = []
         self.inherited_symbols: set[str] = set()
         self.instantiated_symbols: set[str] = set()
+        self._entrypoint_instances: set[str] = set()
         self._current_node: NodeDefinition | None = None
 
         # Local interface symbol -> canonical ``pkg/Type``.
@@ -138,6 +222,17 @@ class _NodeVisitor(ast.NodeVisitor):
         self._parameter_keys: dict[str, str] = {}
         self._last_parameter: str | None = None
         self._last_name_source = "literal"
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self._entrypoint_instances = {
+            _get_attr_name(call.func)
+            for statement in node.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and statement.name in self._entry_functions
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call)
+        }
+        self.generic_visit(node)
 
     def visit_BinOp(self, node: ast.expr) -> None:
         pending: list[ast.AST] = list(ast.iter_child_nodes(node))
@@ -220,7 +315,17 @@ class _NodeVisitor(ast.NodeVisitor):
             and expr.func.attr in endpoint_methods
             for expr in ast.walk(node)
         )
-        if proven or (node.bases and relevant):
+        imported_node_base = any(
+            (canonical := self._canonical_name(_get_attr_name(base))).split(".")[0]
+            in self._workspace_modules
+            or (
+                node.name in self._entrypoint_instances
+                and canonical.split(".")[0]
+                in {v.split(".")[0] for v in self._module_aliases.values()}
+            )
+            for base in node.bases
+        )
+        if proven or (node.bases and (relevant or imported_node_base)):
             prev_attrs = self._class_attrs
             prev_keys = self._parameter_keys
             self._parameter_keys = {}
