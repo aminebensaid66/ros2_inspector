@@ -124,7 +124,7 @@ def _iface_id(package: str, name: str) -> str:
 
 def _is_test_source(file_path: str | Path, package_path: Path) -> bool:
     try:
-        relative = Path(file_path).resolve().relative_to(package_path.resolve())
+        relative = Path(file_path).absolute().relative_to(package_path.absolute())
     except ValueError:
         return False
     return any(part in {"test", "tests", "gtest", "pytest"} for part in relative.parts[:-1])
@@ -172,7 +172,7 @@ def _python_modules_for_file(file_path: str | None, package_path: Path) -> set[s
     if not file_path:
         return set()
     try:
-        relative = Path(file_path).resolve().relative_to(package_path.resolve())
+        relative = Path(file_path).absolute().relative_to(package_path.absolute())
     except (OSError, ValueError):
         return set()
     if relative.suffix != ".py":

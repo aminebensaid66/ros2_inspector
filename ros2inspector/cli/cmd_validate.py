@@ -13,8 +13,7 @@ from rich.table import Table
 
 from ros2inspector.cli._output import OutputFormat
 from ros2inspector.cli._state import state
-from ros2inspector.cli._workspace import build_uam_or_exit
-from ros2inspector.discovery import find_workspace_root
+from ros2inspector.cli._workspace import build_uam_or_exit, find_workspace_root
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.policy import PolicyConfigError, load_policy, run_policy, violation_summary
 from ros2inspector.static import workspace_aggregate_score
