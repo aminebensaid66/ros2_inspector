@@ -384,8 +384,16 @@ function wirePath(p,fn,tn,sx,sy,tx,ty,lane){
   const others=p.nodes.filter(n=>n!==fn&&n!==tn).map(cardRect);
   const forward=tx-sx>=40;
   if(forward && !bezCrossesCards(sx,sy,tx,ty,others)) return bez(sx,sy,tx,ty);
-  const x1=sx+20, x2=tx-20, lo=Math.min(x1,x2), hi=Math.max(x1,x2);
+  // The wire turns 20px out from each handle, or halfway to the nearest card beside the
+  // handle when cards nearly touch, so its vertical legs run in the gap, not through a card.
+  const src=cardRect(fn), dst=cardRect(tn);
+  const rightOf=rects.filter(r=>r!==rects[p.nodes.indexOf(fn)]&&r.l>=src.r-1).map(r=>r.l);
+  const leftOf=rects.filter(r=>r!==rects[p.nodes.indexOf(tn)]&&r.r<=dst.l+1).map(r=>r.r);
+  const x1=sx+Math.min(20,(Math.min(Infinity,...rightOf)-sx)/2);
+  const x2=tx-Math.min(20,(tx-Math.max(-Infinity,...leftOf))/2);
+  const lo=Math.min(x1,x2), hi=Math.max(x1,x2);
   const span=rects.filter(r=>r.r>lo&&r.l<hi);
+  if(!span.length) return roundedPath([[sx,sy],[x1,sy],[x1,ty],[tx,ty]],10);
   const gap=16+8*(lane%4);
   const above=Math.min(...span.map(r=>r.t))-gap, below=Math.max(...span.map(r=>r.b))+gap;
   const y=Math.abs(sy-above)+Math.abs(ty-above)<Math.abs(sy-below)+Math.abs(ty-below)?above:below;
