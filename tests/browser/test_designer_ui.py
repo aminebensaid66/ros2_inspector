@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from playwright.sync_api import Page, expect
 
 from ros2inspector.design.codegen import _GENERATED_MARKER
@@ -540,6 +541,33 @@ def test_wires_never_pass_through_cards(page: Page, designer: dict[str, Any], sh
         "p=>p.dispatchEvent(new MouseEvent('click',{bubbles:true}))"
     )
     expect(page.locator("#eg path")).to_have_count(2)
+
+
+@pytest.mark.parametrize("gap", [4, 12, 30])
+def test_wires_between_cards_that_nearly_touch_stay_out_of_cards(
+    page: Page, designer: dict[str, Any], gap: int
+) -> None:
+    """Issue #6: with only a few pixels between cards, a detour's turn must stay in the gap."""
+    _open(page, designer)
+    page.evaluate(
+        """(gap)=>{
+      const p=pkg(), ep=(id,name)=>({id,name,msgType:'std_msgs/String'});
+      const mk=(id,label,x,y,pubs,subs)=>({id,label,x,y,publishers:pubs,subscribers:subs,
+        services:[],clients:[],action_servers:[],action_clients:[]});
+      const w=document.querySelector('.node')?.offsetWidth||NW;
+      p.nodes=[mk('a','source',40,200,[ep('a1','/near'),ep('a2','/far')],[]),
+               // directly right of the source, lower: the wire must turn in the gap
+               mk('b','neighbour',40+NW+gap,330,[],[ep('b1','/near')]),
+               // a card just right of the source and above it, in the way of a turn at +20
+               mk('c','blocker',40+NW+gap,20,[],[]),
+               mk('d','target',40+2*NW+200,40,[],[ep('d1','/far')])];
+      p.edges=[{id:'w1',fn:'a',ft:'a1',tn:'b',tt:'b1'},{id:'w2',fn:'a',ft:'a2',tn:'d',tt:'d1'}];
+      renderAll();
+    }""",
+        gap,
+    )
+    expect(page.locator("#eg path")).to_have_count(2)
+    assert page.evaluate(_WIRE_HITS_CARDS) == [[], []]
 
 
 def test_toolbar_fits_at_800_and_show_all_centres_a_small_design(

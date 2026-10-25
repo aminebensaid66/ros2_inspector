@@ -66,6 +66,32 @@ def test_docs_pages_fit_small_screens(
     assert overflow == 0, overflow
 
 
+@pytest.mark.parametrize("page_path", ["index.html", "packages/{name}.html"])
+def test_docs_long_package_name_fits_375px(page: Page, workspace: Path, page_path: str) -> None:
+    """Regression (#27): a long package name in a heading must wrap, not widen the page."""
+    name = "navigation_stack_" + "very_long_package_name_" * 3 + "controller"
+    pkg = workspace / "src" / "long"
+    pkg.mkdir()
+    (pkg / "package.xml").write_text(
+        f'<?xml version="1.0"?><package format="3"><name>{name}</name>'
+        "<version>1.0.0</version><description>x</description>"
+        '<maintainer email="a@b.c">A</maintainer><license>MIT</license></package>',
+        encoding="utf-8",
+    )
+    out = _docs_html(workspace)
+    page.set_viewport_size({"width": 375, "height": 800})
+    page.goto((out / page_path.format(name=name)).as_uri())
+    overflow = page.evaluate(
+        "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+    )
+    assert overflow == 0, overflow
+    widest = page.evaluate(
+        "Math.max(...[...document.querySelectorAll('h1,h2,h3,h4')]"
+        ".map(h => h.scrollWidth - h.clientWidth))"
+    )
+    assert widest <= 0, widest
+
+
 def test_docs_page_cannot_run_script_from_package_xml(page: Page, workspace: Path) -> None:
     pkg = workspace / "src" / "evil"
     pkg.mkdir()
@@ -157,6 +183,53 @@ def test_viz_free_layouts_are_flat_overlap_free_and_in_view(
     page.select_option("#lay-sel", "compound")
     _settle(page)
     assert page.evaluate("cy.nodes(':parent').length") > 0
+
+
+def _large_workspace(root: Path, packages: int = 45) -> Path:
+    """A nav2-sized workspace: many packages, nodes and shared topics."""
+    for p in range(packages):
+        name = f"nav_pkg_{p:02d}"
+        pkg = root / "src" / name
+        (pkg / name).mkdir(parents=True)
+        (pkg / "package.xml").write_text(
+            f'<?xml version="1.0"?><package format="3"><name>{name}</name>'
+            "<version>1.0.0</version><description>x</description>"
+            '<maintainer email="a@b.c">A</maintainer><license>MIT</license>'
+            "<depend>rclpy</depend>"
+            + (f"<depend>nav_pkg_{p - 1:02d}</depend>" if p else "")
+            + "<export><build_type>ament_python</build_type></export></package>",
+            encoding="utf-8",
+        )
+        for n in range(2):
+            lines = "\n        ".join(
+                [
+                    f"self.create_publisher(String, '/topic_{(p + n) % 30}', 10)",
+                    f"self.create_subscription(String, '/topic_{(p * 7 + n) % 30}', print, 10)",
+                ]
+            )
+            (pkg / name / f"node_{n}.py").write_text(
+                "from rclpy.node import Node\nfrom std_msgs.msg import String\n\n\n"
+                f"class Node{p}x{n}(Node):\n    def __init__(self):\n"
+                f"        super().__init__('node_{p}_{n}')\n        {lines}\n",
+                encoding="utf-8",
+            )
+    return root
+
+
+@pytest.mark.parametrize("tab", ["comms", "full"])
+def test_viz_force_layout_has_no_overlaps_on_a_large_workspace(
+    page: Page, tmp_path: Path, tab: str
+) -> None:
+    """Regression (#22): cose alone left nodes stacked on nav2-sized graphs."""
+    workspace = _large_workspace(tmp_path)
+    _open_viz(page, workspace)
+    page.click(f'.tab[data-g="{tab}"]')
+    _settle(page)
+    page.select_option("#lay-sel", "cose")
+    page.wait_for_timeout(4000)
+    assert page.evaluate("cy.nodes(':childless:visible').length") > 100
+    assert page.evaluate(_OVERLAPS) == 0
+    assert page.evaluate(_OUTSIDE) == 0
 
 
 def test_viz_stats_follow_filters_and_search_survives_tab_switch(
