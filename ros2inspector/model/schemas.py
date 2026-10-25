@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from ros2inspector.utils.enums import StrEnum
@@ -104,6 +106,7 @@ class ViolationSeverity(StrEnum):
 
 
 class PolicyViolation(BaseModel):
+    confidence: Literal["known", "uncertain"] = "known"
     severity: ViolationSeverity
     rule_type: str
     message: str

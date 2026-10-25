@@ -20,7 +20,7 @@ _DEFAULT_CACHE_DIR = (
 
 _SOURCE_SUFFIXES = CPP_SUFFIXES | frozenset((".py", ".msg", ".srv", ".action"))
 
-_CACHE_VERSION = "v13-name-resolution-source-coverage"
+_CACHE_VERSION = "v15-workspace-python-inheritance"
 _CACHE_SIZE_LIMIT = 256 * 1024 * 1024
 _DIGEST_CACHE_SIZE_LIMIT = 128 * 1024 * 1024
 
@@ -62,7 +62,13 @@ def _pkg_fingerprint(pkg_path: Path, digest_cache: diskcache.Cache | None = None
     """
     digest = hashlib.sha256()
     digest.update(_CACHE_VERSION.encode())
-    files = sorted(iter_package_files(pkg_path, suffixes=_SOURCE_SUFFIXES, names={"package.xml"}))
+    files = sorted(
+        iter_package_files(
+            pkg_path,
+            suffixes=_SOURCE_SUFFIXES,
+            names={"package.xml", "setup.cfg", "pyproject.toml"},
+        )
+    )
     for file_path in files:
         try:
             relative = str(file_path.relative_to(pkg_path))
@@ -87,6 +93,42 @@ class AnalysisCache:
             str(self._dir / "file-digests"), size_limit=_DIGEST_CACHE_SIZE_LIMIT
         )
         self._fp_cache: tuple[Path, str] | None = None
+
+    def get_python_nodes(
+        self, package_paths: dict[str, Path]
+    ) -> tuple[dict[str, list[NodeDefinition]], list[dict[str, Any]], str]:
+        from ros2inspector.static.python_parser import parse_python_workspace_nodes
+
+        dependencies = tuple(
+            (name, str(path.resolve()), _pkg_fingerprint(path, self._digest_cache))
+            for name, path in sorted(package_paths.items())
+        )
+        context = hashlib.sha256(repr(dependencies).encode()).hexdigest()
+        key = ("python-workspace-v1", context)
+        cached: Any = self._cache.get(key)
+        if cached is not None:
+            return (
+                {
+                    name: [NodeDefinition.model_validate(n) for n in nodes]
+                    for name, nodes in cached["nodes"].items()
+                },
+                cached["diagnostics"],
+                context,
+            )
+        diagnostics: list[dict[str, Any]] = []
+        nodes = parse_python_workspace_nodes(package_paths, diagnostics)
+        self._cache.set(
+            key,
+            {
+                "dependencies": dependencies,
+                "nodes": {
+                    name: [n.model_dump(mode="json") for n in definitions]
+                    for name, definitions in nodes.items()
+                },
+                "diagnostics": diagnostics,
+            },
+        )
+        return nodes, diagnostics, context
 
     def get_cpp_bases(self, package_paths: list[Path]) -> set[str]:
         """Cache the workspace inheritance index by source content fingerprints."""

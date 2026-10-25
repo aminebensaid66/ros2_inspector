@@ -42,7 +42,8 @@ def _stable_message(violation: PolicyViolation) -> str:
 def fingerprint(violation: PolicyViolation) -> str:
     """Stable identity of a finding, independent of line numbers, severity and scores."""
     entities = ",".join(sorted(violation.affected_entities))
-    return f"{violation.rule_type}|{_stable_message(violation)}|{entities}"
+    key = f"{violation.rule_type}|{_stable_message(violation)}|{entities}"
+    return key + ("|uncertain" if violation.confidence == "uncertain" else "")
 
 
 def load_baseline(path: Path) -> set[str]:
@@ -85,6 +86,7 @@ def to_sarif(
     for v in violations:
         result: dict[str, Any] = {
             "ruleId": v.rule_type,
+            "properties": {"confidence": v.confidence},
             "level": _LEVELS.get(v.severity, "warning"),
             "message": {"text": v.message},
             "partialFingerprints": {"ros2inspector/v1": fingerprint(v)},

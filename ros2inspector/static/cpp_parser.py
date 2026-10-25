@@ -15,6 +15,7 @@ from ros2inspector.model.schemas import (
     NodeDefinition,
     QoSProfile,
 )
+from ros2inspector.static.python_source import source_failure
 from ros2inspector.static.source_kinds import CPP_SUFFIXES as _CPP_SUFFIXES
 
 _CPP_LANG = Language(tree_sitter_cpp.language())
@@ -52,7 +53,9 @@ def parse_cpp_nodes(
     known_node_bases: set[str] | None = None,
     *,
     factory_patterns: list[dict[str, Any]] | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[NodeDefinition]:
+    errors = diagnostics if diagnostics is not None else []
     parser = Parser(_CPP_LANG)
     nodes: list[NodeDefinition] = []
     parsed: list[tuple[Path, bytes, Node]] = []
@@ -61,9 +64,12 @@ def parse_cpp_nodes(
         try:
             source = cpp_file.read_bytes()
             tree = parser.parse(source)
-        except Exception:
+        except Exception as exc:
+            source_failure(cpp_file, exc, errors)
             continue
 
+        if tree.root_node.has_error:
+            source_failure(cpp_file, ValueError("C++ syntax was not fully parsed"), errors)
         parsed.append((cpp_file, source, tree.root_node))
         for node_def in _extract_nodes(
             tree.root_node, source, package_name, cpp_file, factory_patterns or []
