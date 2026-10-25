@@ -177,3 +177,151 @@ def test_unsupported_mutations_do_not_invent_root_names(tmp_path: Path, mutation
     assert deployments["after"]["namespace"] == DYNAMIC_SENTINEL
     assert deployments["after"]["resolution"] == "unresolved"
     assert model.diagnostics()
+
+
+@pytest.mark.parametrize("source", ["literal", "share_join", "share_os", "share_concat"])
+def test_includes_keep_parent_scope_and_conditional_standalone(tmp_path: Path, source: str) -> None:
+    parent = _balanced(tmp_path)
+    child = parent.with_name("child.launch.py")
+    write_launch(child, _NODE)
+    targets = {
+        "literal": repr(str(child)),
+        "share_join": (
+            "PathJoinSubstitution([FindPackageShare('demo'), 'launch', 'child.launch.py'])"
+        ),
+        "share_os": (
+            "os.path.join(get_package_share_directory('demo'), 'launch', 'child.launch.py')"
+        ),
+        "share_concat": "get_package_share_directory('demo') + '/launch/child.launch.py'",
+    }
+    write_launch(
+        parent,
+        "GroupAction(actions=[PushRosNamespace('robot'), "
+        f"IncludeLaunchDescription(PythonLaunchDescriptionSource({targets[source]}))])",
+    )
+    model = UAM.build(tmp_path, use_cache=False)
+    included = [d for d in model.deployments() if d.get("included_from")]
+    assert len(included) == 1
+    assert included[0]["included_from"] == str(parent)
+    assert included[0]["launch_file"] == str(child)
+    assert included[0]["namespace"] == "/robot"
+    assert included[0]["resolution"] == "known"
+    standalone = [d for d in model.deployments() if not d.get("included_from")]
+    assert len(standalone) == 1 and standalone[0]["resolution"] == "conditional"
+    assert _known_topics(model) == {"/robot/chatter", "/robot/talker/x"}
+    assert _audit(tmp_path) == []
+
+
+def test_nested_includes_compose_unscoped_pushes(tmp_path: Path) -> None:
+    parent = _balanced(tmp_path)
+    middle = parent.with_name("middle.launch.py")
+    child = parent.with_name("child.launch.py")
+    write_launch(child, _NODE)
+    write_launch(
+        middle,
+        "GroupAction(actions=[PushRosNamespace('inner')], scoped=False), "
+        f"IncludeLaunchDescription(PythonLaunchDescriptionSource({str(child)!r}))",
+    )
+    write_launch(
+        parent,
+        "GroupAction(actions=[PushRosNamespace('robot'), "
+        f"IncludeLaunchDescription(PythonLaunchDescriptionSource({str(middle)!r}))])",
+    )
+    model = UAM.build(tmp_path, use_cache=False)
+    assert _known_topics(model) == {"/robot/inner/chatter", "/robot/inner/talker/x"}
+    assert _audit(tmp_path) == []
+
+
+def test_unknown_include_suppresses_only_unproved_absence(tmp_path: Path) -> None:
+    launch = _balanced(tmp_path)
+    source = tmp_path / "src/demo/demo/node.py"
+    source.write_text(
+        source.read_text() + '  self.create_subscription(String, "/command", print, 10)\n'
+    )
+    write_launch(launch, _NODE + ', IncludeLaunchDescription(LaunchConfiguration("target"))')
+    model = UAM.build(tmp_path, use_cache=False)
+    assert any(d["code"] == "launch_include_unresolved" for d in model.diagnostics())
+    assert not any(f["rule_type"] == "topic_connectivity" for f in _audit(tmp_path))
+
+
+@pytest.mark.parametrize("suffix", [".xml", ".yaml"])
+def test_frontend_include_carries_namespace(tmp_path: Path, suffix: str) -> None:
+    parent = _balanced(tmp_path)
+    child = parent.with_name("child.launch.py")
+    write_launch(child, _NODE)
+    parent.unlink(missing_ok=True)
+    frontend = parent.with_suffix(suffix)
+    if suffix == ".xml":
+        frontend.write_text(
+            '<launch><group><push-ros-namespace namespace="robot"/>'
+            f'<include file="{child}"/></group></launch>'
+        )
+    else:
+        frontend.write_text(
+            "launch:\n- group:\n    children:\n"
+            "    - push_ros_namespace:\n        namespace: robot\n"
+            f"    - include:\n        file: {child}\n"
+        )
+    model = UAM.build(tmp_path, use_cache=False)
+    assert _known_topics(model) == {"/robot/chatter", "/robot/talker/x"}
+    assert _audit(tmp_path) == []
+
+
+def test_absolute_child_namespace_resets_inherited_scope(tmp_path: Path) -> None:
+    parent = _balanced(tmp_path)
+    child = parent.with_name("child.launch.py")
+    write_launch(child, _NODE[:-1] + ", namespace='/reset')")
+    write_launch(
+        parent,
+        "GroupAction(actions=[PushRosNamespace('robot'), "
+        f"IncludeLaunchDescription(PythonLaunchDescriptionSource({str(child)!r}))])",
+    )
+    model = UAM.build(tmp_path, use_cache=False)
+    assert _known_topics(model) == {"/reset/chatter", "/reset/talker/x"}
+
+
+def test_include_cycle_has_diagnostic_and_no_definite_absence(tmp_path: Path) -> None:
+    parent = _balanced(tmp_path)
+    child = parent.with_name("child.launch.py")
+    write_launch(child, _NODE + f", IncludeLaunchDescription({str(parent)!r})")
+    write_launch(parent, f"IncludeLaunchDescription({str(child)!r})")
+    model = UAM.build(tmp_path, use_cache=False)
+    assert any(d["code"] == "launch_include_unresolved" for d in model.diagnostics())
+    assert _audit(tmp_path) == []
+
+
+def test_unknown_include_arguments_mark_child_namespace_unresolved(tmp_path: Path) -> None:
+    parent = _balanced(tmp_path)
+    child = parent.with_name("child.launch.py")
+    write_launch(child, _NODE)
+    write_launch(
+        parent,
+        f"IncludeLaunchDescription({str(child)!r}, "
+        "launch_arguments={'namespace': LaunchConfiguration('ns')}.items())",
+    )
+    model = UAM.build(tmp_path, use_cache=False)
+    included = [d for d in model.deployments() if d.get("included_from")]
+    assert len(included) == 1
+    assert included[0]["resolution"] == "unresolved"
+    assert "namespace" in included[0]["unresolved_fields"]
+    assert _audit(tmp_path) == []
+
+
+def test_included_forwarding_false_resets_the_parent_namespace(tmp_path: Path) -> None:
+    parent = _balanced(tmp_path)
+    child = parent.with_name("child.launch.py")
+    write_launch(
+        child, "GroupAction(actions=[PushRosNamespace('inner'), " + _NODE + "], forwarding=False)"
+    )
+    write_launch(
+        parent,
+        "GroupAction(actions=[PushRosNamespace('robot'), "
+        f"IncludeLaunchDescription({str(child)!r})])",
+    )
+    model = UAM.build(tmp_path, use_cache=False)
+    included = [d for d in model.deployments() if d.get("included_from") == str(parent)]
+    assert len(included) == 1
+    assert included[0]["namespace"] == "/inner"
+    assert included[0]["resolution"] == "known"
+    assert _known_topics(model) == {"/inner/chatter", "/inner/talker/x"}
+    assert _audit(tmp_path) == []

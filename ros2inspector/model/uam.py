@@ -299,6 +299,7 @@ class UnifiedArchitectureModel:
 
         all_nodes: list[NodeDefinition] = []
         all_interfaces: list[InterfaceDefinition] = []
+        launch_graphs: list[LaunchGraph] = []
 
         patterns = load_factory_patterns(factory_patterns, preset)
         cache = AnalysisCache(cache_dir) if use_cache else None
@@ -375,16 +376,9 @@ class UnifiedArchitectureModel:
                     if not include_tests and _is_test_source(lf, pkg_path):
                         continue
                     try:
-                        lg = analyze_launch_file(lf)
-                        uam._diagnostics.extend(lg.diagnostics)
-                        uam._record_launch_uncertainty(lg)
-                        for launch_node in lg.nodes:
-                            launch_node.source_file = lg.source_file
-                            target_package = launch_node.package
-                            if target_package not in {"<unknown>", "<dynamic>"}:
-                                uam._launch_remaps.setdefault(target_package, []).append(
-                                    launch_node
-                                )
+                        launch_graphs.append(
+                            analyze_launch_file(lf, {p.name: Path(p.path) for p in packages})
+                        )
                     except Exception as exc:  # noqa: BLE001
                         uam._diagnostics.append(
                             {
@@ -401,6 +395,15 @@ class UnifiedArchitectureModel:
                 cache.close()
             if _progress is not None:
                 _progress.stop()
+
+        from ros2inspector.static.launch_expansion import expand_launch_includes
+
+        for launch_node in expand_launch_includes(launch_graphs):
+            if launch_node.package not in {"<unknown>", "<dynamic>"}:
+                uam._launch_remaps.setdefault(launch_node.package, []).append(launch_node)
+        for launch_graph in launch_graphs:
+            uam._diagnostics.extend(launch_graph.diagnostics)
+            uam._record_launch_uncertainty(launch_graph)
 
         for node in all_nodes:
             if node.analysis_incomplete:
@@ -430,6 +433,8 @@ class UnifiedArchitectureModel:
                 "source_file": include.source_file,
                 "target_file": include.target_file,
                 "unresolved": include.unresolved,
+                "namespace": include.namespace,
+                "conditions": list(include.conditions),
             }
             for include in launch_graph.includes
         )
@@ -635,6 +640,7 @@ class UnifiedArchitectureModel:
                         deployment_name=launch_node.name or nd.declared_ros_name,
                         namespace=launch_node.namespace,
                         launch_file=launch_node.source_file,
+                        included_from=launch_node.included_from,
                         source_node_id=nid,
                         source_symbol=nd.source_symbol or nd.name,
                         resolution=resolution,
@@ -647,6 +653,7 @@ class UnifiedArchitectureModel:
                         "deployment_name": effective_name,
                         "namespace": launch_node.namespace,
                         "launch_file": launch_node.source_file,
+                        "included_from": launch_node.included_from,
                         "resolution": resolution,
                         "conditions": list(launch_node.conditions),
                         "parameters": dict(launch_node.parameters),
@@ -669,6 +676,7 @@ class UnifiedArchitectureModel:
                             "executable": launch_node.executable,
                             "namespace": launch_node.namespace,
                             "launch_file": launch_node.source_file,
+                            "included_from": launch_node.included_from,
                             "remaps": dict(launch_node.remaps),
                             "resolution": resolution,
                             "conditions": list(launch_node.conditions),

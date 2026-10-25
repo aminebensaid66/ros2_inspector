@@ -388,9 +388,20 @@ when ownership is supported by source evidence. Ambiguous associations are retai
 incomplete-analysis diagnostics instead of being guessed.
 
 Launch presence is represented as `known`, `conditional`, or `unresolved`. Conditional
-and unresolved deployments are preserved in JSON and HTML, but they do not satisfy
-definitive connectivity checks. Includes, substitutions, opaque Python launch logic, and
-other unsupported branches remain diagnostics; launch files are never executed.
+and unresolved deployments do not establish definite missing-peer findings. Python launch
+analysis follows constructor lists and `add_action`/`add_entity` calls in order. Literal
+`IfCondition`/`UnlessCondition` namespace pushes, scoped and unscoped groups, and
+`forwarding=False` groups follow launch namespace rules. Unknown conditions or mutations
+mark the dependent namespace unresolved.
+
+Includes of workspace launch files inherit the namespace and conditions at the include.
+Literal paths and common package-share path expressions resolve to source launch files.
+An included deployment keeps the child's `launch_file` and records its direct parent in
+`included_from`. A file reached through an include also retains conditional standalone
+deployments, which cannot establish definite connectivity findings. Unresolved include
+targets and cycles produce `launch_include_unresolved` diagnostics and suppress missing-peer
+claims that an unseen child could explain. Include arguments that cannot be consumed
+statically leave the included namespace unresolved. Launch files are never executed.
 
 Grouped layout positions all displayed leaf entities, including shared communication
 entities and disconnected components. `uses_interface` relationships remain in the HTML

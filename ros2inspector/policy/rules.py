@@ -330,6 +330,14 @@ def _unresolved_peers(uam: UnifiedArchitectureModel) -> dict[tuple[str, str], li
             peers.setdefault((str(kind), str(data.get("rel"))), []).append(
                 str(suffix) if suffix else None
             )
+    if any(d.get("code") == "launch_include_unresolved" for d in uam.diagnostics()):
+        for kind, roles in (
+            ("Topic", ("publishes", "subscribes")),
+            ("Service", ("provides", "calls")),
+            ("Action", ("provides", "calls")),
+        ):
+            for role in roles:
+                peers.setdefault((kind, role), []).append(None)
     return peers
 
 
