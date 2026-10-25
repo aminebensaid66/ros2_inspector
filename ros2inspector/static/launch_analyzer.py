@@ -21,6 +21,8 @@ class LaunchNode:
     name: str | None = None
     remaps: dict[str, str] = field(default_factory=dict)
     namespace: str | None = None
+    parameters: dict[str, object] = field(default_factory=dict)
+    parameters_unresolved: bool = False
     source_file: str | None = None
     unresolved_fields: list[str] = field(default_factory=list)
 
@@ -216,7 +218,121 @@ def _analyze_python_tree(path: Path, tree: ast.Module) -> LaunchGraph:
         condition = next((kw.value for kw in expr.keywords if kw.arg == "condition"), None)
         if condition is not None:
             propagate(expr, [ast.unparse(condition)], set())
+    _apply_python_namespaces(tree, visitor)
     return visitor.graph
+
+
+def _compose_namespace(parent: str | None, child: str | None) -> str | None:
+    if child is not None and child.startswith("/"):
+        return "/" + child.strip("/")
+    if parent in {DYNAMIC_SENTINEL, UNKNOWN_SENTINEL} or child in {
+        DYNAMIC_SENTINEL,
+        UNKNOWN_SENTINEL,
+    }:
+        return DYNAMIC_SENTINEL
+    if not parent:
+        return child
+    return "/" + "/".join(part.strip("/") for part in (parent, child) if part and part.strip("/"))
+
+
+def _push_namespace(parent: str | None, child: str | None) -> str | None:
+    value = _compose_namespace(parent, child)
+    if value and value not in {DYNAMIC_SENTINEL, UNKNOWN_SENTINEL}:
+        return "/" + value.strip("/")
+    return value
+
+
+def _set_namespace(record: LaunchNode, namespace: str | None, graph: LaunchGraph) -> None:
+    record.namespace = namespace
+    if namespace == DYNAMIC_SENTINEL:
+        if "namespace" not in record.unresolved_fields:
+            record.unresolved_fields.append("namespace")
+        graph.unresolved_branches = True
+
+
+def _apply_python_namespaces(tree: ast.Module, visitor: _PythonLaunchVisitor) -> None:
+    def walk(expr: ast.AST, namespace: str | None, seen: set[int]) -> str | None:
+        if id(expr) in seen:
+            return namespace
+        seen = seen | {id(expr)}
+        if isinstance(expr, ast.Name) and expr.id in visitor._assignments:
+            return walk(visitor._assignments[expr.id], namespace, seen)
+        if isinstance(expr, (ast.List, ast.Tuple)):
+            for item in expr.elts:
+                namespace = walk(item, namespace, seen)
+            return namespace
+        if isinstance(expr, ast.Call):
+            kind = _get_call_name(expr.func).split(".")[-1]
+            if kind == "PushRosNamespace":
+                value = (
+                    expr.args[0]
+                    if expr.args
+                    else next((kw.value for kw in expr.keywords if kw.arg == "namespace"), None)
+                )
+                child, unresolved = _python_string(value, required=True)
+                return _push_namespace(namespace, DYNAMIC_SENTINEL if unresolved else child)
+            if kind in {"GroupAction", "LaunchDescription"}:
+                actions = (
+                    expr.args[0]
+                    if expr.args
+                    else next(
+                        (kw.value for kw in expr.keywords if kw.arg in {"actions", "entities"}),
+                        None,
+                    )
+                )
+                if actions is not None:
+                    walk(actions, namespace, seen)
+                return namespace
+            record = visitor._node_calls.get(id(expr))
+            if record is not None:
+                _set_namespace(
+                    record, _compose_namespace(namespace, record.namespace), visitor.graph
+                )
+                return namespace
+        for child_expr in ast.iter_child_nodes(expr):
+            walk(child_expr, namespace, seen)
+        return namespace
+
+    roots = [
+        expr
+        for expr in ast.walk(tree)
+        if isinstance(expr, ast.Call)
+        and _get_call_name(expr.func).split(".")[-1] == "LaunchDescription"
+    ]
+    if not roots:
+        roots = [
+            expr
+            for expr in ast.walk(tree)
+            if isinstance(expr, ast.Call)
+            and _get_call_name(expr.func).split(".")[-1] == "GroupAction"
+        ]
+    for root in roots:
+        walk(root, None, set())
+
+
+def _extract_parameters(expr: ast.expr | None) -> tuple[dict[str, object], bool]:
+    if expr is None:
+        return {}, False
+    if not isinstance(expr, (ast.List, ast.Tuple)):
+        return {}, True
+    parameters: dict[str, object] = {}
+    unresolved = False
+    for item in expr.elts:
+        if not isinstance(item, ast.Dict):
+            unresolved = True
+            continue
+        for key, value in zip(item.keys, item.values, strict=True):
+            try:
+                name = ast.literal_eval(key) if key is not None else None
+                literal = ast.literal_eval(value)
+            except (ValueError, TypeError, SyntaxError):
+                unresolved = True
+                continue
+            if isinstance(name, str):
+                parameters[name] = literal
+            else:
+                unresolved = True
+    return parameters, unresolved
 
 
 def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchNode:
@@ -228,6 +344,7 @@ def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchN
     name, name_unresolved = _python_string(kwargs.get("name"), required=False)
     namespace, namespace_unresolved = _python_string(kwargs.get("namespace"), required=False)
     remaps, remaps_unresolved = _extract_remaps(kwargs.get("remappings"))
+    parameters, parameters_unresolved = _extract_parameters(kwargs.get("parameters"))
 
     unresolved_fields = [
         field_name
@@ -237,6 +354,7 @@ def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchN
             ("name", name_unresolved),
             ("namespace", namespace_unresolved),
             ("remappings", remaps_unresolved),
+            ("parameters", parameters_unresolved),
         )
         if unresolved
     ]
@@ -244,6 +362,8 @@ def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchN
     conditions = [ast.unparse(condition)] if condition is not None else []
 
     return LaunchNode(
+        parameters=parameters,
+        parameters_unresolved=parameters_unresolved,
         plugin=executable if composable else None,
         executable=executable or UNKNOWN_SENTINEL,
         package=package or UNKNOWN_SENTINEL,
@@ -326,7 +446,10 @@ def _analyze_xml_launch(path: Path) -> LaunchGraph:
             graph.unresolved_branches = True
 
     def walk(
-        elem: ET.Element, inherited: tuple[str, ...] = (), container_ns: str | None = None
+        elem: ET.Element,
+        inherited: tuple[str, ...] = (),
+        container_ns: str | None = None,
+        pushed_ns: str | None = None,
     ) -> None:
         local = list(inherited)
         if elem.tag == "node_container":
@@ -337,10 +460,19 @@ def _analyze_xml_launch(path: Path) -> LaunchGraph:
             local.append(f"unless:{elem.get('unless')}")
         if elem.tag == "node":
             _append_xml_node(elem, graph, local)
+            _set_namespace(
+                graph.nodes[-1], _compose_namespace(pushed_ns, graph.nodes[-1].namespace), graph
+            )
         elif elem.tag == "composable_node":
             _append_xml_node(elem, graph, local, composable=True, container_ns=container_ns)
         for child in elem:
-            walk(child, tuple(local), container_ns)
+            if child.tag in {"push-ros-namespace", "push_ros_namespace"}:
+                value, unresolved = _xml_string(child.get("namespace"), required=True)
+                if child.get("if") is not None or child.get("unless") is not None:
+                    unresolved = True
+                pushed_ns = _push_namespace(pushed_ns, DYNAMIC_SENTINEL if unresolved else value)
+            else:
+                walk(child, tuple(local), container_ns, pushed_ns)
 
     walk(root)
 
@@ -369,7 +501,9 @@ def _append_xml_node(
     package, package_unresolved = _xml_string(elem.get("pkg"), required=True)
     name, name_unresolved = _xml_string(elem.get("name"), required=False)
     namespace, namespace_unresolved = _xml_string(
-        (elem.get("namespace", elem.get("ns")) or container_ns) if composable else elem.get("ns"),
+        (elem.get("namespace", elem.get("ns")) or container_ns)
+        if composable
+        else elem.get("namespace", elem.get("ns")),
         required=False,
     )
     remaps: dict[str, str] = {}
@@ -436,22 +570,37 @@ def _analyze_yaml_launch(path: Path) -> LaunchGraph:
         graph.unresolved_branches = True
         return graph
 
-    def flatten(items: list[object], inherited: list[str]) -> list[tuple[object, list[str]]]:
-        result: list[tuple[object, list[str]]] = []
+    def flatten(
+        items: list[object], inherited: list[str], namespace: str | None = None
+    ) -> list[tuple[object, list[str], str | None]]:
+        result: list[tuple[object, list[str], str | None]] = []
         for item in items:
+            push = next(
+                (
+                    item[key]
+                    for key in ("push-ros-namespace", "push_ros_namespace")
+                    if isinstance(item, dict) and key in item
+                ),
+                None,
+            )
+            if push is not None:
+                value = push.get("namespace") if isinstance(push, dict) else push
+                child, unresolved = _yaml_string(value, required=True)
+                namespace = _push_namespace(namespace, DYNAMIC_SENTINEL if unresolved else child)
+                continue
             group = item.get("group") if isinstance(item, dict) else None
             if isinstance(group, dict):
                 conditions = inherited + [f"{k}:{group[k]}" for k in ("if", "unless") if k in group]
                 children = group.get("children", group.get("actions", []))
                 if isinstance(children, list):
-                    result.extend(flatten(children, conditions))
+                    result.extend(flatten(children, conditions, namespace))
                 else:
                     graph.unresolved_branches = True
             else:
-                result.append((item, inherited))
+                result.append((item, inherited, namespace))
         return result
 
-    for entry, inherited in flatten(entries, []):
+    for entry, inherited, pushed_ns in flatten(entries, []):
         if not isinstance(entry, dict):
             graph.unresolved_branches = True
             continue
@@ -489,6 +638,7 @@ def _analyze_yaml_launch(path: Path) -> LaunchGraph:
                 conditions=conditions,
                 presence="conditional" if conditions else "known",
             )
+            _set_namespace(launch_node, _compose_namespace(pushed_ns, launch_node.namespace), graph)
             graph.nodes.append(launch_node)
             if launch_node.is_unresolved:
                 graph.unresolved_branches = True

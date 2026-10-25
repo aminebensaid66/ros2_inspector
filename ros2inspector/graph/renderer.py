@@ -98,6 +98,18 @@ def _subgraph(
     return sub
 
 
+def _communication_label(attrs: dict[str, Any], fallback: str) -> str:
+    name = str(attrs.get("name", fallback))
+    if attrs.get("interface_type_mismatch"):
+        return (
+            name
+            + " (interface type mismatch: "
+            + ", ".join(sorted(attrs.get("observed_types", [])))
+            + ")"
+        )
+    return name
+
+
 def render_mermaid(
     uam: UnifiedArchitectureModel, graph_type: str, package: str | None = None
 ) -> str:
@@ -106,7 +118,7 @@ def render_mermaid(
 
     for nid, attrs in sub.nodes(data=True):
         sid = _slugify(nid)
-        name = attrs.get("name", nid)
+        name = _communication_label(attrs, nid)
         kind = attrs.get("kind", "")
         safe_name = _mermaid_label(str(name))
 
@@ -154,7 +166,7 @@ def render_dot(uam: UnifiedArchitectureModel, graph_type: str, package: str | No
 
     for nid, attrs in sub.nodes(data=True):
         sid = _slugify(nid)
-        name = attrs.get("name", nid).replace('"', "'")
+        name = _communication_label(attrs, nid).replace('"', "'")
         kind = attrs.get("kind", "")
 
         if kind == "Package":

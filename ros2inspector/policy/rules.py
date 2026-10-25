@@ -5,6 +5,7 @@ from typing import Any
 
 import networkx as nx
 
+from ros2inspector.model.names import canonical_interface
 from ros2inspector.model.schemas import PolicyViolation, ViolationSeverity
 from ros2inspector.model.uam import UnifiedArchitectureModel
 from ros2inspector.policy.schema import FieldSpec
@@ -316,6 +317,68 @@ def _parse_gap_note(uam: UnifiedArchitectureModel) -> str:
     return f"; {len(failed)} source file(s) could not be parsed, so a peer there was not seen"
 
 
+def _unresolved_peers(uam: UnifiedArchitectureModel) -> dict[tuple[str, str], list[str | None]]:
+    """Name suffixes of endpoints whose deployment could not be resolved, by kind and role.
+
+    A ``None`` entry means the endpoint could take any name.
+    """
+    peers: dict[tuple[str, str], list[str | None]] = {}
+    for _, target, data in uam.graph.edges(data=True):
+        kind = uam.graph.nodes[target].get("kind")
+        if kind in {"Topic", "Service", "Action"} and data.get("resolution") == "unresolved":
+            suffix = data.get("name_suffix")
+            peers.setdefault((str(kind), str(data.get("rel"))), []).append(
+                str(suffix) if suffix else None
+            )
+    return peers
+
+
+def _may_be_provided(
+    peers: dict[tuple[str, str], list[str | None]], kind: str, rel: str, name: str
+) -> bool:
+    """True when an unresolved deployment could still be the missing peer on ``name``."""
+    return any(suffix is None or name.endswith(suffix) for suffix in peers.get((kind, rel), []))
+
+
+def _interface_type_mismatches(
+    uam: UnifiedArchitectureModel, cfg: dict[str, Any]
+) -> list[PolicyViolation]:
+    findings = []
+    graph = uam.graph
+    for target, attrs in graph.nodes(data=True):
+        if attrs.get("kind") not in {"Topic", "Service", "Action"}:
+            continue
+        endpoints: dict[str, set[str]] = {}
+        for source, _, data in graph.in_edges(target, data=True):
+            value = canonical_interface(str(data.get("msg_type", "unknown")))
+            if value == "unknown" or data.get("resolution", "known") != "known":
+                continue
+            actor = graph.nodes[source]
+            name = str(actor.get("declared_ros_name") or actor.get("name", source))
+            endpoints.setdefault(value, set()).add(name)
+        if len(endpoints) > 1:
+            details = "; ".join(
+                f"{value} ({', '.join(sorted(names))})"
+                for value, names in sorted(endpoints.items())
+            )
+            findings.append(
+                PolicyViolation(
+                    severity=_sev(cfg.get("severity_type_mismatch", "error")),
+                    rule_type="interface_type_mismatch",
+                    policy_file=cfg.get("_source", "policy"),
+                    message=(
+                        f"{attrs['kind']} '{attrs['name']}' has incompatible interface types: "
+                        f"{details}"
+                    ),
+                    affected_entities=[
+                        str(attrs["name"]),
+                        *sorted({name for names in endpoints.values() for name in names}),
+                    ],
+                )
+            )
+    return findings
+
+
 def rule_topic_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
@@ -336,7 +399,8 @@ def rule_topic_connectivity(
         | user_exclude
         | {f"/{name}" for name in user_exclude if not name.startswith(("/", "~"))}
     )
-    violations: list[PolicyViolation] = []
+    violations = _interface_type_mismatches(uam, cfg) if cfg.get("type_mismatch", True) else []
+    unresolved = _unresolved_peers(uam)
 
     for nid, attrs in g.nodes(data=True):
         if attrs.get("kind") != "Topic":
@@ -365,7 +429,12 @@ def rule_topic_connectivity(
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "subscribes"
         ]
 
-        if flag_no_pub and sub_nodes and not possible_publishers:
+        if (
+            flag_no_pub
+            and sub_nodes
+            and not possible_publishers
+            and not _may_be_provided(unresolved, "Topic", "publishes", topic_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=sev_no_pub,
@@ -379,7 +448,12 @@ def rule_topic_connectivity(
                 )
             )
 
-        if flag_no_sub and pub_nodes and not possible_subscribers:
+        if (
+            flag_no_sub
+            and pub_nodes
+            and not possible_subscribers
+            and not _may_be_provided(unresolved, "Topic", "subscribes", topic_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=sev_no_sub,
@@ -524,6 +598,7 @@ def rule_service_connectivity(
     """Flag services with a provider/caller mismatch in either direction."""
     unattributed = _unattributed_endpoints(uam, "service")
     gap = _parse_gap_note(uam)
+    unresolved = _unresolved_peers(uam)
     g = uam.graph
     source = cfg.get("_source", "policy")
     severity = _sev(cfg.get("severity", "info"))
@@ -548,7 +623,11 @@ def rule_service_connectivity(
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "provides"
         ]
         callers = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "calls"]
-        if providers and not possible_caller:
+        if (
+            providers
+            and not possible_caller
+            and not _may_be_provided(unresolved, "Service", "calls", svc_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=severity,
@@ -561,7 +640,11 @@ def rule_service_connectivity(
                     affected_entities=[svc_name],
                 )
             )
-        if callers and not possible_provider:
+        if (
+            callers
+            and not possible_provider
+            and not _may_be_provided(unresolved, "Service", "provides", svc_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=missing_provider_severity,
@@ -584,6 +667,7 @@ def rule_action_connectivity(
     """Flag actions with a server/client mismatch in either direction."""
     unattributed = _unattributed_endpoints(uam, "action")
     gap = _parse_gap_note(uam)
+    unresolved = _unresolved_peers(uam)
     g = uam.graph
     source = cfg.get("_source", "policy")
     severity = _sev(cfg.get("severity", "warning"))
@@ -609,7 +693,11 @@ def rule_action_connectivity(
         in_edges = definite
         servers = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "provides"]
         clients = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "calls"]
-        if servers and not possible_client:
+        if (
+            servers
+            and not possible_client
+            and not _may_be_provided(unresolved, "Action", "calls", action_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=severity,
@@ -621,7 +709,11 @@ def rule_action_connectivity(
                     affected_entities=[action_name],
                 )
             )
-        if clients and not possible_server:
+        if (
+            clients
+            and not possible_server
+            and not _may_be_provided(unresolved, "Action", "provides", action_name)
+        ):
             violations.append(
                 PolicyViolation(
                     severity=missing_server_severity,
@@ -693,6 +785,8 @@ RULE_SCHEMAS: dict[str, dict[str, FieldSpec]] = {
         "exclude": _STRINGS,
         "severity_no_publisher": _SEVERITY,
         "severity_no_subscriber": _SEVERITY,
+        "type_mismatch": _BOOL,
+        "severity_type_mismatch": _SEVERITY,
     },
     "node_isolation": {"skip_dynamic_names": _BOOL},
     "qos_compatibility": {},

@@ -221,6 +221,9 @@ def _collect_calls(
             ep = CommunicationEndpoint(
                 name=name,
                 name_source=name_source,
+                name_parameter=_cpp_parameter_key(
+                    args_node, int(pattern["name_arg"]), source, context or source
+                ),
                 msg_type=msg_type,
                 file_path=nd.file_path,
                 line=call_node.start_point[0] + 1,
@@ -251,6 +254,7 @@ def _collect_calls(
             ep = CommunicationEndpoint(
                 name=topic_name,
                 name_source=name_source,
+                name_parameter=_cpp_parameter_key(args_node, 1, source, context or source),
                 msg_type=cpp_type,
                 file_path=nd.file_path,
                 line=call_node.start_point[0] + 1,
@@ -281,6 +285,7 @@ def _collect_calls(
         ep = CommunicationEndpoint(
             name=topic_name,
             name_source=name_source,
+            name_parameter=_cpp_parameter_key(args_node, 0, source, context or source),
             msg_type=cpp_type,
             file_path=nd.file_path,
             line=call_node.start_point[0] + 1,
@@ -493,6 +498,30 @@ def _cpp_parameter_names(node: Node, source: bytes, context: bytes | None = None
         ):
             names[match.group(1)] = default
     return names
+
+
+def _cpp_parameter_key(
+    args_node: Node | None, index: int, source: bytes, context: bytes
+) -> str | None:
+    if args_node is None or index >= len(args_node.named_children):
+        return None
+    arg = args_node.named_children[index]
+    variable = (
+        source[arg.start_byte : arg.end_byte]
+        .decode("utf-8", errors="replace")
+        .strip()
+        .removeprefix("this->")
+    )
+    text = context.decode("utf-8", errors="replace")
+    for match in re.finditer(
+        r'get_parameter\s*\(\s*"([^"\\]+)"\s*,\s*(?:this->)?([A-Za-z_]\w*)\s*\)', text
+    ):
+        if match.group(2) == variable:
+            return match.group(1)
+    assigned_match = re.search(
+        rf'\b{re.escape(variable)}\s*=\s*(?:this->)?get_parameter\s*\(\s*"([^"\\]+)"', text
+    )
+    return assigned_match.group(1) if assigned_match else None
 
 
 def _cpp_name(

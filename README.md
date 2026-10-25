@@ -218,7 +218,20 @@ factories:
 kinds are `publisher`, `subscription`, `service`, `client`, `action_server`, and `action_client`.
 Factory-derived endpoints retain source evidence and medium or low confidence.
 Literal Python and C++ parameter defaults can resolve endpoint names and are labeled
-`parameter_default`; launch parameter overrides and computed defaults remain unresolved.
+`parameter_default`. When a launch `Node` passes literal `parameters=[{...}]` dictionaries,
+the last value for that parameter replaces the default for that deployment and the edge
+carries `launch_parameter_override` evidence. Parameters that cannot be read statically,
+such as a YAML file path or a substitution, mark the deployment's `parameters` field
+unresolved, leave the endpoint name unresolved, and suppress connectivity findings the
+default would otherwise cause. Computed defaults remain unresolved.
+Endpoint names are resolved the way rcl resolves them: the name and each remap rule are
+expanded with the node's namespace and name before matching, and node-qualified
+(`node:from:=to`) and `rostopic://`/`rosservice://` rules apply only where ROS applies them.
+A rule that names an action leaves that action unresolved, because Jazzy releases differ:
+rcl_action 9.2.7 ignores such a rule and 9.2.11 applies it.
+A namespace pushed by `PushRosNamespace` (or `push-ros-namespace` in XML and YAML) inside a
+group applies to the nodes in that group; one that cannot be read statically leaves the
+deployment unresolved instead of guessing.
 Literal Python `QoSProfile` settings and C++ `rclcpp::QoS(...)` settings are reported when
 available. The `qos_compatibility` rule reports only explicit reliability or durability
 mismatches; unknown QoS settings do not create findings.
@@ -270,12 +283,18 @@ rules:
   - type: topic_connectivity
     no_publisher: true
     no_subscriber: true
+    type_mismatch: true
     exclude: [/rosout, /clock]
 
   - type: maintainer_required
     require_email: true
     severity: warning
 ```
+
+`topic_connectivity` also reports `interface_type_mismatch` (severity
+`severity_type_mismatch`, default `error`) when endpoints on one topic, service or action
+use different interface types; `type_mismatch: false` turns it off. Connection output lists
+each endpoint with its own type and only names peers whose type is compatible.
 
 Supported rule types are `health_threshold`, `license`, `naming`, `dependency`, `no_circular_deps`, `topic_connectivity`, `node_isolation`, `service_connectivity`, `action_connectivity`, `qos_compatibility`, `maintainer_required`, and `version_not_default`.
 

@@ -15,6 +15,11 @@ from ros2inspector.discovery import (
     find_interface_files,
     find_package_xml_files,
 )
+from ros2inspector.model.names import (
+    canonical_interface,
+    resolve_endpoint_name,
+    unresolved_name_suffix,
+)
 from ros2inspector.model.schemas import (
     DYNAMIC_SENTINEL,
     CommunicationEndpoint,
@@ -123,16 +128,6 @@ def _is_test_source(file_path: str | Path, package_path: Path) -> bool:
     except ValueError:
         return False
     return any(part in {"test", "tests", "gtest", "pytest"} for part in relative.parts[:-1])
-
-
-def _apply_remap(name: str, remaps: dict[str, str]) -> str:
-    """Return the remapped topic/service/action name, normalising leading slash variants."""
-    if name == DYNAMIC_SENTINEL:
-        return name
-    if name in remaps:
-        return remaps[name]
-    alt = f"/{name}" if not name.startswith("/") else name.lstrip("/")
-    return remaps.get(alt, name)
 
 
 def _apply_namespace(name: str, namespace: str | None, node_name: str | None = None) -> str:
@@ -480,6 +475,7 @@ class UnifiedArchitectureModel:
         unresolved: bool = False,
     ) -> None:
         graph = self._graph
+        interface_type = canonical_interface(interface_type)
         explicit = interface_type != "unknown"
         if node_id not in graph:
             graph.add_node(
@@ -508,7 +504,8 @@ class UnifiedArchitectureModel:
             attrs[type_key] = interface_type
             attrs["type_source"] = "explicit"
             attrs["confidence"] = "high"
-        elif current != interface_type:
+        elif canonical_interface(current) != interface_type:
+            attrs["interface_type_mismatch"] = True
             self._diagnostics.append(
                 {
                     "severity": "warning",
@@ -531,6 +528,8 @@ class UnifiedArchitectureModel:
             "data_source": DataSource.STATIC.value,
             "remapped": actual_name != endpoint.name,
             "original_name": endpoint.name,
+            "msg_type": canonical_interface(endpoint.msg_type),
+            "name_source": endpoint.name_source,
             "file_path": endpoint.file_path,
             "line": endpoint.line,
             "evidence": endpoint.evidence,
@@ -643,13 +642,15 @@ class UnifiedArchitectureModel:
                         conditions=list(launch_node.conditions),
                     )
                     self._add_edge(g, nid, deployment_id, rel="deploys_as")
-                    deployment_attrs = {
+                    deployment_attrs: dict[str, Any] = {
                         "deployment_id": deployment_id,
                         "deployment_name": effective_name,
                         "namespace": launch_node.namespace,
                         "launch_file": launch_node.source_file,
                         "resolution": resolution,
                         "conditions": list(launch_node.conditions),
+                        "parameters": dict(launch_node.parameters),
+                        "parameters_unresolved": launch_node.parameters_unresolved,
                     }
                     actors.append(
                         (
@@ -693,8 +694,33 @@ class UnifiedArchitectureModel:
             for endpoints, kind, role, rel, type_key in endpoint_groups:
                 for index, endpoint in enumerate(endpoints):
                     for actor_id, remaps, namespace, node_name, deployment_attrs in actors:
-                        actual = _apply_namespace(
-                            _apply_remap(endpoint.name, remaps), namespace, node_name
+                        deployed_endpoint = endpoint
+                        if endpoint.name_source == "parameter_default":
+                            overrides = deployment_attrs.get("parameters", {})
+                            parameter = endpoint.name_parameter
+                            value = overrides.get(parameter) if parameter else None
+                            if deployment_attrs.get("parameters_unresolved") or (
+                                overrides and parameter is None
+                            ):
+                                deployed_endpoint = endpoint.model_copy(
+                                    update={
+                                        "name": DYNAMIC_SENTINEL,
+                                        "name_source": "unresolved",
+                                        "confidence": "low",
+                                    }
+                                )
+                            elif parameter in overrides:
+                                deployed_endpoint = endpoint.model_copy(
+                                    update={
+                                        "name": value
+                                        if isinstance(value, str)
+                                        else DYNAMIC_SENTINEL,
+                                        "name_source": "launch_parameter_override",
+                                        "evidence": "launch_parameter_override",
+                                    }
+                                )
+                        actual = resolve_endpoint_name(
+                            deployed_endpoint.name, remaps, namespace, node_name, kind
                         )
                         comm_id = _communication_id(kind, actual, actor_id, role, index)
                         self._upsert_comm_node(
@@ -706,9 +732,19 @@ class UnifiedArchitectureModel:
                             unresolved=actual == DYNAMIC_SENTINEL,
                         )
                         presence = str(deployment_attrs.get("resolution", "known"))
-                        edge_attrs = self._endpoint_edge_attrs(endpoint, actual, presence)
+                        edge_attrs = self._endpoint_edge_attrs(deployed_endpoint, actual, presence)
+                        if presence == "unresolved":
+                            # What the name must end with, so connectivity rules can tell
+                            # which peers this deployment might still provide.
+                            edge_attrs["name_suffix"] = unresolved_name_suffix(
+                                deployed_endpoint.name, remaps, node_name
+                            )
                         edge_attrs.update(
-                            {k: v for k, v in deployment_attrs.items() if k != "resolution"}
+                            {
+                                k: v
+                                for k, v in deployment_attrs.items()
+                                if k not in {"resolution", "parameters", "parameters_unresolved"}
+                            }
                         )
                         self._add_edge(g, actor_id, comm_id, rel=rel, **edge_attrs)
 
@@ -732,12 +768,12 @@ class UnifiedArchitectureModel:
                 continue
             dst_attrs = g.nodes[dst]
             dst_kind = dst_attrs.get("kind")
-            resolved: str | None = None
-            if dst_kind == "Topic":
+            resolved: str | None = edge_data.get("msg_type")
+            if not resolved and dst_kind == "Topic":
                 resolved = dst_attrs.get("msg_type")
-            elif dst_kind == "Service":
+            elif not resolved and dst_kind == "Service":
                 resolved = dst_attrs.get("srv_type")
-            elif dst_kind == "Action":
+            elif not resolved and dst_kind == "Action":
                 resolved = dst_attrs.get("action_type")
             if not resolved or resolved == "unknown":
                 continue

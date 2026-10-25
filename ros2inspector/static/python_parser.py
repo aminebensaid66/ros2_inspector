@@ -135,6 +135,8 @@ class _NodeVisitor(ast.NodeVisitor):
         self._class_attrs: dict[str, str] = {}
         self._parameter_defaults: dict[str, str] = {}
         self._parameter_vars: set[str] = set()
+        self._parameter_keys: dict[str, str] = {}
+        self._last_parameter: str | None = None
         self._last_name_source = "literal"
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -208,6 +210,8 @@ class _NodeVisitor(ast.NodeVisitor):
         )
         if proven or (node.bases and relevant):
             prev_attrs = self._class_attrs
+            prev_keys = self._parameter_keys
+            self._parameter_keys = {}
             prev_parameters = self._parameter_defaults
             prev_parameter_vars = self._parameter_vars
             self._parameter_defaults = {}
@@ -266,6 +270,7 @@ class _NodeVisitor(ast.NodeVisitor):
             self._current_node = prev
             self.nodes.append(nd)
             self._class_attrs = prev_attrs
+            self._parameter_keys = prev_keys
             self._parameter_defaults = prev_parameters
             self._parameter_vars = prev_parameter_vars
         else:
@@ -306,8 +311,12 @@ class _NodeVisitor(ast.NodeVisitor):
                         self._class_attrs[key] = resolved
                         if self._from_parameter(node.value):
                             self._parameter_vars.add(key)
+                            parameter_key = self._parameter_key(node.value)
+                            if parameter_key is not None:
+                                self._parameter_keys[key] = parameter_key
                         else:
                             self._parameter_vars.discard(key)
+                            self._parameter_keys.pop(key, None)
         self.generic_visit(node)
 
     def _inherits_from_ros_node(self, cls: ast.ClassDef) -> bool:
@@ -360,6 +369,7 @@ class _NodeVisitor(ast.NodeVisitor):
     def _pick_name(self, call: ast.Call, pos_index: int, *kwarg_names: str) -> str:
         if pos_index < len(call.args):
             arg = call.args[pos_index]
+            self._last_parameter = self._parameter_key(arg)
             self._last_name_source = "parameter_default" if self._from_parameter(arg) else "literal"
             value = self._resolve_name(arg)
             if value == DYNAMIC_SENTINEL:
@@ -367,6 +377,7 @@ class _NodeVisitor(ast.NodeVisitor):
             return value
         for kw in call.keywords:
             if kw.arg in kwarg_names:
+                self._last_parameter = self._parameter_key(kw.value)
                 self._last_name_source = (
                     "parameter_default" if self._from_parameter(kw.value) else "literal"
                 )
@@ -376,6 +387,21 @@ class _NodeVisitor(ast.NodeVisitor):
                 return value
         self._last_name_source = "unresolved"
         return DYNAMIC_SENTINEL
+
+    def _parameter_key(self, expr: ast.expr) -> str | None:
+        if isinstance(expr, ast.Name):
+            return self._parameter_keys.get(expr.id)
+        if isinstance(expr, ast.Attribute):
+            if isinstance(expr.value, ast.Name) and expr.value.id == "self":
+                return self._parameter_keys.get(expr.attr)
+            return self._parameter_key(expr.value)
+        if isinstance(expr, ast.Call):
+            method = _get_attr_name(expr.func).split(".")[-1]
+            if method in {"get_parameter", "declare_parameter"} and expr.args:
+                return _literal_string(expr.args[0])
+            if method == "get_parameter_value" and isinstance(expr.func, ast.Attribute):
+                return self._parameter_key(expr.func.value)
+        return None
 
     def _from_parameter(self, expr: ast.expr) -> bool:
         if isinstance(expr, ast.Name):
@@ -431,6 +457,7 @@ class _NodeVisitor(ast.NodeVisitor):
         return CommunicationEndpoint(
             name=name,
             name_source=self._last_name_source,
+            name_parameter=self._last_parameter,
             msg_type=interface_type,
             file_path=str(self.file_path),
             line=node.lineno,

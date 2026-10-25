@@ -20,7 +20,7 @@ _DEFAULT_CACHE_DIR = (
 
 _SOURCE_SUFFIXES = CPP_SUFFIXES | frozenset((".py", ".msg", ".srv", ".action"))
 
-_CACHE_VERSION = "v12-python-source-coverage"
+_CACHE_VERSION = "v13-name-resolution-source-coverage"
 _CACHE_SIZE_LIMIT = 256 * 1024 * 1024
 _DIGEST_CACHE_SIZE_LIMIT = 128 * 1024 * 1024
 
