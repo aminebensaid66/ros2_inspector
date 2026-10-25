@@ -132,7 +132,9 @@ jobs:
       - name: Create test environment
         run: |
           apt-get update
-          apt-get install -y python3-venv
+          apt-get install -y python3-venv python3-colcon-common-extensions build-essential cmake \
+            ros-jazzy-rclcpp ros-jazzy-std-msgs ros-jazzy-ament-cmake \
+            ros-jazzy-ros2launch ros-jazzy-launch-ros ros-jazzy-example-interfaces
           python3 -m venv --system-site-packages /tmp/ros2inspector-venv
           /tmp/ros2inspector-venv/bin/python -m pip install -e ".[dev]"
       - name: Compare static findings with live ROS graph
@@ -145,5 +147,4 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           /tmp/ros2inspector-venv/bin/python -m pytest -p pytest_cov.plugin \
-            -m requires_ros2 tests/integration/test_ros2_differential.py \
-            tests/integration/test_design_ros2_runtime.py --no-cov
+            -m requires_ros2 tests/integration --no-cov
