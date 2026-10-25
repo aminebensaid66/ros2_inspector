@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -262,6 +264,9 @@ class GenerateResult:
     unchanged: list[str] = field(default_factory=list)
     kept_modified: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
+    # What was changed inside files the user edited, and what still needs their attention.
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -270,6 +275,8 @@ class GenerateResult:
             "unchanged": self.unchanged,
             "kept_modified": self.kept_modified,
             "removed": self.removed,
+            "notes": self.notes,
+            "warnings": self.warnings,
         }
 
 
@@ -491,12 +498,7 @@ def render_package(package: PackageSpec) -> dict[str, str]:
     return files
 
 
-def read_manifest(package_dir: Path) -> dict[str, str] | None:
-    """Return {relative path: sha256} recorded at the last generation.
-
-    ``None`` means the directory is not a generated package. Legacy (format 1) markers have
-    no hashes and return an empty manifest, so every existing file is treated as user-owned.
-    """
+def _read_marker(package_dir: Path) -> dict[str, Any] | None:
     marker = package_dir / _GENERATED_MARKER
     if not marker.is_file():
         return None
@@ -504,9 +506,279 @@ def read_manifest(package_dir: Path) -> dict[str, str] | None:
         data: object = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
-    if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+    return data if isinstance(data, dict) else {}
+
+
+def read_manifest(package_dir: Path) -> dict[str, str] | None:
+    """Return {relative path: sha256} recorded at the last generation.
+
+    ``None`` means the directory is not a generated package. Legacy (format 1) markers have
+    no hashes and return an empty manifest, so every existing file is treated as user-owned.
+    """
+    data = _read_marker(package_dir)
+    if data is None:
+        return None
+    if not isinstance(data.get("files"), dict):
         return {}
     return {str(k): str(v) for k, v in data["files"].items()}
+
+
+def previous_node_labels(package_dir: Path) -> dict[str, str]:
+    """Node id -> node name at the last generation (empty for markers older than this)."""
+    nodes = (_read_marker(package_dir) or {}).get("nodes")
+    if not isinstance(nodes, dict):
+        return {}
+    return {str(k): str(v) for k, v in nodes.items()}
+
+
+def _write_marker(package_dir: Path, files: dict[str, str], nodes: dict[str, str]) -> None:
+    marker = {
+        "generated_by": "ros2inspector",
+        "format": _MARKER_FORMAT,
+        "files": files,
+        "nodes": nodes,
+    }
+    _write_atomic(
+        package_dir / _GENERATED_MARKER,
+        (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
+
+
+def _console_scripts_list(tree: ast.AST) -> ast.List | None:
+    """The literal ``'console_scripts': [...]`` list of a setup.py, if it has exactly one."""
+    found = [
+        value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values, strict=True)
+        if isinstance(key, ast.Constant) and key.value == "console_scripts"
+    ]
+    if len(found) != 1 or not isinstance(found[0], ast.List):
+        return None
+    if not all(
+        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in found[0].elts
+    ):
+        return None
+    return found[0]
+
+
+def console_scripts(setup_py: str) -> set[str] | None:
+    """Executable names a setup.py registers, or None when they cannot be read statically."""
+    try:
+        listing = _console_scripts_list(ast.parse(setup_py))
+    except SyntaxError:
+        return None
+    if listing is None:
+        return None
+    return {
+        str(item.value).split("=", 1)[0].strip()
+        for item in listing.elts
+        if isinstance(item, ast.Constant)
+    }
+
+
+def add_console_scripts(setup_py: str, entries: list[str]) -> str | None:
+    """Insert entries at the end of setup.py's console_scripts list, leaving the rest as is.
+
+    Returns None when the list cannot be located safely, so the caller can ask the user to
+    add the entries by hand instead of guessing.
+    """
+    try:
+        listing = _console_scripts_list(ast.parse(setup_py))
+    except SyntaxError:
+        return None
+    if listing is None or listing.end_lineno is None or listing.end_col_offset is None:
+        return None
+    lines = setup_py.splitlines(keepends=True)
+
+    def offset(line: int, column: int) -> int:
+        # ast columns count UTF-8 bytes.
+        prefix = lines[line - 1].encode("utf-8")[:column].decode("utf-8")
+        return sum(len(text) for text in lines[: line - 1]) + len(prefix)
+
+    if listing.elts:
+        last = listing.elts[-1]
+        assert last.end_lineno is not None and last.end_col_offset is not None
+        position = offset(last.end_lineno, last.end_col_offset)
+        indent = re.match(r"[ \t]*", lines[last.lineno - 1]).group(0)  # type: ignore[union-attr]
+        rest = setup_py[position:]
+        comma = rest.lstrip(" \t").startswith(",")
+        after = position + len(rest) - len(rest.lstrip(" \t")) + 1 if comma else position
+        line_end = setup_py.find("\n", after)
+        tail = setup_py[after : line_end if line_end >= 0 else len(setup_py)].strip()
+        if line_end >= 0 and (not tail or tail.startswith("#")):
+            # One entry per line: new lines go after the last entry's line (and its comment).
+            lines_text = "".join(f"{indent}{entry!r},\n" for entry in entries)
+            updated = setup_py[: line_end + 1] + lines_text + setup_py[line_end + 1 :]
+            if not comma:
+                updated = updated[:position] + "," + updated[position:]
+        elif comma:
+            updated = setup_py[:after] + "".join(f" {e!r}," for e in entries) + setup_py[after:]
+        else:
+            joined = "".join(f", {entry!r}" for entry in entries)
+            updated = setup_py[:position] + joined + setup_py[position:]
+    else:
+        position = offset(listing.end_lineno, listing.end_col_offset) - 1
+        outer = re.match(r"[ \t]*", lines[listing.lineno - 1]).group(0)  # type: ignore[union-attr]
+        text = "".join(f"\n{outer}    {entry!r}," for entry in entries) + f"\n{outer}"
+        updated = setup_py[:position] + text + setup_py[position:]
+    names = console_scripts(updated)
+    wanted = {entry.split("=", 1)[0].strip() for entry in entries}
+    return updated if names is not None and wanted <= names else None
+
+
+def _launch_entry(field_name: str, value: str) -> re.Pattern[str]:
+    return re.compile(rf"(\b{field_name}\s*=\s*(['\"])){re.escape(value)}(\2)")
+
+
+_LAUNCH_EXECUTABLE = re.compile(r"\bexecutable\s*=\s*(['\"])([^'\"]+)\1")
+_DEPEND = re.compile(r"<(?:depend|exec_depend|run_depend)>\s*([^<\s]+)\s*</")
+
+
+@dataclass
+class EditPlan:
+    """How to bring the user's edited files in line with the design, decided before writing."""
+
+    moves: list[tuple[str, str]] = field(default_factory=list)
+    patched: dict[str, str] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+
+
+def plan_package_edits(
+    package: PackageSpec,
+    read: Callable[[str], bytes | None],
+    manifest: dict[str, str],
+    previous_nodes: dict[str, str],
+) -> EditPlan:
+    """Decide what generation must change in files the user edited so the package still runs.
+
+    Edited files are never regenerated, but some of their content is the design's: the module
+    a node lives in, its ``console_scripts`` entry and the executables the launch file starts.
+    An edited node module follows its node through a rename, an edited ``setup.py`` gets the
+    missing entries appended to its list, and an edited launch file gets the renamed
+    executables. Whatever cannot be done safely is a problem, so nothing is reported as
+    generated while ``setup.py`` or the launch file points at code that is not there.
+    ``read`` returns a file's current bytes (None if missing); ``manifest`` holds the hashes
+    recorded at the last generation, under the package's current paths.
+    """
+    plan = EditPlan()
+    pkg = package.pkg_name
+
+    def edited(relative: str) -> bool:
+        data = read(relative)
+        return data is not None and _digest(data) != manifest.get(relative)
+
+    def text_of(relative: str) -> str | None:
+        data = read(relative)
+        try:
+            return None if data is None else data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    labels = [node.label for node in package.nodes]
+    renamed = {
+        previous_nodes[node.id]: node.label
+        for node in package.nodes
+        if previous_nodes.get(node.id) not in (None, node.label)
+    }
+    for old, new in renamed.items():
+        old_rel, new_rel = f"{pkg}/{old}.py", f"{pkg}/{new}.py"
+        if not edited(old_rel):
+            continue  # unedited: it is regenerated under the new name and the old one removed
+        source = text_of(old_rel)
+        if read(new_rel) is not None:
+            reason = f"{new_rel} already exists"
+            fix = f"Merge your code into {new_rel} and delete {old_rel}"
+        elif old in labels:
+            reason = f"another node is now named '{old}'"
+            fix = f"Move your code to {new_rel} yourself"
+        elif source is None:
+            reason = "it is not UTF-8 text"
+            fix = f"Move your code to {new_rel} yourself"
+        else:
+            reason = ""
+        if reason:
+            plan.problems.append(
+                f"{old_rel} has your edits, but it cannot follow the renamed node because "
+                f"{reason}. {fix}, or rename the node back to '{old}'."
+            )
+            continue
+        assert source is not None
+        plan.moves.append((old_rel, new_rel))
+        plan.patched[new_rel] = source.replace(
+            f"super().__init__({old!r})", f"super().__init__({new!r})"
+        )
+        plan.notes.append(f"moved your edited {old_rel} to {new_rel}")
+
+    entries = {label: f"{label} = {pkg}.{label}:main" for label in labels}
+    registered: set[str] | None = set(labels)
+    if edited("setup.py"):
+        original = text_of("setup.py")
+        setup_text = original or ""
+        for old, new in renamed.items():
+            setup_text = setup_text.replace(repr(f"{old} = {pkg}.{old}:main"), repr(entries[new]))
+        changed = sorted(new for old, new in renamed.items() if repr(entries[new]) in setup_text)
+        registered = console_scripts(setup_text) if original is not None else None
+        missing = [
+            entry
+            for label, entry in entries.items()
+            if registered is None or label not in registered
+        ]
+        if missing:
+            added = add_console_scripts(setup_text, missing) if original is not None else None
+            if added is None:
+                plan.problems.append(
+                    "setup.py has your edits and its console_scripts list could not be updated "
+                    f"automatically. Add {', '.join(repr(e) for e in missing)} to it, or undo "
+                    "your edits so it can be regenerated."
+                )
+            else:
+                setup_text = added
+                changed = sorted({*changed, *(e.split(" = ", 1)[0] for e in missing)})
+            registered = console_scripts(setup_text)
+        if original is not None and setup_text != original:
+            plan.patched["setup.py"] = setup_text
+            plan.notes.append(f"registered {', '.join(changed)} in your edited setup.py")
+
+    launch_rel = "launch/launch.py"
+    if edited(launch_rel):
+        original = text_of(launch_rel)
+        launch_text = original or ""
+        for old, new in renamed.items():
+            for field_name in ("executable", "name"):
+                launch_text = _launch_entry(field_name, old).sub(rf"\g<1>{new}\g<3>", launch_text)
+        started = {match.group(2) for match in _LAUNCH_EXECUTABLE.finditer(launch_text)}
+        known = set(labels) | set(previous_nodes.values())
+        for executable in sorted(started & known):
+            if registered is not None and executable not in registered:
+                plan.problems.append(
+                    f"{launch_rel} has your edits and starts '{executable}', which setup.py "
+                    "does not register, so ros2 launch would fail. Update the launch file, or "
+                    "undo your edits so it can be regenerated."
+                )
+        not_started = [label for label in labels if label not in started]
+        if not_started:
+            plan.warnings.append(
+                f"{launch_rel} has your edits, so it does not start {', '.join(not_started)}; "
+                "add the node(s) to it yourself."
+            )
+        if original is not None and launch_text != original:
+            plan.patched[launch_rel] = launch_text
+            plan.notes.append(f"renamed the node(s) in your edited {launch_rel}")
+
+    if edited("package.xml"):
+        declared = set(_DEPEND.findall(text_of("package.xml") or ""))
+        missing_deps = [
+            dep for dep in [*_dependencies(package), "launch", "launch_ros"] if dep not in declared
+        ]
+        if missing_deps:
+            plan.warnings.append(
+                "package.xml has your edits and does not declare "
+                f"{', '.join(missing_deps)}; add <depend> entries for them."
+            )
+    return plan
 
 
 def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> list[str]:
@@ -541,15 +813,7 @@ def rename_package_contents(package_dir: Path, old_name: str, new_name: str) -> 
 
     manifest = {moved_key(key): digest for key, digest in manifest.items()}
     rewritten = _replace_package_name(package_dir, manifest, old_name, new_name)
-    marker = {
-        "generated_by": "ros2inspector",
-        "format": _MARKER_FORMAT,
-        "files": manifest,
-    }
-    _write_atomic(
-        package_dir / _GENERATED_MARKER,
-        (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-    )
+    _write_marker(package_dir, manifest, previous_node_labels(package_dir))
     return rewritten
 
 
@@ -648,13 +912,20 @@ def _inside(base: Path, relative: str) -> Path:
     return path
 
 
-def write_package(package: PackageSpec, output_dir: Path, files: dict[str, str]) -> GenerateResult:
+def write_package(
+    package: PackageSpec,
+    output_dir: Path,
+    files: dict[str, str],
+    previous_nodes: dict[str, str] | None = None,
+) -> GenerateResult:
     """Write rendered files without ever overwriting user edits.
 
     A file is (re)written only when it does not exist yet, or when its current content still
-    matches the hash recorded at the previous generation. Edited files are kept and reported.
-    Files the user added are never touched. Generated files that are no longer part of the
-    design are removed only if unmodified.
+    matches the hash recorded at the previous generation. Edited files are kept and reported,
+    with only the changes ``plan_package_edits`` decides they need to keep the package
+    runnable. Files the user added are never touched. Generated files that are no longer part
+    of the design are removed only if unmodified. ``previous_nodes`` (node id -> name at the
+    last generation) defaults to what the package marker recorded.
     """
     target = output_dir / package.pkg_name
     result = GenerateResult(package=package.pkg_name)
@@ -666,13 +937,38 @@ def write_package(package: PackageSpec, output_dir: Path, files: dict[str, str])
                 f"Refusing to overwrite '{target}': it was not generated by ROS 2 Inspector."
             )
         manifest = previous
+    if previous_nodes is None:
+        previous_nodes = previous_node_labels(target)
     target.mkdir(parents=True, exist_ok=True)
+
+    def read(relative: str) -> bytes | None:
+        path = _inside(target, relative)
+        return path.read_bytes() if path.is_file() else None
+
+    plan = plan_package_edits(package, read, manifest, previous_nodes)
+    if plan.problems:
+        raise ValueError(" ".join(plan.problems))
+    for old_rel, new_rel in plan.moves:
+        _write_atomic(_inside(target, new_rel), plan.patched[new_rel].encode("utf-8"))
+        _inside(target, old_rel).unlink()
+        manifest[new_rel] = manifest.pop(old_rel, "")
+    result.notes.extend(plan.notes)
+    result.warnings.extend(plan.warnings)
 
     new_manifest: dict[str, str] = {}
     for relative, text in sorted(files.items()):
         data = text.encode("utf-8")
         new_hash = _digest(data)
         path = _inside(target, relative)
+        if relative in plan.patched:
+            # An edited file: keep the user's version with only the planned change, and keep
+            # its old hash so it still counts as edited next time.
+            if relative not in dict(plan.moves).values():
+                _write_atomic(path, plan.patched[relative].encode("utf-8"))
+            result.kept_modified.append(relative)
+            if manifest.get(relative):
+                new_manifest[relative] = manifest[relative]
+            continue
         if path.exists():
             current_hash = _digest(path.read_bytes())
             if current_hash == new_hash:
@@ -701,15 +997,7 @@ def write_package(package: PackageSpec, output_dir: Path, files: dict[str, str])
         else:
             result.kept_modified.append(relative)
 
-    marker = {
-        "generated_by": "ros2inspector",
-        "format": _MARKER_FORMAT,
-        "files": new_manifest,
-    }
-    _write_atomic(
-        target / _GENERATED_MARKER,
-        (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-    )
+    _write_marker(target, new_manifest, {node.id: node.label for node in package.nodes})
     return result
 
 

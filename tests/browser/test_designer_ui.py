@@ -594,3 +594,118 @@ def test_toolbar_fits_at_800_and_show_all_centres_a_small_design(
     )
     assert colours == ["rgb(124, 138, 160)"] * 2
     context.close()
+
+
+def test_failed_save_keeps_a_banner_with_export_until_saved(
+    page: Page, designer: dict[str, Any], shot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ros2inspector.design import server as design_server
+
+    def fail(*_: object) -> None:
+        raise OSError(27, "File too large")
+
+    monkeypatch.setattr(design_server, "_save_state", fail)
+    _open(page, designer)
+    page.click("#gb")
+    banner = page.locator("#banner")
+    expect(banner).to_be_visible()
+    expect(banner).to_contain_text("Files were generated, but the design could not be saved")
+    expect(banner).to_contain_text("File too large")
+    expect(banner).to_contain_text("Do not reload")
+    assert "NOT saved" in _toast(page, "err")
+    assert (designer["out"] / "my_package" / "my_package" / "camera_node.py").is_file()
+    shot(page, "designer-08-unsaved-banner")
+
+    with page.expect_download() as download:
+        page.click("#bexp")
+    exported = json.loads(Path(download.value.path()).read_text())
+    assert [p["pkg_name"] for p in exported["packages"]] == ["my_package"]
+    assert len(exported["packages"][0]["nodes"]) == 2
+
+    monkeypatch.undo()
+    page.click("#bretry")
+    expect(banner).to_be_hidden()
+    assert "Design saved" in _toast(page, "ok")
+    assert json.loads((designer["out"] / STATE_FILE).read_text())["packages"]
+
+
+def test_renaming_an_edited_node_reports_the_moved_module(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.click("#gb")
+    _toast(page, "ok")
+    module = designer["out"] / "my_package" / "my_package" / "camera_node.py"
+    module.write_text(module.read_text() + "# USER_EDIT_RETAINED\n")
+    page.locator(".node").first.click()
+    page.locator("#snm").fill("camera_renamed")
+    page.click("#gb")
+    expect(page.locator("#toast.show.ok")).to_contain_text(
+        "moved your edited my_package/camera_node.py to my_package/camera_renamed.py"
+    )
+    renamed = module.with_name("camera_renamed.py")
+    assert renamed.read_text().endswith("# USER_EDIT_RETAINED\n")
+    assert not module.exists()
+
+
+def test_rename_conflict_is_refused_with_an_actionable_message(
+    page: Page, designer: dict[str, Any], shot: Any
+) -> None:
+    _open(page, designer)
+    page.click("#gb")
+    _toast(page, "ok")
+    module = designer["out"] / "my_package" / "my_package" / "camera_node.py"
+    module.write_text(module.read_text() + "# mine\n")
+    module.with_name("camera_renamed.py").write_text("# also mine\n")
+    page.locator(".node").first.click()
+    page.locator("#snm").fill("camera_renamed")
+    page.click("#gb")
+    text = _toast(page, "err")
+    assert "camera_node.py has your edits" in text
+    assert "my_package/camera_renamed.py already exists" in text
+    assert "Merge your code into my_package/camera_renamed.py" in text
+    assert "rename the node back to 'camera_node'" in text
+    # Errors stay readable until dismissed.
+    page.wait_for_timeout(5500)
+    expect(page.locator("#toast.show.err")).to_be_visible()
+    shot(page, "designer-09-rename-conflict")
+    page.locator("#toast").click()
+    expect(page.locator("#toast.show")).to_have_count(0)
+    assert module.read_text().endswith("# mine\n")
+
+
+def test_overlong_names_are_flagged_on_the_field(
+    page: Page, designer: dict[str, Any], shot: Any
+) -> None:
+    _open(page, designer)
+    page.locator(".node").first.click()
+    _set_field(page, "#spubs .sinp", "/" + "a" * 247)
+    error = page.locator("#spubs .ferr")
+    expect(error).to_contain_text("is 248 characters once expanded")
+    expect(error).to_contain_text("Shorten it by 1")
+    expect(page.locator("#spubs .sinp")).to_have_class("sinp bad")
+    shot(page, "designer-10-name-too-long")
+    page.click("#gb")
+    assert "at most 247 for a topic name" in _toast(page, "err")
+    assert not (designer["out"] / "my_package").exists()
+    _set_field(page, "#spubs .sinp", "/" + "a" * 246)
+    expect(page.locator("#spubs .ferr")).to_have_count(0)
+
+
+def test_server_length_errors_open_the_node_and_mark_the_field(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.locator(".node").first.click()
+    # Exactly at the limit under 'camera_node'; a longer node name pushes it over.
+    _set_field(page, "#spubs .sinp", "~/" + "a" * (247 - len("/camera_node/")))
+    expect(page.locator("#spubs .ferr")).to_have_count(0)
+    page.locator("#snm").fill("camera_node_longer")
+    page.keyboard.press("Escape")
+    expect(page.locator("#sb")).to_have_class("h")
+    page.click("#gb")
+    _toast(page, "err")
+    expect(page.locator("#sb")).not_to_have_class("h")
+    expect(page.locator("#snm")).to_have_value("camera_node_longer")
+    expect(page.locator("#spubs .ferr")).to_contain_text("Shorten it by 7")
+    expect(page.locator("#spubs .sinp")).to_be_focused()
