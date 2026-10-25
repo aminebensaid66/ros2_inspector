@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -34,11 +35,29 @@ _NODE = (
 
 
 @pytest.mark.parametrize(
-    "bad",
-    ["x = " + " + ".join(["1"] * 60000), "def broken(", "# coding: missing-codec\n"],
-    ids=["recursion", "syntax", "encoding"],
+    "bad, resource_error",
+    [
+        ("x = " + " + ".join(["1"] * 60000), RecursionError),
+        ("x = 1", MemoryError),
+        ("def broken(", None),
+        ("# coding: missing-codec\n", None),
+    ],
+    ids=["recursion", "memory", "syntax", "encoding"],
 )
-def test_source_failure_keeps_other_nodes_and_cached_diagnostic(tmp_path: Path, bad: str) -> None:
+def test_source_failure_keeps_other_nodes_and_cached_diagnostic(
+    tmp_path: Path,
+    bad: str,
+    resource_error: type[Exception] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_parse = ast.parse
+
+    def parse(source, filename="<unknown>", *args, **kwargs):
+        if resource_error is not None and Path(filename).name == "bad.py":
+            raise resource_error("source resource limit")
+        return original_parse(source, filename, *args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", parse)
     module = _package(tmp_path)
     (module / "good.py").write_text(_NODE)
     (module / "bad.py").write_text(bad)
