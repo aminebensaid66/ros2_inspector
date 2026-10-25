@@ -15,6 +15,7 @@ from ros2inspector.model.schemas import (
     NodeDefinition,
     QoSProfile,
 )
+from ros2inspector.static.source_kinds import CPP_SUFFIXES as _CPP_SUFFIXES
 
 _CPP_LANG = Language(tree_sitter_cpp.language())
 
@@ -75,9 +76,6 @@ def parse_cpp_nodes(
     _attach_out_of_class_calls(nodes, parsed, factory_patterns or [])
     _discover_direct_node_objects(nodes, parsed, package_name, factory_patterns or [])
     return nodes
-
-
-_CPP_SUFFIXES = frozenset((".cpp", ".cxx", ".cc", ".hpp", ".h"))
 
 
 def _iter_cpp_files(root: Path) -> Iterator[Path]:

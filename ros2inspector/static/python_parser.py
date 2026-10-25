@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
 from ros2inspector.discovery.file_walker import iter_package_files
 from ros2inspector.model.schemas import (
@@ -11,6 +12,7 @@ from ros2inspector.model.schemas import (
     NodeDefinition,
     QoSProfile,
 )
+from ros2inspector.static.python_source import read_python_tree, source_failure
 
 # (depth, reliability, durability) of the profiles shipped in rclpy.qos.
 _QOS_PRESETS = {
@@ -34,25 +36,81 @@ _CANONICAL_NODE_BASES = {
 }
 
 
-def parse_python_nodes(package_path: Path, package_name: str) -> list[NodeDefinition]:
-    nodes: list[NodeDefinition] = []
-    for py_file in iter_package_files(package_path, suffixes={".py"}):
-        try:
-            source = py_file.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(py_file))
-        except (SyntaxError, UnicodeDecodeError, OSError):
-            continue
-        visitor = _NodeVisitor(package_name, py_file)
-        visitor.visit(tree)
-        nodes.extend(visitor.nodes)
+def parse_python_nodes(
+    package_path: Path, package_name: str, diagnostics: list[dict[str, Any]] | None = None
+) -> list[NodeDefinition]:
+    errors = diagnostics if diagnostics is not None else []
+    sources: list[tuple[Path, str, ast.Module]] = []
+    for path in iter_package_files(package_path, suffixes={".py"}):
+        tree = read_python_tree(path, errors)
+        if tree is not None:
+            relative = path.relative_to(package_path).with_suffix("")
+            module = ".".join(relative.parts)
+            if module.endswith(".__init__"):
+                module = module[:-9]
+            sources.append((path, module, tree))
+    known: dict[str, NodeDefinition] = {}
+    results: dict[Path, list[NodeDefinition]] = {}
+    failed: set[Path] = set()
+    inherited_symbols: set[str] = set()
+    instantiated_symbols: set[str] = set()
+    # Each pass proves another level of package-local inheritance.
+    while True:
+        count = len(known)
+        for path, module, tree in sources:
+            if path in failed:
+                continue
+            visitor = _NodeVisitor(package_name, path, module, known)
+            try:
+                visitor.visit(tree)
+            except (RecursionError, MemoryError) as exc:
+                source_failure(path, exc, errors)
+                failed.add(path)
+                continue
+            results[path] = visitor.nodes
+            inherited_symbols.update(visitor.inherited_symbols)
+            instantiated_symbols.update(visitor.instantiated_symbols)
+            for note in visitor.unattributed:
+                diagnostic = {
+                    "severity": "warning",
+                    "code": "source_analysis_incomplete",
+                    "file": str(path),
+                    "message": note,
+                }
+                if diagnostic not in errors:
+                    errors.append(diagnostic)
+            for node in visitor.nodes:
+                if not node.analysis_incomplete:
+                    known[f"{module}.{node.source_symbol}"] = node
+        if len(known) == count:
+            break
+    nodes = []
+    for path, module, _ in sources:
+        for node in results.get(path, []):
+            symbol = f"{module}.{node.source_symbol}"
+            node.is_abstract = symbol in inherited_symbols and symbol not in instantiated_symbols
+            nodes.append(node)
     return nodes
 
 
 class _NodeVisitor(ast.NodeVisitor):
-    def __init__(self, package: str, file_path: Path) -> None:
+    def __init__(
+        self,
+        package: str,
+        file_path: Path,
+        module: str = "",
+        known: dict[str, NodeDefinition] | None = None,
+    ) -> None:
+        self.module = module
+        self._known = known if known is not None else {}
+        self._variables: dict[str, NodeDefinition] = {}
+        self._scope: list[str] = []
         self.package = package
         self.file_path = file_path
         self.nodes: list[NodeDefinition] = []
+        self.unattributed: list[str] = []
+        self.inherited_symbols: set[str] = set()
+        self.instantiated_symbols: set[str] = set()
         self._current_node: NodeDefinition | None = None
 
         # Local interface symbol -> canonical ``pkg/Type``.
@@ -80,6 +138,12 @@ class _NodeVisitor(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module
+        if node.level:
+            parts = self.module.split(".")
+            if self.file_path.name == "__init__.py":
+                parts.append("__init__")
+            parent = parts[: -node.level]
+            module = ".".join([*parent, *([module] if module else [])])
         if not module:
             self.generic_visit(node)
             return
@@ -107,8 +171,33 @@ class _NodeVisitor(ast.NodeVisitor):
 
         self.generic_visit(node)
 
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        previous = self._variables
+        self._variables = {}
+        self._scope.append(node.name)
+        self.generic_visit(node)
+        self._scope.pop()
+        self._variables = previous
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        if self._inherits_from_ros_node(node):
+        proven = self._inherits_from_ros_node(node)
+        endpoint_methods = {
+            "create_publisher",
+            "create_subscription",
+            "create_service",
+            "create_client",
+        }
+        relevant = any(
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Attribute)
+            and isinstance(expr.func.value, ast.Name)
+            and expr.func.value.id == "self"
+            and expr.func.attr in endpoint_methods
+            for expr in ast.walk(node)
+        )
+        if proven or (node.bases and relevant):
             prev_attrs = self._class_attrs
             prev_parameters = self._parameter_defaults
             prev_parameter_vars = self._parameter_vars
@@ -135,6 +224,33 @@ class _NodeVisitor(ast.NodeVisitor):
                 line=node.lineno,
                 source=DataSource.STATIC,
             )
+            if not proven:
+                nd.analysis_incomplete = True
+                nd.analysis_notes.append(
+                    "Cannot resolve node base: "
+                    + ", ".join(_get_attr_name(base) for base in node.bases)
+                )
+            for base in node.bases:
+                raw = self._canonical_name(_get_attr_name(base))
+                inherited = self._known.get(raw) or self._known.get(f"{self.module}.{raw}")
+                if inherited is not None:
+                    self.inherited_symbols.add(
+                        raw if raw in self._known else f"{self.module}.{raw}"
+                    )
+                    nd.declared_ros_name = inherited.declared_ros_name
+                    for field in (
+                        "publishers",
+                        "subscriptions",
+                        "services",
+                        "clients",
+                        "action_servers",
+                        "action_clients",
+                    ):
+                        setattr(
+                            nd,
+                            field,
+                            [ep.model_copy(deep=True) for ep in getattr(inherited, field)],
+                        )
             prev = self._current_node
             self._current_node = nd
             self.generic_visit(node)
@@ -148,6 +264,25 @@ class _NodeVisitor(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         """Track ``self.attr = 'literal'`` for resolvable communication names."""
+        if isinstance(node.value, ast.Call):
+            canonical = self._canonical_name(_get_attr_name(node.value.func))
+            if canonical in _CANONICAL_NODE_BASES | {"rclpy.create_node"}:
+                for target in node.targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    name = self._pick_name(node.value, 0, "node_name")
+                    definition = NodeDefinition(
+                        name=name if name != DYNAMIC_SENTINEL else target.id,
+                        source_symbol=".".join([*self._scope, target.id]),
+                        declared_ros_name=name,
+                        package=self.package,
+                        language="python",
+                        file_path=str(self.file_path),
+                        line=node.lineno,
+                        has_dynamic_names=name == DYNAMIC_SENTINEL,
+                    )
+                    self._variables[target.id] = definition
+                    self.nodes.append(definition)
         if self._current_node is not None:
             for target in node.targets:
                 key = None
@@ -172,7 +307,11 @@ class _NodeVisitor(ast.NodeVisitor):
             if raw in self._node_base_aliases:
                 return True
             canonical = self._canonical_name(raw)
-            if canonical in _CANONICAL_NODE_BASES:
+            if (
+                canonical in _CANONICAL_NODE_BASES
+                or canonical in self._known
+                or f"{self.module}.{canonical}" in self._known
+            ):
                 return True
         return False
 
@@ -342,6 +481,44 @@ class _NodeVisitor(ast.NodeVisitor):
         return profile
 
     def visit_Call(self, node: ast.Call) -> None:
+        canonical = self._canonical_name(_get_attr_name(node.func))
+        self.instantiated_symbols.add(
+            canonical if canonical in self._known else f"{self.module}.{canonical}"
+        )
+        previous = self._current_node
+        method = _get_attr_name(node.func).split(".")[-1]
+        receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+        if method in {"ActionServer", "ActionClient"} and node.args:
+            receiver = node.args[0]
+        if isinstance(receiver, ast.Name) and receiver.id in self._variables:
+            self._current_node = self._variables[receiver.id]
+        endpoint_call = (
+            method.startswith("create_")
+            and method
+            not in {"create_node", "create_timer", "create_rate", "create_guard_condition"}
+            or method in {"ActionServer", "ActionClient"}
+        )
+        if endpoint_call and not (
+            isinstance(receiver, ast.Name)
+            and (receiver.id in self._variables or receiver.id == "self" and previous is not None)
+        ):
+            self.unattributed.append(
+                "Cannot attribute endpoint receiver: " + ast.unparse(node.func)
+            )
+            for definition in self.nodes + ([previous] if previous is not None else []):
+                definition.analysis_incomplete = True
+                note = "Cannot attribute endpoint receiver: " + ast.unparse(node.func)
+                if note not in definition.analysis_notes:
+                    definition.analysis_notes.append(note)
+            self._current_node = previous
+            self.generic_visit(node)
+            return
+        try:
+            self._visit_node_call(node)
+        finally:
+            self._current_node = previous
+
+    def _visit_node_call(self, node: ast.Call) -> None:
         if self._current_node is None:
             self.generic_visit(node)
             return

@@ -227,6 +227,7 @@ def audit(
         sys.stdout.write(orjson.dumps(sarif, option=orjson.OPT_INDENT_2).decode() + "\n")
     elif fmt == AuditFormat.JSON:
         data = _build_data(violations, agg, summary_counts)
+        data["diagnostics"] = uam.diagnostics()
         sys.stdout.write(orjson.dumps(data, option=orjson.OPT_INDENT_2).decode() + "\n")
     else:
         data = _build_data(violations, agg, summary_counts)

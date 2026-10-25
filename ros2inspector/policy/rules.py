@@ -284,6 +284,11 @@ def rule_topic_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
     """Flag topics that have no publisher (orphan subscriber) or no subscriber (dead output)."""
+    if any(
+        d.get("code") in {"source_parse_failed", "source_analysis_incomplete"}
+        for d in uam.diagnostics()
+    ):
+        return []
     g = uam.graph
     source = cfg.get("_source", "policy")
     flag_no_pub: bool = cfg.get("no_publisher", True)
@@ -370,7 +375,7 @@ def rule_node_isolation(
         if attrs.get("kind") != "Node":
             continue
         node_name: str = attrs.get("name", "")
-        if attrs.get("analysis_incomplete"):
+        if attrs.get("analysis_incomplete") or attrs.get("is_abstract"):
             continue
         if skip_dynamic and attrs.get("has_dynamic_names"):
             continue
@@ -441,10 +446,9 @@ def rule_qos_compatibility(
                     and (requested.get("reliability") or "reliable") == "reliable"
                 ):
                     failures.append("reliability")
-                if (
-                    (offered.get("durability") or "volatile") == "volatile"
-                    and requested.get("durability") == "transient_local"
-                ):
+                if (offered.get("durability") or "volatile") == "volatile" and requested.get(
+                    "durability"
+                ) == "transient_local":
                     failures.append("durability")
                 for policy in ("deadline", "liveliness_lease_duration"):
                     offer = offered.get(policy)
@@ -481,6 +485,11 @@ def rule_service_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
     """Flag services with a provider/caller mismatch in either direction."""
+    if any(
+        d.get("code") in {"source_parse_failed", "source_analysis_incomplete"}
+        for d in uam.diagnostics()
+    ):
+        return []
     g = uam.graph
     source = cfg.get("_source", "policy")
     severity = _sev(cfg.get("severity", "info"))
@@ -534,6 +543,11 @@ def rule_action_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
     """Flag actions with a server/client mismatch in either direction."""
+    if any(
+        d.get("code") in {"source_parse_failed", "source_analysis_incomplete"}
+        for d in uam.diagnostics()
+    ):
+        return []
     g = uam.graph
     source = cfg.get("_source", "policy")
     severity = _sev(cfg.get("severity", "warning"))

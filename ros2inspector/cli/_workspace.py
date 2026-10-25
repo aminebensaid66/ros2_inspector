@@ -70,7 +70,15 @@ def build_uam_or_exit(
 ) -> UnifiedArchitectureModel:
     """Build the model and map user-actionable workspace failures to exit code 3."""
     try:
-        return build_uam(root, use_cache=use_cache, show_progress=show_progress)
+        model = build_uam(root, use_cache=use_cache, show_progress=show_progress)
+        for diagnostic in model.diagnostics():
+            if diagnostic.get("code") == "source_parse_failed":
+                _err_console.print(
+                    f"source_parse_failed: {diagnostic.get('file')}: {diagnostic.get('message')}",
+                    markup=False,
+                    soft_wrap=True,
+                )
+        return model
     except WorkspaceAnalysisError as exc:
         _exit_workspace_error(exc)
     except (OSError, ValueError, yaml.YAMLError) as exc:
