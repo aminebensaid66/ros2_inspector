@@ -275,6 +275,11 @@ rules:
 
 Supported rule types are `health_threshold`, `license`, `naming`, `dependency`, `no_circular_deps`, `topic_connectivity`, `node_isolation`, `service_connectivity`, `action_connectivity`, `qos_compatibility`, `maintainer_required`, and `version_not_default`.
 
+Policy keys and nested options are checked before analysis. Unknown keys include a spelling
+suggestion when available. Booleans must be YAML booleans, license allowlists must be lists of
+non-empty strings, and health thresholds must be integers from 0 to 100. Invalid configuration
+or unsupported file encoding returns exit code 2 with the rule, line and field named.
+
 ## CI integration
 
 ```yaml
