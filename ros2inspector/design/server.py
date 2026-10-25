@@ -31,7 +31,12 @@ from ros2inspector.design.codegen import (
     render_package,
     write_package,
 )
-from ros2inspector.design.models import DesignState, PackageSpec, known_interfaces_json
+from ros2inspector.design.models import (
+    DesignState,
+    PackageSpec,
+    known_interfaces_json,
+    name_length_errors,
+)
 from ros2inspector.design.ui import build_html
 
 STATE_FILE = ".ros2inspector_design.json"
@@ -449,6 +454,10 @@ def _make_handler(
         ) -> None:
             package_by_id = {package.id: package for package in packages}
             package_payloads: list[dict[str, Any]] = payload.get("packages", [])
+            too_long = name_length_errors(DesignState.model_validate(payload))
+            if too_long:
+                self._respond(422, {"error": "Validation failed", "fields": too_long})
+                return
             to_generate = [package for package in packages if package.nodes]
             # 1. Render and compile every package before touching the disk.
             try:

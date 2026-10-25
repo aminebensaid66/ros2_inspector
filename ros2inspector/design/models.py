@@ -315,5 +315,71 @@ class DesignState(BaseModel):
         return self
 
 
+# rcl rejects a fully qualified topic or service name longer than RMW_TOPIC_MAX_NAME_LENGTH
+# (255 - 8). An action creates its topics and services under the action name, and the longest
+# of them adds this suffix, so the action name itself must leave room for it. Both limits were
+# measured with rclpy on Jazzy (tests/integration/test_design_ros2_runtime.py).
+MAX_EXPANDED_NAME_LENGTH = 247
+_LONGEST_ACTION_SUFFIX = "/_action/cancel_goal"
+_ENDPOINT_ROLES = (
+    ("publishers", "a topic"),
+    ("subscribers", "a topic"),
+    ("services", "a service"),
+    ("clients", "a service"),
+    ("action_servers", "an action"),
+    ("action_clients", "an action"),
+)
+
+
+def expanded_endpoint_name(name: str, node_label: str) -> str:
+    """The fully qualified name of a generated node's endpoint.
+
+    The generated launch file starts every node in the root namespace under its own label, so
+    a relative name resolves under ``/`` and a private ``~/`` name under ``/<label>``.
+    """
+    if name.startswith("/"):
+        return name
+    if name.startswith("~/"):
+        return f"/{node_label}/{name[2:]}"
+    return f"/{name}"
+
+
+def name_length_errors(state: DesignState) -> list[dict[str, str]]:
+    """Endpoint names that ROS 2 would reject at startup because they are too long.
+
+    Returned in the field-error form of a validation response, so the designer shows each
+    one on the offending field.
+    """
+    errors = []
+    for package_index, package in enumerate(state.packages):
+        for node_index, node in enumerate(package.nodes):
+            for group, what in _ENDPOINT_ROLES:
+                for index, endpoint in enumerate(getattr(node, group)):
+                    expanded = expanded_endpoint_name(endpoint.name, node.label)
+                    limit = MAX_EXPANDED_NAME_LENGTH
+                    if group.startswith("action_"):
+                        limit -= len(_LONGEST_ACTION_SUFFIX)
+                    if len(expanded) <= limit:
+                        continue
+                    reason = (
+                        f", because ROS adds '{_LONGEST_ACTION_SUFFIX}' to it"
+                        if group.startswith("action_")
+                        else ""
+                    )
+                    errors.append(
+                        {
+                            "path": f"packages.{package_index}.nodes.{node_index}."
+                            f"{group}.{index}.name",
+                            "message": (
+                                f"is {len(expanded)} characters once expanded; ROS 2 accepts "
+                                f"at most {limit} for {what} name{reason}. Shorten it by "
+                                f"{len(expanded) - limit}."
+                            ),
+                            "type": "name_too_long",
+                        }
+                    )
+    return errors
+
+
 def known_interfaces_json() -> dict[str, Any]:
     return {kind: list(names) for kind, names in KNOWN_INTERFACES.items()}

@@ -253,3 +253,40 @@ def test_console_scripts_are_appended_without_touching_the_rest(source: str) -> 
         return "".join(text.replace(",", "").split())
 
     assert tokens(updated.replace("'b = p.b:main'", "")) == tokens(source)
+
+
+# ── #48: names ROS would reject at startup are refused on the field ────────────────
+
+
+@pytest.mark.parametrize(
+    "group, name, ok",
+    [
+        ("publishers", "/" + "a" * 246, True),
+        ("publishers", "/" + "a" * 247, False),
+        ("publishers", "a" * 246, True),
+        ("publishers", "~/" + "a" * (247 - len("/talker/")), True),
+        ("publishers", "~/" + "a" * (248 - len("/talker/")), False),
+        ("services", "/" + "a" * 247, False),
+        ("action_servers", "/" + "a" * 226, True),
+        ("action_servers", "/" + "a" * 227, False),
+        ("action_clients", "/" + "a" * 239, False),
+    ],
+)
+def test_overlong_expanded_names_are_rejected_on_the_field(
+    server: Any, group: str, name: str, ok: bool
+) -> None:
+    httpd, out = server
+    node = _node()
+    msg_type = {"publishers": "std_msgs/String", "services": "std_srvs/Trigger"}.get(
+        group, "example_interfaces/Fibonacci"
+    )
+    node["publishers"] = []
+    node[group] = [{"id": "e1", "name": name, "msgType": msg_type}]
+    status, data = _post(httpd, "/generate", _state(_pkg(nodes=[node])))
+    if ok:
+        assert status == 200, data
+        return
+    assert status == 422
+    assert data["fields"][0]["path"] == f"packages.0.nodes.0.{group}.0.name"
+    assert "ROS 2 accepts at most" in data["fields"][0]["message"]
+    assert not (out / "demo_pkg").exists()

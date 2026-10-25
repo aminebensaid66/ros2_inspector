@@ -194,6 +194,10 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   border-radius:8px;color:#fecaca;padding:6px 14px;font-size:12px;font-weight:600;
   cursor:pointer;white-space:nowrap}
 .btn-warn:hover{background:rgba(248,113,113,.26)}
+
+/* field errors in the node inspector */
+.sinp.bad,.ssel.bad{border-color:#f87171;background:rgba(248,113,113,.08)}
+.ferr{color:#f87171;font-size:11px;line-height:1.45;margin:0 0 6px 12px;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -285,6 +289,17 @@ const PN  = document.getElementById('pn');
 const TOAST = document.getElementById('toast');
 const BANNER = document.getElementById('banner');
 
+// Endpoint field errors from the server (or the length check), shown in the inspector.
+// Keyed by package id, node id, endpoint group and endpoint id.
+const FERR={};
+function ferrKey(pid,nid,group,eid){ return [pid,nid,group,eid].join('|'); }
+function ferrFor(group,eid){
+  const p=pkg(); return p&&S.sel ? FERR[ferrKey(p.id,S.sel,group,eid)] : undefined;
+}
+function ferrHTML(group,eid){
+  const msg=ferrFor(group,eid);
+  return msg?`<div class="ferr" role="alert">Name ${esc(msg)}</div>`:'';
+}
 
 // ── view (pan) ─────────────────────────────────────────────────────────────
 // Node x/y are world coordinates; the screen shows the world shifted by VIEW.
@@ -694,16 +709,19 @@ function renderSB(){
 
 function tHTML(topics,side){
   const col=side==='pub'?'#22d3ee':'#a78bfa';
+  const group=side==='pub'?'publishers':'subscribers';
   if(!topics.length) return '<p style="color:#7c8aa0;font-size:12px;font-style:italic">None yet</p>';
   return topics.map(t=>`
     <div class="tc">
       <div class="tcr">
         <span class="tdot" style="background:${col}"></span>
-        <input class="sinp" style="flex:1;padding:4px 8px;font-size:11px"
+        <input class="sinp${ferrFor(group,t.id)?' bad':''}" style="flex:1;padding:4px 8px;font-size:11px"
+          data-ep="${esc(group+'|'+t.id)}"
           value="${esc(t.name)}" spellcheck="false"
           onchange="updT(${jsa(side)},${jsa(t.id)},'name',this.value)" placeholder="/topic">
         <button class="trem" onclick="remT(${jsa(side)},${jsa(t.id)})">×</button>
       </div>
+      ${ferrHTML(group,t.id)}
       <input class="ssel" list="dl-msg" value="${esc(t.msgType)}" spellcheck="false"
         placeholder="pkg/Type" title="Pick a type or type any pkg/Type"
         onchange="updT(${jsa(side)},${jsa(t.id)},'msgType',this.value)">
@@ -729,11 +747,13 @@ function endpointHTML(kind,endpoints,typeList,color){
     <div class="tc">
       <div class="tcr">
         <span class="tdot" style="background:${color}"></span>
-        <input class="sinp" style="flex:1;padding:4px 8px;font-size:11px"
+        <input class="sinp${ferrFor(kind,t.id)?' bad':''}" style="flex:1;padding:4px 8px;font-size:11px"
+          data-ep="${esc(kind+'|'+t.id)}"
           value="${esc(t.name)}" spellcheck="false"
           onchange="updEndpoint(${jsa(kind)},${jsa(t.id)},'name',this.value)" placeholder="/name">
         <button class="trem" onclick="remEndpoint(${jsa(kind)},${jsa(t.id)})">×</button>
       </div>
+      ${ferrHTML(kind,t.id)}
       <input class="ssel" list="${typeList===ACTIONS?'dl-action':'dl-srv'}" value="${esc(t.msgType)}"
         spellcheck="false" placeholder="pkg/Type" title="Pick a type or type any pkg/Type"
         onchange="updEndpoint(${jsa(kind)},${jsa(t.id)},'msgType',this.value)">
@@ -848,15 +868,17 @@ function updT(side,tid,field,value){
   const t=arr.find(x=>x.id===tid);
   if(!t) return;
   t[field]=value;
+  if(field==='name') checkName(side==='pub'?'publishers':'subscribers',nd,t);
   if(side==='pub'){
     // A wire means "same topic": keep the subscribers it feeds in step with the publisher.
     for(const e of p.edges.filter(x=>x.fn===nd.id&&x.ft===tid)){
       const tn=p.nodes.find(n=>n.id===e.tn);
       const sub=tn&&tn.subscribers.find(x=>x.id===e.tt);
-      if(sub) sub[field]=value;
+      if(sub){ sub[field]=value; if(field==='name') checkName('subscribers',tn,sub); }
     }
   }
   renderAll();
+  if(field==='name') renderSB();
 }
 
 function addEndpoint(kind){
@@ -881,7 +903,37 @@ function updEndpoint(kind,id,field,value){
   const p=pkg(); if(!p) return;
   const nd=p.nodes.find(n=>n.id===S.sel); if(!nd) return;
   const endpoint=(nd[kind]||[]).find(x=>x.id===id);
-  if(endpoint){ endpoint[field]=value; renderAll(); }
+  if(endpoint){
+    endpoint[field]=value;
+    if(field==='name'){ checkName(kind,nd,endpoint); }
+    renderAll();
+    if(field==='name') renderSB();
+  }
+}
+
+// ROS 2 rejects a fully qualified name over 247 characters at startup; an action also
+// needs room for '/_action/cancel_goal'. Same rule as the server, checked as you type so
+// the problem shows on the field instead of after Generate.
+const MAX_NAME=247, ACTION_SUFFIX='/_action/cancel_goal';
+function expandedName(name,label){
+  if(name.startsWith('/')) return name;
+  if(name.startsWith('~/')) return '/'+label+'/'+name.slice(2);
+  return '/'+name;
+}
+function nameLengthError(group,name,label){
+  const action=group.startsWith('action_');
+  const limit=MAX_NAME-(action?ACTION_SUFFIX.length:0);
+  const len=expandedName(String(name),label).length;
+  if(len<=limit) return null;
+  const what={publishers:'a topic',subscribers:'a topic',services:'a service',clients:'a service'}[group]||'an action';
+  return `is ${len} characters once expanded; ROS 2 accepts at most ${limit} for ${what} name`
+    +(action?`, because ROS adds '${ACTION_SUFFIX}' to it`:'')+`. Shorten it by ${len-limit}.`;
+}
+function checkName(group,nd,endpoint){
+  const p=pkg(); if(!p) return;
+  const key=ferrKey(p.id,nd.id,group,endpoint.id);
+  const msg=nameLengthError(group,endpoint.name,nd.label);
+  if(msg) FERR[key]=msg; else delete FERR[key];
 }
 
 // ── node drag ─────────────────────────────────────────────────────────────
@@ -1043,6 +1095,24 @@ function exportDesign(){
 document.getElementById('bexp').addEventListener('click',exportDesign);
 document.getElementById('bretry').addEventListener('click',()=>saveState());
 
+// Show server field errors on their fields: open the node and mark the input.
+function applyFieldErrors(data,state){
+  let first=null;
+  for(const f of (data&&data.fields)||[]){
+    const m=/^packages\.(\d+)\.nodes\.(\d+)\.(\w+)\.(\d+)\.name$/.exec(String(f.path));
+    if(!m) continue;
+    const p=state.packages[Number(m[1])], nd=p&&p.nodes[Number(m[2])];
+    const ep=nd&&(nd[m[3]]||[])[Number(m[4])];
+    if(!ep) continue;
+    FERR[ferrKey(p.id,nd.id,m[3],ep.id)]=f.message;
+    if(!first) first={pid:p.id,nid:nd.id,key:m[3]+'|'+ep.id};
+  }
+  if(!first) return;
+  if(S.activePkg!==first.pid) switchPkg(first.pid);
+  S.sel=first.nid; renderAll(); renderSB();
+  const input=[...SB.querySelectorAll('[data-ep]')].find(x=>x.dataset.ep===first.key);
+  if(input){ input.scrollIntoView({block:'center'}); input.focus(); }
+}
 
 // ── server errors ─────────────────────────────────────────────────────────
 // Turn "packages.0.nodes.1.label" into "my_package › talker › label".
@@ -1124,6 +1194,7 @@ GB.addEventListener('click',async()=>{
     const data=await res.json().catch(()=>({error:`HTTP ${res.status}`}));
     if(res.ok){
       const saved=data.state_saved!==false;
+      for(const key of Object.keys(FERR)) delete FERR[key];
       if(saved){ markSaved(); hideSaveProblem(); }
       else showSaveProblem(data.state_error||'unknown error',true);
       const kept=data.kept_modified||[], renamedIn=data.renamed_in||[];
@@ -1139,6 +1210,7 @@ GB.addEventListener('click',async()=>{
       else showToast((warnings.length?'⚠ ':'✓ ')+msg, warnings.length?'warn':'ok');
     } else {
       if(data.state_saved===false) showSaveProblem(data.state_error||'unknown error',true);
+      if(res.status===422) applyFieldErrors(data,payload);
       showToast(`✗ ${errorText(data,payload)}`,'err');
     }
   }catch(err){

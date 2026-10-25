@@ -672,3 +672,40 @@ def test_rename_conflict_is_refused_with_an_actionable_message(
     page.locator("#toast").click()
     expect(page.locator("#toast.show")).to_have_count(0)
     assert module.read_text().endswith("# mine\n")
+
+
+def test_overlong_names_are_flagged_on_the_field(
+    page: Page, designer: dict[str, Any], shot: Any
+) -> None:
+    _open(page, designer)
+    page.locator(".node").first.click()
+    _set_field(page, "#spubs .sinp", "/" + "a" * 247)
+    error = page.locator("#spubs .ferr")
+    expect(error).to_contain_text("is 248 characters once expanded")
+    expect(error).to_contain_text("Shorten it by 1")
+    expect(page.locator("#spubs .sinp")).to_have_class("sinp bad")
+    shot(page, "designer-10-name-too-long")
+    page.click("#gb")
+    assert "at most 247 for a topic name" in _toast(page, "err")
+    assert not (designer["out"] / "my_package").exists()
+    _set_field(page, "#spubs .sinp", "/" + "a" * 246)
+    expect(page.locator("#spubs .ferr")).to_have_count(0)
+
+
+def test_server_length_errors_open_the_node_and_mark_the_field(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.locator(".node").first.click()
+    # Exactly at the limit under 'camera_node'; a longer node name pushes it over.
+    _set_field(page, "#spubs .sinp", "~/" + "a" * (247 - len("/camera_node/")))
+    expect(page.locator("#spubs .ferr")).to_have_count(0)
+    page.locator("#snm").fill("camera_node_longer")
+    page.keyboard.press("Escape")
+    expect(page.locator("#sb")).to_have_class("h")
+    page.click("#gb")
+    _toast(page, "err")
+    expect(page.locator("#sb")).not_to_have_class("h")
+    expect(page.locator("#snm")).to_have_value("camera_node_longer")
+    expect(page.locator("#spubs .ferr")).to_contain_text("Shorten it by 7")
+    expect(page.locator("#spubs .sinp")).to_be_focused()

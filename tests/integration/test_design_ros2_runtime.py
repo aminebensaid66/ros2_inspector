@@ -233,3 +233,63 @@ def test_edited_package_still_builds_and_launches_after_rename_and_new_node(
         except subprocess.TimeoutExpired:
             os.killpg(launch.pid, signal.SIGKILL)
             launch.wait(timeout=5)
+
+
+@pytest.mark.requires_ros2
+@pytest.mark.parametrize("role", ["publisher", "service", "action_server", "action_client"])
+def test_name_length_limits_match_rclpy(role: str) -> None:
+    rclpy = pytest.importorskip("rclpy")
+    from rclpy.action import ActionClient, ActionServer
+    from rclpy.context import Context
+    from std_msgs.msg import String
+    from std_srvs.srv import Trigger
+
+    action = pytest.importorskip("example_interfaces.action")
+    from ros2inspector.design.models import DesignState, name_length_errors
+
+    group = {
+        "publisher": "publishers",
+        "service": "services",
+        "action_server": "action_servers",
+        "action_client": "action_clients",
+    }[role]
+    msg_type = {"publishers": "std_msgs/String", "services": "std_srvs/Trigger"}.get(
+        group, "example_interfaces/Fibonacci"
+    )
+    context = Context()
+    rclpy.init(context=context)
+    node = rclpy.create_node("limits", context=context)
+    create = {
+        "publisher": lambda name: node.create_publisher(String, name, 1),
+        "service": lambda name: node.create_service(Trigger, name, lambda req, res: res),
+        "action_server": lambda name: ActionServer(node, action.Fibonacci, name, lambda g: None),
+        "action_client": lambda name: ActionClient(node, action.Fibonacci, name),
+    }[role]
+    try:
+        for length in range(200, 250):
+            name = "/" + "a" * (length - 1)
+            state = DesignState.model_validate(
+                {
+                    "packages": [
+                        {
+                            "pkg_name": "limits_pkg",
+                            "nodes": [
+                                {
+                                    "id": "n1",
+                                    "label": "limits",
+                                    group: [{"id": "e1", "name": name, "msgType": msg_type}],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+            try:
+                create(name)
+                accepted = True
+            except Exception:
+                accepted = False
+            assert accepted == (not name_length_errors(state)), (role, length)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown(context=context)
