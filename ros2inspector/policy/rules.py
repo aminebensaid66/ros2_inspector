@@ -280,15 +280,47 @@ _DEFAULT_SYSTEM_TOPICS: frozenset[str] = frozenset(
 )
 
 
+def _unattributed_endpoints(
+    uam: UnifiedArchitectureModel, kind: str
+) -> list[tuple[str, str | None]]:
+    """(relation, literal name or None) of endpoint calls the parser could not attach to a node."""
+    return [
+        (str(d.get("endpoint_rel")), d.get("endpoint_name"))
+        for d in uam.diagnostics()
+        if d.get("code") == "source_analysis_incomplete" and d.get("endpoint_kind") == kind
+    ]
+
+
+def _could_be(endpoints: list[tuple[str, str | None]], rel: str, name: str) -> bool:
+    """Whether an unattributed endpoint with relation *rel* could resolve to *name*."""
+    for endpoint_rel, raw in endpoints:
+        if endpoint_rel != rel:
+            continue
+        if raw is None:
+            return True
+        if raw.startswith("/"):
+            if raw == name:
+                return True
+        # A relative or private name resolves under a namespace the parser does not know.
+        elif name.endswith("/" + raw.lstrip("~/")):
+            return True
+    return False
+
+
+def _parse_gap_note(uam: UnifiedArchitectureModel) -> str:
+    """Suffix for missing-peer findings when some source files could not be parsed."""
+    failed = {d.get("file") for d in uam.diagnostics() if d.get("code") == "source_parse_failed"}
+    if not failed:
+        return ""
+    return f"; {len(failed)} source file(s) could not be parsed, so a peer there was not seen"
+
+
 def rule_topic_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
     """Flag topics that have no publisher (orphan subscriber) or no subscriber (dead output)."""
-    if any(
-        d.get("code") in {"source_parse_failed", "source_analysis_incomplete"}
-        for d in uam.diagnostics()
-    ):
-        return []
+    unattributed = _unattributed_endpoints(uam, "topic")
+    gap = _parse_gap_note(uam)
     g = uam.graph
     source = cfg.get("_source", "policy")
     flag_no_pub: bool = cfg.get("no_publisher", True)
@@ -318,8 +350,12 @@ def rule_topic_connectivity(
         definite = [item for item in in_edges if item[2].get("resolution", "known") == "known"]
         if not definite and in_edges:
             continue
-        possible_publishers = any(d.get("rel") == "publishes" for _, _, d in in_edges)
-        possible_subscribers = any(d.get("rel") == "subscribes" for _, _, d in in_edges)
+        possible_publishers = any(d.get("rel") == "publishes" for _, _, d in in_edges) or _could_be(
+            unattributed, "publishes", topic_name
+        )
+        possible_subscribers = any(
+            d.get("rel") == "subscribes" for _, _, d in in_edges
+        ) or _could_be(unattributed, "subscribes", topic_name)
         in_edges = definite
         pub_nodes = [
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "publishes"
@@ -335,7 +371,7 @@ def rule_topic_connectivity(
                     rule_type="topic_connectivity",
                     message=(
                         f"Topic '{topic_name}' has no publisher "
-                        f"(subscribed by: {', '.join(sub_nodes)})"
+                        f"(subscribed by: {', '.join(sub_nodes)}{gap})"
                     ),
                     policy_file=source,
                     affected_entities=[topic_name],
@@ -349,7 +385,7 @@ def rule_topic_connectivity(
                     rule_type="topic_connectivity",
                     message=(
                         f"Topic '{topic_name}' has no subscribers "
-                        f"(published by: {', '.join(pub_nodes)})"
+                        f"(published by: {', '.join(pub_nodes)}{gap})"
                     ),
                     policy_file=source,
                     affected_entities=[topic_name],
@@ -485,11 +521,8 @@ def rule_service_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
     """Flag services with a provider/caller mismatch in either direction."""
-    if any(
-        d.get("code") in {"source_parse_failed", "source_analysis_incomplete"}
-        for d in uam.diagnostics()
-    ):
-        return []
+    unattributed = _unattributed_endpoints(uam, "service")
+    gap = _parse_gap_note(uam)
     g = uam.graph
     source = cfg.get("_source", "policy")
     severity = _sev(cfg.get("severity", "info"))
@@ -503,8 +536,12 @@ def rule_service_connectivity(
             continue
         svc_name: str = attrs.get("name", "")
         in_edges = list(g.in_edges(nid, data=True))
-        possible_provider = any(d.get("rel") == "provides" for _, _, d in in_edges)
-        possible_caller = any(d.get("rel") == "calls" for _, _, d in in_edges)
+        possible_provider = any(d.get("rel") == "provides" for _, _, d in in_edges) or _could_be(
+            unattributed, "provides", svc_name
+        )
+        possible_caller = any(d.get("rel") == "calls" for _, _, d in in_edges) or _could_be(
+            unattributed, "calls", svc_name
+        )
         in_edges = [e for e in in_edges if e[2].get("resolution", "known") == "known"]
         providers = [
             g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "provides"
@@ -516,7 +553,8 @@ def rule_service_connectivity(
                     severity=severity,
                     rule_type="service_connectivity",
                     message=(
-                        f"Service '{svc_name}' has no callers (provided by: {', '.join(providers)})"
+                        f"Service '{svc_name}' has no callers "
+                        f"(provided by: {', '.join(providers)}{gap})"
                     ),
                     policy_file=source,
                     affected_entities=[svc_name],
@@ -529,7 +567,7 @@ def rule_service_connectivity(
                     rule_type="service_connectivity",
                     message=(
                         f"Service '{svc_name}' has callers but no provider "
-                        f"(called by: {', '.join(callers)})"
+                        f"(called by: {', '.join(callers)}{gap})"
                     ),
                     policy_file=source,
                     affected_entities=[svc_name],
@@ -543,11 +581,8 @@ def rule_action_connectivity(
     uam: UnifiedArchitectureModel, cfg: dict[str, Any]
 ) -> list[PolicyViolation]:
     """Flag actions with a server/client mismatch in either direction."""
-    if any(
-        d.get("code") in {"source_parse_failed", "source_analysis_incomplete"}
-        for d in uam.diagnostics()
-    ):
-        return []
+    unattributed = _unattributed_endpoints(uam, "action")
+    gap = _parse_gap_note(uam)
     g = uam.graph
     source = cfg.get("_source", "policy")
     severity = _sev(cfg.get("severity", "warning"))
@@ -564,8 +599,12 @@ def rule_action_connectivity(
         definite = [item for item in in_edges if item[2].get("resolution", "known") == "known"]
         if not definite and in_edges:
             continue
-        possible_server = any(d.get("rel") == "provides" for _, _, d in in_edges)
-        possible_client = any(d.get("rel") == "calls" for _, _, d in in_edges)
+        possible_server = any(d.get("rel") == "provides" for _, _, d in in_edges) or _could_be(
+            unattributed, "provides", action_name
+        )
+        possible_client = any(d.get("rel") == "calls" for _, _, d in in_edges) or _could_be(
+            unattributed, "calls", action_name
+        )
         in_edges = definite
         servers = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "provides"]
         clients = [g.nodes[s].get("name", s) for s, _, d in in_edges if d.get("rel") == "calls"]
@@ -575,7 +614,7 @@ def rule_action_connectivity(
                     severity=severity,
                     rule_type="action_connectivity",
                     message=(
-                        f"Action '{action_name}' has no clients (server: {', '.join(servers)})"
+                        f"Action '{action_name}' has no clients (server: {', '.join(servers)}{gap})"
                     ),
                     policy_file=source,
                     affected_entities=[action_name],
@@ -588,7 +627,7 @@ def rule_action_connectivity(
                     rule_type="action_connectivity",
                     message=(
                         f"Action '{action_name}' has clients but no server "
-                        f"(clients: {', '.join(clients)})"
+                        f"(clients: {', '.join(clients)}{gap})"
                     ),
                     policy_file=source,
                     affected_entities=[action_name],

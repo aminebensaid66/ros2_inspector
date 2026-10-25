@@ -29,6 +29,15 @@ _QOS_PRESETS = {
 }
 
 _IFACE_MARKERS = ("msg", "srv", "action")
+# Endpoint factories: (communication kind, graph relation, name argument position, keyword).
+_ENDPOINT_FACTORIES = {
+    "create_publisher": ("topic", "publishes", 1, "topic"),
+    "create_subscription": ("topic", "subscribes", 1, "topic"),
+    "create_service": ("service", "provides", 1, "srv_name"),
+    "create_client": ("service", "calls", 1, "srv_name"),
+    "ActionServer": ("action", "provides", 2, "action_name"),
+    "ActionClient": ("action", "calls", 2, "action_name"),
+}
 _CANONICAL_NODE_BASES = {
     "rclpy.node.Node",
     "rclpy.lifecycle.LifecycleNode",
@@ -70,12 +79,12 @@ def parse_python_nodes(
             results[path] = visitor.nodes
             inherited_symbols.update(visitor.inherited_symbols)
             instantiated_symbols.update(visitor.instantiated_symbols)
-            for note in visitor.unattributed:
+            for item in visitor.unattributed:
                 diagnostic = {
                     "severity": "warning",
                     "code": "source_analysis_incomplete",
                     "file": str(path),
-                    "message": note,
+                    **item,
                 }
                 if diagnostic not in errors:
                     errors.append(diagnostic)
@@ -108,7 +117,7 @@ class _NodeVisitor(ast.NodeVisitor):
         self.package = package
         self.file_path = file_path
         self.nodes: list[NodeDefinition] = []
-        self.unattributed: list[str] = []
+        self.unattributed: list[dict[str, Any]] = []
         self.inherited_symbols: set[str] = set()
         self.instantiated_symbols: set[str] = set()
         self._current_node: NodeDefinition | None = None
@@ -492,18 +501,33 @@ class _NodeVisitor(ast.NodeVisitor):
             receiver = node.args[0]
         if isinstance(receiver, ast.Name) and receiver.id in self._variables:
             self._current_node = self._variables[receiver.id]
-        endpoint_call = (
-            method.startswith("create_")
-            and method
-            not in {"create_node", "create_timer", "create_rate", "create_guard_condition"}
-            or method in {"ActionServer", "ActionClient"}
-        )
-        if endpoint_call and not (
-            isinstance(receiver, ast.Name)
-            and (receiver.id in self._variables or receiver.id == "self" and previous is not None)
+        factory = _ENDPOINT_FACTORIES.get(method)
+        name_arg: ast.expr | None = None
+        if factory is not None:
+            position, keyword = factory[2], factory[3]
+            name_arg = node.args[position] if len(node.args) > position else None
+            for kw in node.keywords:
+                if kw.arg == keyword:
+                    name_arg = kw.value
+        # Without a name argument the call is not a ROS endpoint (e.g. a cloud SDK's create_client).
+        if (
+            factory is not None
+            and name_arg is not None
+            and not (
+                isinstance(receiver, ast.Name)
+                and (
+                    receiver.id in self._variables or receiver.id == "self" and previous is not None
+                )
+            )
         ):
+            literal = name_arg.value if isinstance(name_arg, ast.Constant) else None
             self.unattributed.append(
-                "Cannot attribute endpoint receiver: " + ast.unparse(node.func)
+                {
+                    "message": "Cannot attribute endpoint receiver: " + ast.unparse(node.func),
+                    "endpoint_kind": factory[0],
+                    "endpoint_rel": factory[1],
+                    "endpoint_name": literal if isinstance(literal, str) else None,
+                }
             )
             for definition in self.nodes + ([previous] if previous is not None else []):
                 definition.analysis_incomplete = True

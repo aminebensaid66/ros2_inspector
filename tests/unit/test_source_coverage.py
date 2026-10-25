@@ -57,7 +57,48 @@ def test_source_failure_keeps_other_nodes_and_cached_diagnostic(tmp_path: Path, 
     audit = CliRunner().invoke(app, ["audit", str(tmp_path), "-f", "json", "--no-cache"])
     report = json.loads(audit.stdout)
     assert any(d["code"] == "source_parse_failed" for d in report["diagnostics"])
-    assert not any(f["rule_type"] == "topic_connectivity" for f in report["findings"])
+    # An unreadable file must not switch the check off; the finding says what was not seen.
+    [finding] = [f for f in report["findings"] if f["rule_type"] == "topic_connectivity"]
+    assert "/chatter" in finding["message"]
+    assert "1 source file(s) could not be parsed" in finding["message"]
+
+
+def _connectivity(root: Path) -> list[str]:
+    audit = CliRunner().invoke(app, ["audit", str(root), "-f", "json", "--no-cache"])
+    report = json.loads(audit.stdout)
+    return sorted(
+        f["message"].split(" (")[0]
+        for f in report["findings"]
+        if f["rule_type"].endswith("_connectivity")
+    )
+
+
+def test_unrelated_create_calls_keep_connectivity_findings(tmp_path: Path) -> None:
+    module = _package(tmp_path)
+    (module / "good.py").write_text(_NODE)
+    (module / "util.py").write_text(
+        "import asyncio\nimport boto3\n"
+        "def go(loop):\n    return loop.create_task(asyncio.sleep(1))\n"
+        "def s3():\n    return boto3.session.Session().create_client('s3')\n"
+    )
+    assert _connectivity(tmp_path) == ["Topic '/chatter' has no subscribers"]
+
+
+def test_unattributed_endpoint_hides_only_the_peer_it_could_be(tmp_path: Path) -> None:
+    module = _package(tmp_path)
+    (module / "good.py").write_text(
+        _NODE + "  self.create_publisher(String, '/status', 10)\n"
+        "  self.create_subscription(String, '/cmd', print, 10)\n"
+    )
+    (module / "helper.py").write_text(
+        "from std_msgs.msg import String\nclass Helper:\n def __init__(self, node, topic):\n"
+        "  self.node = node\n"
+        "  self.node.create_subscription(String, 'chatter', print, 10)\n"
+        "  self.node.create_publisher(String, topic, 10)\n"
+    )
+    # 'chatter' may be /chatter's subscriber, and the dynamic publisher may feed /cmd;
+    # nothing could subscribe to /status.
+    assert _connectivity(tmp_path) == ["Topic '/status' has no subscribers"]
 
 
 def test_encoding_cookie_applies_to_nodes_launch_and_setup(tmp_path: Path) -> None:
