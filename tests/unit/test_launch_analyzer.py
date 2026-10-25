@@ -16,7 +16,7 @@ def test_python_launch_nodes():
 def test_python_launch_remaps():
     graph = analyze_launch_file(FIXTURE_DIR / "bringup.launch.py")
     talker = next(n for n in graph.nodes if n.name == "talker_node")
-    assert talker.remaps.get("/chatter") == "/my_chatter"
+    assert ("/chatter", "/my_chatter") in talker.remaps
 
 
 def test_python_launch_namespace():
@@ -64,7 +64,7 @@ def test_dynamic_include_paths_preserve_literal_evidence(tmp_path: Path):
 def test_xml_launch_remaps():
     graph = analyze_launch_file(FIXTURE_DIR / "bringup.launch.xml")
     talker = next(n for n in graph.nodes if n.name == "talker_node")
-    assert talker.remaps.get("/chatter") == "/my_chatter"
+    assert ("/chatter", "/my_chatter") in talker.remaps
 
 
 def test_yaml_launch_uses_ros_frontend_keys_and_metadata(tmp_path: Path):
@@ -90,5 +90,5 @@ def test_yaml_launch_uses_ros_frontend_keys_and_metadata(tmp_path: Path):
     assert node.executable == "mimic"
     assert node.name == "mimic"
     assert node.namespace == "robot1"
-    assert node.remaps == {"/input/pose": "/robot1/pose"}
+    assert node.remaps == [("/input/pose", "/robot1/pose")]
     assert graph.includes[0].target_file == "other.launch.yaml"

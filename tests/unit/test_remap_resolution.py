@@ -39,10 +39,10 @@ def test_remap_matrix_matches_ros_names(tmp_path: Path, case: dict[str, str]) ->
 def test_remap_rules_apply_only_to_their_kind_and_node(
     name: str, key: str, kind: str, expected: str
 ) -> None:
-    assert resolve_endpoint_name(name, {key: "out"}, "robot", "talker", kind) == expected
+    assert resolve_endpoint_name(name, [(key, "out")], "robot", "talker", kind) == expected
 
 
 def test_unknown_namespace_keeps_absolute_names_and_hides_relative_ones() -> None:
-    assert resolve_endpoint_name("/chatter", {}, DYNAMIC_SENTINEL, "talker") == "/chatter"
-    assert resolve_endpoint_name("chatter", {}, DYNAMIC_SENTINEL, "talker") == DYNAMIC_SENTINEL
-    assert resolve_endpoint_name("~/x", {}, "robot", DYNAMIC_SENTINEL) == DYNAMIC_SENTINEL
+    assert resolve_endpoint_name("/chatter", [], DYNAMIC_SENTINEL, "talker") == "/chatter"
+    assert resolve_endpoint_name("chatter", [], DYNAMIC_SENTINEL, "talker") == DYNAMIC_SENTINEL
+    assert resolve_endpoint_name("~/x", [], "robot", DYNAMIC_SENTINEL) == DYNAMIC_SENTINEL
