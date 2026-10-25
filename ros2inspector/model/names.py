@@ -72,6 +72,13 @@ def resolve_endpoint_name(
         return expanded
     short_name = _short_name(node_name)
     for key, replacement in remaps:
+        qualifier, separator, remainder = key.partition(":")
+        if separator and not remainder.startswith("//"):
+            if short_name is None:
+                return DYNAMIC_SENTINEL
+            if qualifier != short_name:
+                continue
+            key = remainder
         if key.startswith("rostopic://"):
             if kind not in {"Topic", "Action"}:
                 continue
@@ -80,12 +87,6 @@ def resolve_endpoint_name(
             if kind not in {"Service", "Action"}:
                 continue
             key = key.removeprefix("rosservice://")
-        elif ":" in key:
-            qualifier, _, key = key.partition(":")
-            if short_name is None:
-                return DYNAMIC_SENTINEL
-            if qualifier != short_name:
-                continue
         match = _expand(key, namespace, node_name)
         if match == DYNAMIC_SENTINEL:
             return DYNAMIC_SENTINEL

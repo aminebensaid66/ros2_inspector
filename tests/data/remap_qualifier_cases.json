@@ -1,0 +1,422 @@
+[
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "/robot/chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "/robot/chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "/robot/chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "~/x",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "~/x",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "~/x",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "/robot/talker/x",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "/robot/talker/x",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "/robot/talker/x",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "talker:chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "talker:chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "talker:chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "talker:rostopic://chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "talker:rostopic://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "talker:rostopic://chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "talker:rosservice://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "talker:rosservice://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "talker:rosservice://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "other:rostopic://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "other:rostopic://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "other:rostopic://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "rostopic://chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "rostopic://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "rostopic://chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "chatter",
+    "key": "rosservice://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "~/x",
+    "key": "rosservice://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Topic",
+    "source": "/robot/chatter",
+    "key": "rosservice://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "/robot/chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "/robot/chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "/robot/chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "~/x",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "~/x",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "~/x",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "/robot/talker/x",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "/robot/talker/x",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "/robot/talker/x",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "talker:chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "talker:chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "talker:chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "talker:rostopic://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "talker:rostopic://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "talker:rostopic://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "talker:rosservice://chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "talker:rosservice://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "talker:rosservice://chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "other:rostopic://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "other:rostopic://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "other:rostopic://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "rostopic://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "rostopic://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "rostopic://chatter",
+    "actual": "/robot/chatter",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "chatter",
+    "key": "rosservice://chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "~/x",
+    "key": "rosservice://chatter",
+    "actual": "/robot/talker/x",
+    "target": "out"
+  },
+  {
+    "kind": "Service",
+    "source": "/robot/chatter",
+    "key": "rosservice://chatter",
+    "actual": "/robot/out",
+    "target": "out"
+  }
+]

@@ -5,8 +5,25 @@ from pathlib import Path
 
 import pytest
 
+from ros2inspector.model.names import resolve_endpoint_name
 from ros2inspector.model.uam import UAM
 from tests.unit.name_resolution_fixtures import make_workspace, write_launch
+
+QUALIFIER_CASES = json.loads(
+    (Path(__file__).parents[1] / "data/remap_qualifier_cases.json").read_text()
+)
+
+
+@pytest.mark.parametrize(
+    "case", QUALIFIER_CASES, ids=lambda c: f"{c['kind']}|{c['source']}|{c['key']}"
+)
+def test_combined_remap_qualifiers(case: dict[str, str]) -> None:
+    assert (
+        resolve_endpoint_name(
+            case["source"], [(case["key"], case["target"])], "robot", "talker", case["kind"]
+        )
+        == case["actual"]
+    )
 
 
 @pytest.mark.parametrize("suffix", [".py", ".xml", ".yaml"])

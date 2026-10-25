@@ -13,12 +13,17 @@ _REMAP_CASES = json.loads(
     (Path(__file__).parents[1] / "data/remap_cases.json").read_text(encoding="utf-8")
 )
 
+_QUALIFIER_CASES = json.loads(
+    (Path(__file__).parents[1] / "data/remap_qualifier_cases.json").read_text(encoding="utf-8")
+)
+
 
 @pytest.mark.requires_ros2
 @pytest.mark.parametrize(
     "case",
     [
         *_REMAP_CASES,
+        *_QUALIFIER_CASES,
         {"source": "chatter", "key": "rosservice://chatter", "target": "out"},
         {"source": "chatter", "key": "other:chatter", "target": "out"},
     ],
