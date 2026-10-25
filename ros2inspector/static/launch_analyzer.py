@@ -19,6 +19,8 @@ class LaunchNode:
     name: str | None = None
     remaps: dict[str, str] = field(default_factory=dict)
     namespace: str | None = None
+    parameters: dict[str, object] = field(default_factory=dict)
+    parameters_unresolved: bool = False
     source_file: str | None = None
     unresolved_fields: list[str] = field(default_factory=list)
 
@@ -300,6 +302,31 @@ def _apply_python_namespaces(tree: ast.Module, visitor: _PythonLaunchVisitor) ->
         walk(root, None, set())
 
 
+def _extract_parameters(expr: ast.expr | None) -> tuple[dict[str, object], bool]:
+    if expr is None:
+        return {}, False
+    if not isinstance(expr, (ast.List, ast.Tuple)):
+        return {}, True
+    parameters: dict[str, object] = {}
+    unresolved = False
+    for item in expr.elts:
+        if not isinstance(item, ast.Dict):
+            unresolved = True
+            continue
+        for key, value in zip(item.keys, item.values, strict=True):
+            try:
+                name = ast.literal_eval(key) if key is not None else None
+                literal = ast.literal_eval(value)
+            except (ValueError, TypeError, SyntaxError):
+                unresolved = True
+                continue
+            if isinstance(name, str):
+                parameters[name] = literal
+            else:
+                unresolved = True
+    return parameters, unresolved
+
+
 def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchNode:
     kwargs = {kw.arg: kw.value for kw in call.keywords if kw.arg}
     executable, executable_unresolved = _python_string(
@@ -309,6 +336,7 @@ def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchN
     name, name_unresolved = _python_string(kwargs.get("name"), required=False)
     namespace, namespace_unresolved = _python_string(kwargs.get("namespace"), required=False)
     remaps, remaps_unresolved = _extract_remaps(kwargs.get("remappings"))
+    parameters, parameters_unresolved = _extract_parameters(kwargs.get("parameters"))
 
     unresolved_fields = [
         field_name
@@ -318,6 +346,7 @@ def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchN
             ("name", name_unresolved),
             ("namespace", namespace_unresolved),
             ("remappings", remaps_unresolved),
+            ("parameters", parameters_unresolved),
         )
         if unresolved
     ]
@@ -325,6 +354,8 @@ def _extract_python_node(call: ast.Call, *, composable: bool = False) -> LaunchN
     conditions = [ast.unparse(condition)] if condition is not None else []
 
     return LaunchNode(
+        parameters=parameters,
+        parameters_unresolved=parameters_unresolved,
         plugin=executable if composable else None,
         executable=executable or UNKNOWN_SENTINEL,
         package=package or UNKNOWN_SENTINEL,

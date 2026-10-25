@@ -519,6 +519,7 @@ class UnifiedArchitectureModel:
             "data_source": DataSource.STATIC.value,
             "remapped": actual_name != endpoint.name,
             "original_name": endpoint.name,
+            "name_source": endpoint.name_source,
             "file_path": endpoint.file_path,
             "line": endpoint.line,
             "evidence": endpoint.evidence,
@@ -627,13 +628,15 @@ class UnifiedArchitectureModel:
                         conditions=list(launch_node.conditions),
                     )
                     self._add_edge(g, nid, deployment_id, rel="deploys_as")
-                    deployment_attrs = {
+                    deployment_attrs: dict[str, Any] = {
                         "deployment_id": deployment_id,
                         "deployment_name": effective_name,
                         "namespace": launch_node.namespace,
                         "launch_file": launch_node.source_file,
                         "resolution": resolution,
                         "conditions": list(launch_node.conditions),
+                        "parameters": dict(launch_node.parameters),
+                        "parameters_unresolved": launch_node.parameters_unresolved,
                     }
                     actors.append(
                         (
@@ -677,8 +680,33 @@ class UnifiedArchitectureModel:
             for endpoints, kind, role, rel, type_key in endpoint_groups:
                 for index, endpoint in enumerate(endpoints):
                     for actor_id, remaps, namespace, node_name, deployment_attrs in actors:
+                        deployed_endpoint = endpoint
+                        if endpoint.name_source == "parameter_default":
+                            overrides = deployment_attrs.get("parameters", {})
+                            parameter = endpoint.name_parameter
+                            value = overrides.get(parameter) if parameter else None
+                            if deployment_attrs.get("parameters_unresolved") or (
+                                overrides and parameter is None
+                            ):
+                                deployed_endpoint = endpoint.model_copy(
+                                    update={
+                                        "name": DYNAMIC_SENTINEL,
+                                        "name_source": "unresolved",
+                                        "confidence": "low",
+                                    }
+                                )
+                            elif parameter in overrides:
+                                deployed_endpoint = endpoint.model_copy(
+                                    update={
+                                        "name": value
+                                        if isinstance(value, str)
+                                        else DYNAMIC_SENTINEL,
+                                        "name_source": "launch_parameter_override",
+                                        "evidence": "launch_parameter_override",
+                                    }
+                                )
                         actual = resolve_endpoint_name(
-                            endpoint.name, remaps, namespace, node_name, kind
+                            deployed_endpoint.name, remaps, namespace, node_name, kind
                         )
                         comm_id = _communication_id(kind, actual, actor_id, role, index)
                         self._upsert_comm_node(
@@ -690,15 +718,19 @@ class UnifiedArchitectureModel:
                             unresolved=actual == DYNAMIC_SENTINEL,
                         )
                         presence = str(deployment_attrs.get("resolution", "known"))
-                        edge_attrs = self._endpoint_edge_attrs(endpoint, actual, presence)
+                        edge_attrs = self._endpoint_edge_attrs(deployed_endpoint, actual, presence)
                         if presence == "unresolved":
                             # What the name must end with, so connectivity rules can tell
                             # which peers this deployment might still provide.
                             edge_attrs["name_suffix"] = unresolved_name_suffix(
-                                endpoint.name, remaps, node_name, kind
+                                deployed_endpoint.name, remaps, node_name, kind
                             )
                         edge_attrs.update(
-                            {k: v for k, v in deployment_attrs.items() if k != "resolution"}
+                            {
+                                k: v
+                                for k, v in deployment_attrs.items()
+                                if k not in {"resolution", "parameters", "parameters_unresolved"}
+                            }
                         )
                         self._add_edge(g, actor_id, comm_id, rel=rel, **edge_attrs)
 

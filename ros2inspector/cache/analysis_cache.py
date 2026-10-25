@@ -21,7 +21,7 @@ _SOURCE_SUFFIXES = frozenset(
     (".py", ".cpp", ".cxx", ".cc", ".hpp", ".h", ".msg", ".srv", ".action")
 )
 
-_CACHE_VERSION = "v10-python-qos-presets"
+_CACHE_VERSION = "v11-endpoint-parameter-keys"
 _CACHE_SIZE_LIMIT = 256 * 1024 * 1024
 _DIGEST_CACHE_SIZE_LIMIT = 128 * 1024 * 1024
 

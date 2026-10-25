@@ -214,7 +214,12 @@ factories:
 kinds are `publisher`, `subscription`, `service`, `client`, `action_server`, and `action_client`.
 Factory-derived endpoints retain source evidence and medium or low confidence.
 Literal Python and C++ parameter defaults can resolve endpoint names and are labeled
-`parameter_default`; launch parameter overrides and computed defaults remain unresolved.
+`parameter_default`. When a launch `Node` passes literal `parameters=[{...}]` dictionaries,
+the last value for that parameter replaces the default for that deployment and the edge
+carries `launch_parameter_override` evidence. Parameters that cannot be read statically,
+such as a YAML file path or a substitution, mark the deployment's `parameters` field
+unresolved, leave the endpoint name unresolved, and suppress connectivity findings the
+default would otherwise cause. Computed defaults remain unresolved.
 Endpoint names are resolved the way rcl resolves them: the name and each remap rule are
 expanded with the node's namespace and name before matching, and node-qualified
 (`node:from:=to`) and `rostopic://`/`rosservice://` rules apply only where ROS applies them.

@@ -42,6 +42,7 @@ class CommunicationEndpoint(BaseModel):
 
     name: str
     name_source: str = "literal"
+    name_parameter: str | None = None
     msg_type: str = "unknown"
     file_path: str | None = None
     line: int | None = None
