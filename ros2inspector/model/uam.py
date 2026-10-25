@@ -135,20 +135,32 @@ def _apply_remap(name: str, remaps: dict[str, str]) -> str:
     return remaps.get(alt, name)
 
 
-def _apply_namespace(name: str, namespace: str | None) -> str:
-    """Apply a launch namespace to a relative ROS name without rewriting absolute names."""
+def _apply_namespace(name: str, namespace: str | None, node_name: str | None = None) -> str:
+    """Resolve a topic/service/action name the way ROS does, without rewriting absolute names.
+
+    A relative name is resolved against the node's namespace, which is the root namespace
+    when no launch namespace applies, so ``cmd_vel`` and ``/cmd_vel`` name the same topic.
+    A private name (``~/scan``) is resolved against the node's fully qualified name when it
+    is known.
+    """
     # Preserve unresolved names as unresolved. Turning ``<dynamic>`` into
     # ``/robot/<dynamic>`` would make it look resolved and could merge unrelated
     # endpoints that merely share the same launch namespace.
-    if (
-        name == DYNAMIC_SENTINEL
-        or not namespace
-        or namespace in {"<unknown>", "<dynamic>"}
-        or name.startswith("/")
-    ):
+    if name == DYNAMIC_SENTINEL or name.startswith("/"):
         return name
-    ns = namespace.strip("/")
-    return f"/{ns}/{name.lstrip('/')}" if ns else name
+    if namespace in {"<unknown>", "<dynamic>"}:
+        return name
+    ns = (namespace or "").strip("/")
+    prefix = f"/{ns}" if ns else ""
+    if name == "~" or name.startswith("~/"):
+        if not node_name or node_name in {DYNAMIC_SENTINEL, "<unknown>", "<dynamic>"}:
+            return name
+        node = node_name if node_name.startswith("/") else f"{prefix}/{node_name}"
+        rest = name[2:].strip("/")
+        return f"{node}/{rest}" if rest else node
+    if name.startswith("~"):
+        return name
+    return f"{prefix}/{name.strip('/')}"
 
 
 def _normalise_symbol(name: str) -> str:
@@ -238,6 +250,9 @@ def _effective_deployment_name(nd: NodeDefinition, launch_node: LaunchNode) -> s
         base = nd.declared_ros_name
     if not base:
         return DYNAMIC_SENTINEL
+    # Node names keep their short form at the root (``talker``, not ``/talker``).
+    if base.startswith("/") or not (launch_node.namespace or "").strip("/"):
+        return base
     return _apply_namespace(base, launch_node.namespace)
 
 
@@ -591,7 +606,7 @@ class UnifiedArchitectureModel:
                 )
             ]
 
-            actors: list[tuple[str, dict[str, str], str | None, dict[str, Any]]] = []
+            actors: list[tuple[str, dict[str, str], str | None, str | None, dict[str, Any]]] = []
             if matches:
                 deployments: list[dict[str, Any]] = []
                 for deployment_index, launch_node in enumerate(matches):
@@ -631,6 +646,7 @@ class UnifiedArchitectureModel:
                             deployment_id,
                             launch_node.remaps,
                             launch_node.namespace,
+                            effective_name,
                             deployment_attrs,
                         )
                     )
@@ -654,7 +670,7 @@ class UnifiedArchitectureModel:
                 g.nodes[nid]["namespace"] = first["namespace"]
                 g.nodes[nid]["launch_file"] = first["launch_file"]
             else:
-                actors.append((nid, {}, None, {}))
+                actors.append((nid, {}, None, nd.declared_ros_name, {}))
 
             endpoint_groups = (
                 (nd.publishers, "Topic", "publisher", "publishes", "msg_type"),
@@ -666,8 +682,10 @@ class UnifiedArchitectureModel:
             )
             for endpoints, kind, role, rel, type_key in endpoint_groups:
                 for index, endpoint in enumerate(endpoints):
-                    for actor_id, remaps, namespace, deployment_attrs in actors:
-                        actual = _apply_namespace(_apply_remap(endpoint.name, remaps), namespace)
+                    for actor_id, remaps, namespace, node_name, deployment_attrs in actors:
+                        actual = _apply_namespace(
+                            _apply_remap(endpoint.name, remaps), namespace, node_name
+                        )
                         comm_id = _communication_id(kind, actual, actor_id, role, index)
                         self._upsert_comm_node(
                             comm_id,

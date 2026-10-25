@@ -225,3 +225,55 @@ def test_cache_fingerprint_tracks_cc_and_cxx_sources(tmp_path: Path) -> None:
 
     assert original != after_cc
     assert after_cc != after_cxx
+
+
+def test_names_resolve_against_the_node_namespace_like_ros() -> None:
+    assert _apply_namespace("cmd_vel", None) == "/cmd_vel"
+    assert _apply_namespace("cmd_vel", "/") == "/cmd_vel"
+    assert _apply_namespace("/cmd_vel", "robot") == "/cmd_vel"
+    assert _apply_namespace("cmd_vel", "robot") == "/robot/cmd_vel"
+    assert _apply_namespace("cmd_vel", "/robot/") == "/robot/cmd_vel"
+    assert _apply_namespace("~/scan", "robot", "lidar") == "/robot/lidar/scan"
+    assert _apply_namespace("~/scan", None, "lidar") == "/lidar/scan"
+    assert _apply_namespace("~/scan", "robot", "/robot/lidar") == "/robot/lidar/scan"
+    # Unknown namespaces and node names stay unresolved instead of being guessed.
+    assert _apply_namespace("cmd_vel", "<dynamic>") == "cmd_vel"
+    assert _apply_namespace("~/scan", "robot", None) == "~/scan"
+
+
+def test_namespaced_relative_topic_links_to_absolute_subscriber(tmp_path: Path) -> None:
+    package = _package("demo", tmp_path)
+    driver = NodeDefinition(
+        name="Driver",
+        source_symbol="Driver",
+        declared_ros_name="driver",
+        package="demo",
+        language="python",
+        publishers=[CommunicationEndpoint(name="odom")],
+    )
+    monitor = NodeDefinition(
+        name="Monitor",
+        source_symbol="Monitor",
+        declared_ros_name="monitor",
+        package="demo",
+        language="python",
+        subscriptions=[CommunicationEndpoint(name="/robot/odom")],
+    )
+    model = UAM()
+    model._launch_remaps["demo"] = [
+        LaunchNode(executable="driver", package="demo", name="driver", namespace="robot"),
+    ]
+    model._build_graph([package], [driver, monitor], [], {"demo": package})
+
+    topics = [a["name"] for _, a in model.graph.nodes(data=True) if a.get("kind") == "Topic"]
+    assert topics == ["/robot/odom"]
+    assert rule_topic_connectivity(model, {}) == []
+
+
+def test_relative_policy_exclude_matches_the_resolved_topic() -> None:
+    model = UAM()
+    model.graph.add_node("node:demo/a", kind="Node", name="a")
+    model.graph.add_node(_topic_id("/cmd_vel"), kind="Topic", name="/cmd_vel")
+    model.graph.add_edge("node:demo/a", _topic_id("/cmd_vel"), rel="publishes")
+    assert len(rule_topic_connectivity(model, {})) == 1
+    assert rule_topic_connectivity(model, {"exclude": ["cmd_vel"]}) == []
