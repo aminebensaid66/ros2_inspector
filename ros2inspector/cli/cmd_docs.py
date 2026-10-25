@@ -146,6 +146,8 @@ _STYLE = """\
 <style>
   body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 2rem auto; padding: 0 1rem; color: #222; }
   h1 { color: #0066cc; } h2 { border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+  /* Package and node names have no spaces to break at, so let long ones wrap anywhere. */
+  h1, h2, h3, h4, p, li { overflow-wrap: anywhere; }
   .table-wrap { overflow-x: auto; margin: 1rem 0; }
   table { border-collapse: collapse; width: 100%; }
   th, td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; overflow-wrap: break-word; }
