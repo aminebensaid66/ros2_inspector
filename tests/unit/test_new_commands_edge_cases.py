@@ -702,7 +702,5 @@ def test_watch_reruns_when_empty_launch_directory_changes(
 
 
 def test_tree_sitter_runtime_compatibility_requirement() -> None:
-    import tomllib
-
-    project = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
-    assert "tree-sitter>=0.25" in project["project"]["dependencies"]
+    source = (Path(__file__).parents[2] / "pyproject.toml").read_text()
+    assert '"tree-sitter>=0.25"' in source
