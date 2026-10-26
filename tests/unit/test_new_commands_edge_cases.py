@@ -699,3 +699,32 @@ def test_watch_reruns_when_empty_launch_directory_changes(
     monkeypatch.setattr(cmd_watch.time, "sleep", fake_sleep)
     runner.invoke(app, ["watch", str(ws), "--audit", "--no-cache"])
     assert runs["n"] == 2
+
+
+def test_unrelated_broken_test_file_does_not_downgrade_connectivity(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_topic_connectivity
+
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    (pkg / "listener.py").write_text(
+        "from rclpy.node import Node\n"
+        "from std_msgs.msg import String\n"
+        "class Listener(Node):\n"
+        "    def __init__(self):\n"
+        "        super().__init__('listener')\n"
+        "        self.sub = self.create_subscription(String, '/missing', lambda m: None, 10)\n"
+    )
+    first = rule_topic_connectivity(UAM.build(root, use_cache=False), {})
+    (pkg / "tests").mkdir()
+    (pkg / "tests" / "broken.py").write_text("def broken(\n")
+    second = rule_topic_connectivity(UAM.build(root, use_cache=False), {})
+    assert [(v.severity, v.confidence) for v in first] == [
+        (v.severity, v.confidence) for v in second
+    ]
