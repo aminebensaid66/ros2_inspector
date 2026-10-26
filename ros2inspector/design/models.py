@@ -280,7 +280,7 @@ class PackageSpec(BaseModel):
                 raise ValueError(
                     f"edge {edge.id!r} must connect an existing publisher to an existing subscriber"
                 )
-            if publisher.name != subscriber.name:
+            if expanded_endpoint_name(publisher.name, source.label) != expanded_endpoint_name(\n                subscriber.name, target.label\n            ):
                 raise ValueError(
                     f"edge {source.label} -> {target.label}: topic names differ "
                     f"({publisher.name!r} vs {subscriber.name!r}), so they would not connect"
