@@ -344,3 +344,19 @@ def test_edited_setup_accepts_equivalent_entry_point_whitespace(server: Any) -> 
 
     status, response = _post(httpd, "/generate", design)
     assert status == 200, response
+
+
+def test_rename_preserves_foreign_package_launch_entries(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    launch = out / "demo_pkg/launch/launch.py"
+    launch.write_text(launch.read_text().replace(
+        "    ])", "        Node(package='other_pkg', executable='talker', name='talker'),\n    ])"
+    ))
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")]))
+    )
+    assert status == 200, response
+    result = launch.read_text()
+    assert "Node(package='other_pkg', executable='talker', name='talker')" in result
+    assert "executable='renamed'" in result
