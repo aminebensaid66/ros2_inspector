@@ -47,10 +47,11 @@ def atomic_write_text(path: Path, text: str) -> None:
             temp_name = stream.name
             stream.write(text)
             stream.flush()
-            os.fchmod(stream.fileno(), mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
         os.replace(temp_name, path)
-    except OSError as exc:
+    except (OSError, AttributeError) as exc:
         if temp_name:
             try:
                 Path(temp_name).unlink(missing_ok=True)
