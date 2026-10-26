@@ -235,7 +235,12 @@ def _entrypoint_matches_node(
                     walk_callable(callee)
 
     walk_callable(entrypoint.callable.split(".")[0])
-    return (nd.source_symbol or nd.name) in constructed
+    if constructed:
+        return (nd.source_symbol or nd.name) in constructed
+    # A sole source-node definition (or procedural module) has no competing
+    # class target; retain legacy mapping for common dynamic ROS node factories.
+    # In a multi-class module, missing call evidence remains ambiguous.
+    return len(classes) <= 1
 
 
 def _launch_matches_definition(
