@@ -657,3 +657,22 @@ def test_watch_recovers_exit_status_when_policy_is_fixed(
     assert "keeping previous rules" in result.output
     assert "Policy reloaded." in result.output
     assert result.exit_code == 0, result.output
+
+
+def test_atomic_output_without_fchmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ros2inspector.cli._output import atomic_write_text
+
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    target = tmp_path / "result.txt"
+    atomic_write_text(target, "hello")
+    assert target.read_text() == "hello"
+
+
+def test_generated_package_without_fchmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ros2inspector.design.codegen import generate_package_result
+
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    generate_package_result({"pkg_name": "sample_pkg", "nodes": [
+        {"id": "n1", "label": "talker"}
+    ]}, tmp_path)
+    assert (tmp_path / "sample_pkg" / "setup.py").is_file()
