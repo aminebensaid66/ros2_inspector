@@ -361,3 +361,18 @@ def test_package_rename_rejects_stale_user_imports_before_writing(server: Any) -
     assert "update its imports before renaming" in response["error"]
     assert node.read_text() == original
     assert not (out / "renamed_pkg").exists()
+
+
+def test_package_rename_rejects_sibling_imports_before_writing(server: Any) -> None:
+    httpd, out = server
+    first = _pkg()
+    second = _pkg("consumer_pkg", "p2", nodes=[_node("listener", "n2")])
+    assert _post(httpd, "/generate", _state(first, second))[0] == 200
+    consumer = out / "consumer_pkg" / "consumer_pkg" / "listener.py"
+    consumer.write_text(consumer.read_text() + "\nfrom demo_pkg.talker import main\n")
+    renamed = _pkg("new_pkg")
+    status, response = _post(httpd, "/generate", _state(renamed, second))
+    assert status == 409, response
+    assert "imports 'demo_pkg'" in response["error"]
+    assert (out / "demo_pkg").is_dir()
+    assert not (out / "new_pkg").exists()
