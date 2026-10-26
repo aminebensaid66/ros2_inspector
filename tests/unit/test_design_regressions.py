@@ -795,3 +795,38 @@ def test_saved_state_does_not_hide_invalid_nodes_by_dropping_wires(tmp_path: Pat
     (tmp_path / STATE_FILE).write_text(json.dumps(invalid))
     assert _load_state(tmp_path) is None
     assert json.loads((tmp_path / f"{STATE_FILE}.invalid").read_text()) == invalid
+
+
+def test_cycle_rename_failure_restores_all_user_files(tmp_path: Path, monkeypatch: Any) -> None:
+    names = ("aaa", "bbb", "ccc")
+    mapping = {"aaa": "bbb", "bbb": "ccc", "ccc": "aaa"}
+    previous = {"packages": []}
+    current = []
+    for index, name in enumerate(names):
+        generate_package_result(_pkg(str(index), name), tmp_path)
+        (tmp_path / name / "USER.txt").write_text(f"user-data:{name}")
+        previous["packages"].append(
+            {"id": str(index), "pkg_name": name, "_generated_name": name}
+        )
+        current.append({"id": str(index), "pkg_name": mapping[name]})
+
+    real_rename = Path.rename
+    failures = {"count": 0}
+
+    def fail_last_staged_move(path: Path, target: Path) -> Path:
+        if (
+            path.parent.name.startswith(".ros2inspector-rename-")
+            and target == tmp_path / "aaa"
+            and not failures["count"]
+        ):
+            failures["count"] += 1
+            raise PermissionError("injected rename failure")
+        return real_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_last_staged_move)
+    with pytest.raises(PermissionError, match="injected rename failure"):
+        _apply_renames(current, tmp_path, previous)
+    assert failures["count"] == 1
+    for name in names:
+        assert (tmp_path / name / "USER.txt").read_text() == f"user-data:{name}"
+    assert not list(tmp_path.glob(".ros2inspector-rename-*"))
