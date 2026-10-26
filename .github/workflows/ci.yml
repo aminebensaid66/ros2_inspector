@@ -42,6 +42,23 @@ jobs:
       - name: Run tests
         run: pytest -m "not requires_ros2"
 
+  windows-writes:
+    name: Native Windows writes (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Test output and package writing
+        run: python -m pytest tests/unit/test_new_commands_edge_cases.py -k "atomic_output_without_fchmod or generated_package_without_fchmod" --no-cov
+
   browser:
     name: Browser UI tests (designer, docs, viz)
     runs-on: ubuntu-latest
