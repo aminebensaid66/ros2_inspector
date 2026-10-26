@@ -116,6 +116,7 @@ def _apply_renames(
     (staging / "COLCON_IGNORE").write_text("", encoding="utf-8")
     staged: list[tuple[Path, Path, Path]] = []
     finished: list[tuple[Path, Path]] = []
+    recovery_failed = False
     try:
         for old_dir, new_dir in moves:
             temp = staging / f"{uuid.uuid4().hex}-{old_dir.name}"
@@ -143,6 +144,7 @@ def _apply_renames(
                     except OSError as exc:
                         rollback_errors.append(f"{temp} -> {old_dir}: {exc}")
         if rollback_errors:
+            recovery_failed = True
             # Do not erase the staging directory: unresolved originals may
             # remain there. Report the exact recovery location.
             raise RuntimeError(
@@ -153,7 +155,7 @@ def _apply_renames(
     finally:
         # Remove staging only when every staged original was restored or
         # every move succeeded. A failed rollback must preserve user files.
-        if not any(temp.exists() for _, temp, _ in staged):
+        if not recovery_failed and not any(temp.exists() for _, temp, _ in staged):
             shutil.rmtree(staging, ignore_errors=True)
     # Package names in edited files are rewritten after every move, so a swap (a <-> b) sees
     # each file once and never turns 'a' into 'b' and back again.
