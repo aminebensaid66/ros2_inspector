@@ -637,6 +637,44 @@ class UnifiedArchitectureModel:
                             dep_type=dep_type.value,
                         )
 
+        # Do not present unmatched multi-class entry points as complete source
+        # analysis. Their runtime deployment target remains ambiguous.
+        for package_name, launch_nodes in self._launch_remaps.items():
+            package_meta = pkg_map.get(package_name)
+            if package_meta is None:
+                continue
+            package_path = Path(package_meta.path)
+            for launch_node in launch_nodes:
+                entrypoint = self._entrypoints.get(package_name, {}).get(launch_node.executable)
+                if entrypoint is None:
+                    continue
+                candidates = [
+                    nd
+                    for nd in nodes
+                    if nd.package == package_name
+                    and nd.language == "python"
+                    and nd.file_path
+                    and entrypoint.module in _python_modules_for_file(
+                        nd.file_path, package_path
+                    )
+                ]
+                if len(candidates) > 1 and not any(
+                    _entrypoint_matches_node(entrypoint, nd, package_path)
+                    for nd in candidates
+                ):
+                    self._diagnostics.append(
+                        {
+                            "severity": "warning",
+                            "code": "source_analysis_incomplete",
+                            "file": candidates[0].file_path,
+                            "message": (
+                                f"Could not associate executable {launch_node.executable!r} "
+                                f"with a node class in {entrypoint.module!r}; "
+                                "the entry point may create nodes dynamically."
+                            ),
+                        }
+                    )
+
         symbol_counts = Counter((nd.package, nd.name) for nd in nodes)
         duplicate_symbols = {key for key, count in symbol_counts.items() if count > 1}
 
