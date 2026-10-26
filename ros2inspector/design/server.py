@@ -166,16 +166,38 @@ def _load_state(output_dir: Path, console: Console | None = None) -> dict[str, A
         return raw
     except ValidationError:
         pass
-    for package in raw.get("packages", []) if isinstance(raw.get("packages"), list) else []:
+    # Only recover invalid connections. Validate the remaining design independently
+    # so a malformed node or package cannot be masked by dropping all wires.
+    packages = raw.get("packages")
+    if not isinstance(packages, list):
+        _quarantine_state(state_path, "invalid package list", console)
+        return None
+    original_edges: list[tuple[dict[str, Any], list[Any]]] = []
+    for package in packages:
         if isinstance(package, dict):
-            package["edges"] = []
+            edges = package.get("edges", [])
+            if isinstance(edges, list):
+                original_edges.append((package, edges))
+                package["edges"] = []
     try:
         DesignState.model_validate(raw)
     except ValidationError as exc:
         _quarantine_state(state_path, f"invalid ({exc.error_count()} errors)", console)
         return None
-    if console is not None:
-        console.print("[yellow]Some saved wires were invalid and have been removed.[/yellow]")
+    dropped = 0
+    for package, edges in original_edges:
+        for edge in edges:
+            package["edges"].append(edge)
+            try:
+                DesignState.model_validate(raw)
+            except ValidationError:
+                package["edges"].pop()
+                dropped += 1
+    if dropped:
+        # Keep an untouched copy before any subsequent save can persist recovery.
+        _quarantine_state(state_path, f"{dropped} invalid connection(s)", console)
+        if console is not None:
+            console.print(f"[yellow]Removed {dropped} invalid saved connection(s).[/yellow]")
     return raw
 
 

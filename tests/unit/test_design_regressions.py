@@ -760,3 +760,38 @@ def test_long_names_stay_within_ament_flake8_line_length(tmp_path: Path, topic: 
     assert "(Node):\n\n    def __init__" in node  # flake8-class-newline (CNL100)
     if len(topic) < 50:
         assert "E501" not in node  # realistic names need no exemption at all
+
+
+def test_saved_state_recovers_only_invalid_edges_across_packages(tmp_path: Path) -> None:
+    def wired(pid: str, name: str) -> dict[str, Any]:
+        package = _pkg(pid, name, [
+            _node("sender", "sender", publishers=[_endpoint("pub", "/events", "std_msgs/String")]),
+            _node(
+                "receiver",
+                "receiver",
+                subscribers=[_endpoint("sub", "/events", "std_msgs/String")],
+            ),
+        ])
+        package["edges"] = [{"id": "valid", "fn": "sender", "ft": "pub",
+                             "tn": "receiver", "tt": "sub"}]
+        return package
+
+    first = wired("p1", "first_pkg")
+    first["edges"].append({"id": "broken", "fn": "sender", "ft": "pub",
+                           "tn": "receiver", "tt": "missing"})
+    second = wired("p2", "second_pkg")
+    source = _state(first, second)
+    (tmp_path / STATE_FILE).write_text(json.dumps(source))
+    recovered = _load_state(tmp_path)
+
+    assert recovered is not None
+    assert [edge["id"] for edge in recovered["packages"][0]["edges"]] == ["valid"]
+    assert [edge["id"] for edge in recovered["packages"][1]["edges"]] == ["valid"]
+    assert json.loads((tmp_path / f"{STATE_FILE}.invalid").read_text()) == source
+
+
+def test_saved_state_does_not_hide_invalid_nodes_by_dropping_wires(tmp_path: Path) -> None:
+    invalid = _state(_pkg("p1", "demo_pkg", [_node("n1", "Invalid Name")]))
+    (tmp_path / STATE_FILE).write_text(json.dumps(invalid))
+    assert _load_state(tmp_path) is None
+    assert json.loads((tmp_path / f"{STATE_FILE}.invalid").read_text()) == invalid
