@@ -195,6 +195,16 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   cursor:pointer;white-space:nowrap}
 .btn-warn:hover{background:rgba(248,113,113,.26)}
 
+/* Cross-package connections are computed from ROS names, not serialized wires. */
+#workspace-panel{margin:8px 12px;padding:12px 16px;border:1px solid #334155;
+  border-radius:9px;background:#101827;color:#cbd5e1;font-size:12px;max-height:230px;
+  overflow:auto}
+#workspace-panel[hidden]{display:none}
+#workspace-panel .cross-item{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:6px 0;border-top:1px solid #243044}
+#workspace-panel button{background:#24344f;border:1px solid #475569;border-radius:5px;
+  padding:5px 9px;color:#e2e8f0;cursor:pointer}
+#workspace-panel .connected{color:#34d399}
 /* field errors in the node inspector */
 .sinp.bad,.ssel.bad{border-color:#f87171;background:rgba(248,113,113,.08)}
 .ferr{color:#f87171;font-size:11px;line-height:1.45;margin:0 0 6px 12px;overflow-wrap:anywhere}
@@ -209,6 +219,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   <input class="tb-inp" id="pn" value="my_package" spellcheck="false">
   <div class="sep"></div>
   <button class="btn" id="an">+ Add Node</button>
+  <button class="btn" id="wslinks" aria-expanded="false">⇄ Workspace links</button>
   <button class="btn-save" id="sv">💾 Save</button>
   <button class="btn-p" id="gb" disabled>↓ Generate All</button>
   <button class="btn" id="fit" title="Bring the design back into view: centred when it fits, otherwise from its top-left node">⊡ Show all</button>
@@ -222,6 +233,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 </div>
 
 <div id="pt"></div>
+<div id="workspace-panel" hidden aria-label="Cross-package connections"></div>
 
 <div id="main">
   <div id="cv">
@@ -489,6 +501,86 @@ function renderTabs(){
 }
 
 // ── render ─────────────────────────────────────────────────────────────────
+function renderWorkspaceConnections(){
+  const panel=document.getElementById('workspace-panel');
+  if(panel.hidden) return;
+  panel.replaceChildren();
+  const heading=document.createElement('strong');
+  heading.textContent='Cross-package topic connections';
+  panel.appendChild(heading);
+  const peers=[];
+  for(const fromPkg of S.packages){
+    for(const fromNode of fromPkg.nodes){
+      for(const pub of fromNode.publishers){
+        for(const toPkg of S.packages){
+          if(toPkg.id===fromPkg.id) continue;
+          for(const toNode of toPkg.nodes){
+            for(const sub of toNode.subscribers){
+              if(sameType(pub.msgType,sub.msgType)){
+                peers.push({fromPkg,fromNode,pub,toPkg,toNode,sub});
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if(!peers.length){
+    const note=document.createElement('p');
+    note.textContent='No cross-package publisher/subscriber pairs with matching types yet.';
+    panel.appendChild(note);
+  }
+  for(const connection of peers){
+    const {fromPkg,fromNode,pub,toPkg,toNode,sub}=connection;
+    const sourceName=expandedName(pub.name,fromNode.label);
+    const targetName=expandedName(sub.name,toNode.label);
+    const connected=sourceName===targetName;
+    const line=document.createElement('div');
+    line.className='cross-item';
+    const details=document.createElement('span');
+    details.textContent=fromPkg.pkg_name+'/'+fromNode.label+' → '+
+      toPkg.pkg_name+'/'+toNode.label+' ('+sourceName+' / '+pub.msgType+')';
+    line.appendChild(details);
+    if(connected){
+      const state=document.createElement('span');
+      state.className='connected';
+      state.textContent='Connected';
+      line.appendChild(state);
+    }else{
+      const button=document.createElement('button');
+      button.textContent='Connect';
+      button.title='Set the subscriber topic to '+sourceName;
+      button.addEventListener('click',()=>{
+        if(nameLengthError('subscribers',sourceName,toNode.label)){
+          showToast('The selected topic name is too long for ROS 2.','err');
+          return;
+        }
+        sub.name=sourceName;
+        renderAll();
+        showToast('Connected '+toPkg.pkg_name+' to '+fromPkg.pkg_name+
+          ' through '+sourceName,'ok');
+      });
+      line.appendChild(button);
+    }
+    const inspect=document.createElement('button');
+    inspect.textContent='Open subscriber';
+    inspect.addEventListener('click',()=>{
+      switchPkg(toPkg.id);
+      S.sel=toNode.id;
+      renderSB();
+    });
+    line.appendChild(inspect);
+    panel.appendChild(line);
+  }
+}
+
+document.getElementById('wslinks').addEventListener('click',()=>{
+  const panel=document.getElementById('workspace-panel');
+  panel.hidden=!panel.hidden;
+  document.getElementById('wslinks').setAttribute('aria-expanded',String(!panel.hidden));
+  renderWorkspaceConnections();
+});
+
 function renderAll(){
   renderNodes();
   sizeLayers();
@@ -498,6 +590,7 @@ function renderAll(){
   ES.classList.toggle('h', !!(p&&p.nodes.length>0));
   GB.disabled = !S.packages.some(p=>p.nodes.length>0);
   renderTabs();
+  renderWorkspaceConnections();
 }
 
 function renderEdges(){
