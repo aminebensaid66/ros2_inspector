@@ -147,9 +147,9 @@ def rename_script_entries(source: str, renamed: dict[str, str]) -> str:
         executable, separator, destination = entry.value.partition("=")
         if not separator:
             continue
-        replacement = expected.get((executable.strip(), destination.strip()))
-        if replacement is not None:
-            replacements.append((entry, replacement))
+        updated_entry = expected.get((executable.strip(), destination.strip()))
+        if updated_entry is not None:
+            replacements.append((entry, updated_entry))
     return replace_constants(source, replacements)
 
 
