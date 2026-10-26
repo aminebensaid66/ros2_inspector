@@ -795,7 +795,7 @@ def plan_package_edits(
         original = text_of(launch_rel)
         launch_text = original or ""
         try:
-            launch_text, started = rename_launch_nodes(launch_text, renamed)
+            launch_text, started = rename_launch_nodes(launch_text, renamed, pkg)
         except ValueError as exc:
             plan.problems.append(
                 f"{launch_rel} has your edits; update its Node entries by hand: {exc}."
