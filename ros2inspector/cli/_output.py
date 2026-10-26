@@ -57,4 +57,4 @@ def atomic_write_text(path: Path, text: str) -> None:
                 Path(temp_name).unlink(missing_ok=True)
             except OSError:
                 pass
-        raise OutputWriteError(f"cannot write '{path}': {exc.strerror or exc}") from exc
+        raise OutputWriteError(f"cannot write '{path}': {getattr(exc, 'strerror', None) or exc}") from exc
