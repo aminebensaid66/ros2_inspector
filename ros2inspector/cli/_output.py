@@ -50,6 +50,8 @@ def atomic_write_text(path: Path, text: str) -> None:
             if hasattr(os, "fchmod"):
                 os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
+        if not hasattr(os, "fchmod"):
+            os.chmod(temp_name, mode)
         os.replace(temp_name, path)
     except (OSError, AttributeError) as exc:
         if temp_name:
