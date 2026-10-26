@@ -191,9 +191,51 @@ def _python_modules_for_file(file_path: str | None, package_path: Path) -> set[s
 def _entrypoint_matches_node(
     entrypoint: PythonEntrypoint, nd: NodeDefinition, package_path: Path
 ) -> bool:
-    if nd.language != "python":
+    if nd.language != "python" or not nd.file_path:
         return False
-    return entrypoint.module in _python_modules_for_file(nd.file_path, package_path)
+    if entrypoint.module not in _python_modules_for_file(nd.file_path, package_path):
+        return False
+    if not entrypoint.callable:
+        return False
+
+    # An entry point addresses a *callable*, not every Node class in its module.
+    # Follow local helper calls and match only constructors reachable from it.
+    import ast
+
+    try:
+        tree = ast.parse(Path(nd.file_path).read_bytes())
+    except (SyntaxError, OSError, UnicodeDecodeError, RecursionError, MemoryError):
+        return False
+
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    classes = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+    }
+    seen: set[str] = set()
+    constructed: set[str] = set()
+
+    def walk_callable(name: str) -> None:
+        if name in seen or name not in functions:
+            return
+        seen.add(name)
+        for call in ast.walk(functions[name]):
+            if not isinstance(call, ast.Call):
+                continue
+            if isinstance(call.func, ast.Name):
+                callee = call.func.id
+                if callee in classes:
+                    constructed.add(callee)
+                elif callee in functions:
+                    walk_callable(callee)
+
+    walk_callable(entrypoint.callable.split(".")[0])
+    return (nd.source_symbol or nd.name) in constructed
 
 
 def _launch_matches_definition(
