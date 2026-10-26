@@ -657,3 +657,10 @@ def test_watch_recovers_exit_status_when_policy_is_fixed(
     assert "keeping previous rules" in result.output
     assert "Policy reloaded." in result.output
     assert result.exit_code == 0, result.output
+
+
+def test_tree_sitter_runtime_compatibility_requirement() -> None:
+    import tomllib
+
+    project = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
+    assert "tree-sitter>=0.25" in project["project"]["dependencies"]
