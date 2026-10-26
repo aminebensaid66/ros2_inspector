@@ -167,7 +167,7 @@ def rule_dependency(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[
         return (
             g.has_node(src_id)
             and g.has_node(dst_id)
-            and (g.has_edge(src_id, dst_id) or nx.has_path(g, src_id, dst_id))
+            and bool(g.has_edge(src_id, dst_id) or nx.has_path(g, src_id, dst_id))
         )
 
     for forbidden in cfg.get("forbidden", []):
