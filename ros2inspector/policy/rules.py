@@ -149,15 +149,33 @@ def rule_dependency(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[
     violations: list[PolicyViolation] = []
     source = cfg.get("_source", "policy")
     g = uam.graph
+    # Workspace graph edges contain only packages whose source was discovered.
+    # Policies must also consider dependencies declared on external packages.
+    declared = {
+        package.name: {
+            dep
+            for values in package.dependencies.values()
+            for dep in values
+        }
+        for package in uam.packages()
+    }
+
+    def depends_on(frm: str, to: str) -> bool:
+        if to in declared.get(frm, set()):
+            return True
+        src_id, dst_id = f"pkg:{frm}", f"pkg:{to}"
+        return (
+            g.has_node(src_id)
+            and g.has_node(dst_id)
+            and (g.has_edge(src_id, dst_id) or nx.has_path(g, src_id, dst_id))
+        )
 
     for forbidden in cfg.get("forbidden", []):
         frm = forbidden["from"]
         to = forbidden["to"]
         severity = _sev(forbidden.get("severity", "error"))
         src_id = f"pkg:{frm}"
-        dst_id = f"pkg:{to}"
-        if g.has_node(src_id) and g.has_node(dst_id):
-            if g.has_edge(src_id, dst_id) or nx.has_path(g, src_id, dst_id):
+        if depends_on(frm, to):
                 violations.append(
                     PolicyViolation(
                         severity=severity,
@@ -173,10 +191,7 @@ def rule_dependency(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[
         dep_name = required["depends_on"]
         severity = _sev(required.get("severity", "warning"))
         src_id = f"pkg:{pkg_name}"
-        dst_id = f"pkg:{dep_name}"
-        if g.has_node(src_id) and not (
-            g.has_edge(src_id, dst_id) or (g.has_node(dst_id) and nx.has_path(g, src_id, dst_id))
-        ):
+        if g.has_node(src_id) and not depends_on(pkg_name, dep_name):
             violations.append(
                 PolicyViolation(
                     severity=severity,
