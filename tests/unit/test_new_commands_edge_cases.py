@@ -704,3 +704,4 @@ def test_watch_reruns_when_empty_launch_directory_changes(
 def test_tree_sitter_runtime_compatibility_requirement() -> None:
     source = (Path(__file__).parents[2] / "pyproject.toml").read_text()
     assert '"tree-sitter>=0.25"' in source
+    assert '"tree-sitter-cpp>=0.23.4"' in source
