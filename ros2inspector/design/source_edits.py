@@ -133,13 +133,23 @@ def console_script_list(tree: ast.AST) -> ast.List:
 
 def rename_script_entries(source: str, renamed: dict[str, str]) -> str:
     listing = console_script_list(_tree(source))
-    replacements = [
-        (entry, renamed[entry.value])
-        for entry in listing.elts
-        if isinstance(entry, ast.Constant)
-        and isinstance(entry.value, str)
-        and entry.value in renamed
-    ]
+    replacements = []
+    expected = {}
+    for previous, replacement in renamed.items():
+        old_executable, separator, old_target = previous.partition("=")
+        if not separator:
+            raise ValueError("invalid old console-script registration")
+        expected[(old_executable.strip(), old_target.strip())] = replacement
+
+    for entry in listing.elts:
+        if not isinstance(entry, ast.Constant) or not isinstance(entry.value, str):
+            continue
+        executable, separator, destination = entry.value.partition("=")
+        if not separator:
+            continue
+        replacement = expected.get((executable.strip(), destination.strip()))
+        if replacement is not None:
+            replacements.append((entry, replacement))
     return replace_constants(source, replacements)
 
 
