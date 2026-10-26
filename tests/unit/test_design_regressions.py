@@ -766,7 +766,11 @@ def test_saved_state_recovers_only_invalid_edges_across_packages(tmp_path: Path)
     def wired(pid: str, name: str) -> dict[str, Any]:
         package = _pkg(pid, name, [
             _node("sender", "sender", publishers=[_endpoint("pub", "/events", "std_msgs/String")]),
-            _node("receiver", "receiver", subscribers=[_endpoint("sub", "/events", "std_msgs/String")]),
+            _node(
+                "receiver",
+                "receiver",
+                subscribers=[_endpoint("sub", "/events", "std_msgs/String")],
+            ),
         ])
         package["edges"] = [{"id": "valid", "fn": "sender", "ft": "pub",
                              "tn": "receiver", "tt": "sub"}]
