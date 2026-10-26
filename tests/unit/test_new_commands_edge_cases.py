@@ -657,3 +657,22 @@ def test_watch_recovers_exit_status_when_policy_is_fixed(
     assert "keeping previous rules" in result.output
     assert "Policy reloaded." in result.output
     assert result.exit_code == 0, result.output
+
+
+def test_external_manifest_dependency_is_enforced(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license><depend>rclpy</depend></package>'
+    )
+    uam = UAM.build(root, use_cache=False)
+    assert len(rule_dependency(uam, {"forbidden": [{"from": "app", "to": "rclpy"}]})) == 1
+    assert not rule_dependency(uam, {"required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})
