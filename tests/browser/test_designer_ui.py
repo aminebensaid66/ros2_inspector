@@ -729,3 +729,25 @@ def test_ambiguous_constructor_rename_shows_conflict(
     assert module.read_text() == source
     assert not module.with_name("camera_renamed.py").exists()
     shot(page, "designer-constructor-conflict")
+
+
+def test_cross_package_topic_links_can_be_connected(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.click(".ptab-add")
+    page.click("#an")
+    page.evaluate("""() => {
+        const source=S.packages[0].nodes[0];
+        const target=S.packages[1].nodes[0];
+        target.subscribers.push({
+          id:'cross-sub',name:'/not-connected',msgType:source.publishers[0].msgType
+        });
+        renderAll();
+    }""")
+    page.click("#wslinks")
+    expect(page.locator("#workspace-panel")).to_be_visible()
+    expect(page.locator("#workspace-panel .cross-item")).not_to_have_count(0)
+    page.locator("#workspace-panel .cross-item button", has_text="Connect").first.click()
+    expect(page.locator("#workspace-panel .connected").first).to_have_text("Connected")
+    assert page.errors.messages == []  # type: ignore[attr-defined]
