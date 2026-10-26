@@ -658,6 +658,48 @@ def test_watch_recovers_exit_status_when_policy_is_fixed(
     assert "Policy reloaded." in result.output
     assert result.exit_code == 0, result.output
 
+def test_snapshot_tracks_health_relevant_empty_launch_directories(ws: Path) -> None:
+    package = ws / "src" / "pkg_a"
+    before = cmd_watch._snapshot(ws)
+    (package / "launch").mkdir()
+    after = cmd_watch._snapshot(ws)
+    assert "pkg_a/launch/" in cmd_watch._changed_files(before, after)
+
+    (package / "bringup" / "launch").mkdir(parents=True)
+    nested = cmd_watch._snapshot(ws)
+    assert "pkg_a/bringup/launch/" in cmd_watch._changed_files(after, nested)
+
+    (package / "launch").rmdir()
+    removed = cmd_watch._snapshot(ws)
+    assert "pkg_a/launch/" in cmd_watch._changed_files(nested, removed)
+
+
+def test_watch_reruns_when_empty_launch_directory_changes(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = ws / "src" / "pkg_a"
+    monkeypatch.setattr(cmd_watch, "_DEBOUNCE_SECONDS", 0)
+    real_run = cmd_watch._run_once
+    runs = {"n": 0}
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        runs["n"] += 1
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(cmd_watch, "_run_once", counting)
+    ticks = {"n": 0}
+
+    def fake_sleep(_: float) -> None:
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            (package / "launch").mkdir()
+        elif ticks["n"] > 3:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cmd_watch.time, "sleep", fake_sleep)
+    runner.invoke(app, ["watch", str(ws), "--audit", "--no-cache"])
+    assert runs["n"] == 2
+
 
 def test_atomic_output_without_fchmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from ros2inspector.cli._output import atomic_write_text
