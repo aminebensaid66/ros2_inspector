@@ -579,6 +579,24 @@ def console_scripts(setup_py: str) -> set[str] | None:
     }
 
 
+def console_script_targets(setup_py: str) -> dict[str, list[str]] | None:
+    """Return every executable target in a statically readable setup.py registration."""
+    try:
+        listing = _console_scripts_list(ast.parse(setup_py))
+    except SyntaxError:
+        return None
+    if listing is None:
+        return None
+    targets: dict[str, list[str]] = {}
+    for item in listing.elts:
+        assert isinstance(item, ast.Constant) and isinstance(item.value, str)
+        executable, separator, target = item.value.partition("=")
+        if not separator or not executable.strip() or not target.strip():
+            return None
+        targets.setdefault(executable.strip(), []).append(target.strip())
+    return targets
+
+
 def add_console_scripts(setup_py: str, entries: list[str]) -> str | None:
     """Insert entries at the end of setup.py's console_scripts list, leaving the rest as is.
 
@@ -755,6 +773,19 @@ def plan_package_edits(
                 setup_text = added
                 changed = sorted({*changed, *(e.split(" = ", 1)[0] for e in missing)})
             registered = console_scripts(setup_text)
+        # A registered executable can still point at a missing or wrong module.
+        # Check full targets, including duplicates, before accepting edited setup.py.
+        targets = console_script_targets(setup_text) if original is not None else None
+        if targets is not None:
+            for label, entry in entries.items():
+                expected = entry.partition("=")[2].strip()
+                actual = targets.get(label, [])
+                if actual and (len(actual) != 1 or actual[0] != expected):
+                    plan.problems.append(
+                        f"setup.py has your edits; console script {label!r} must point to "
+                        f"{expected!r}, but registers {actual!r}. "
+                        "Correct the registration before regenerating."
+                    )
         if original is not None and setup_text != original:
             plan.patched["setup.py"] = setup_text
             plan.notes.append(f"registered {', '.join(changed)} in your edited setup.py")
