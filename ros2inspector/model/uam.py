@@ -279,6 +279,7 @@ class UnifiedArchitectureModel:
         preset: str | None = None,
     ) -> UnifiedArchitectureModel:
         uam = cls()
+        uam._include_tests = include_tests
 
         xml_files = find_package_xml_files(workspace_root)
         packages = [p for f in xml_files if (p := parse_package_xml(f)) is not None]
