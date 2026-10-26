@@ -89,10 +89,9 @@ def _snapshot(root: Path, extra: tuple[Path, ...] = ()) -> Snapshot:
             dirnames[:] = []
             filenames = [name for name in filenames if name in _STOP_MARKERS]
         elif "package.xml" in filenames:
-            # Health scoring awards points for launch path existence, including an
-            # empty directory. Track presence separately from file metadata.
+            # Package health counts launch directories even when they are empty.
             for relative in ("launch", "bringup/launch"):
-                if (base / relative).exists():
+                if (base / relative).is_dir():
                     key = (base / relative).relative_to(source_root).as_posix() + "/"
                     snap[key] = (0, 0, 0, 0)
         for filename in filenames:
@@ -310,6 +309,7 @@ def watch(
     console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
 
     last: RunResult | None = None
+    policy_error: str | None = None
     try:
         prev_snap = _snapshot(root, extra)
         console.print("[dim]Initial scan…[/dim]")
@@ -335,12 +335,17 @@ def watch(
             if policy_path is not None and any(f.startswith("<policy>/") for f in changed):
                 try:
                     rules = load_policy(policy_path)
+                    policy_error = None
                     console.print("[dim]Policy reloaded.[/dim]")
                 except PolicyConfigError as exc:
+                    policy_error = str(exc)
                     console.print(f"[red]Policy error, keeping previous rules:[/red] {exc}")
             last = _run_once(root, rules, no_cache, previous=last, verbose=verbose)
     except KeyboardInterrupt:
         console.print("\n[dim]Stopped.[/dim]")
     if last is None:
         raise typer.Exit(130)
+    if policy_error is not None:
+        err_console.print(f"[red]Policy remains invalid:[/red] {policy_error}")
+        raise typer.Exit(2)
     raise typer.Exit(_exit_code(last, fail_on))

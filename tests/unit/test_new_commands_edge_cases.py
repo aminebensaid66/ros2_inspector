@@ -454,7 +454,8 @@ def test_watch_keeps_previous_rules_when_policy_breaks(
     monkeypatch.setattr(cmd_watch.time, "sleep", fake_sleep)
     result = runner.invoke(app, ["watch", str(ws), "--no-cache"])
     assert "keeping previous rules" in result.output
-    assert result.exit_code == 0
+    assert "Policy remains invalid" in result.output
+    assert result.exit_code == 2
 
 
 def test_watch_lists_at_most_five_changed_files(ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -633,6 +634,29 @@ def test_snapshot_watches_files_that_change_health(ws: Path) -> None:
     changed = cmd_watch._changed_files(before, cmd_watch._snapshot(ws))
     assert sorted(changed) == ["pkg_a/README.md", "pkg_a/test/fixture.json"]
 
+
+def test_watch_recovers_exit_status_when_policy_is_fixed(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = ws / "ros2inspector_policy.yaml"
+    policy.write_text("version: 1\nrules: []\n")
+    monkeypatch.setattr(cmd_watch, "_DEBOUNCE_SECONDS", 0)
+    ticks = {"n": 0}
+
+    def fake_sleep(_: float) -> None:
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            policy.write_text("version: 1\nrules:\n  - type: invalid_rule\n")
+        elif ticks["n"] == 3:
+            policy.write_text("version: 1\nrules: []\n# corrected\n")
+        elif ticks["n"] > 5:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cmd_watch.time, "sleep", fake_sleep)
+    result = runner.invoke(app, ["watch", str(ws), "--no-cache"])
+    assert "keeping previous rules" in result.output
+    assert "Policy reloaded." in result.output
+    assert result.exit_code == 0, result.output
 
 def test_snapshot_tracks_health_relevant_empty_launch_directories(ws: Path) -> None:
     package = ws / "src" / "pkg_a"

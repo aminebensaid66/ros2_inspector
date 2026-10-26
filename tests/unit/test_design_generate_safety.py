@@ -290,3 +290,57 @@ def test_overlong_expanded_names_are_rejected_on_the_field(
     assert data["fields"][0]["path"] == f"packages.0.nodes.0.{group}.0.name"
     assert "ROS 2 accepts at most" in data["fields"][0]["message"]
     assert not (out / "demo_pkg").exists()
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "demo_pkg.missing_module:main",
+        "demo_pkg.talker:missing_callable",
+        "another_pkg.talker:main",
+    ],
+)
+def test_edited_setup_rejects_wrong_console_script_target(
+    server: Any, target: str
+) -> None:
+    httpd, out = server
+    design = _state(_pkg())
+    assert _post(httpd, "/generate", design)[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    source = setup.read_text()
+    broken = source.replace("talker = demo_pkg.talker:main", f"talker = {target}")
+    assert broken != source
+    setup.write_text(broken)
+
+    status, response = _post(httpd, "/generate", design)
+    assert status == 409, response
+    assert "console script 'talker' must point to 'demo_pkg.talker:main'" in response["error"]
+    assert setup.read_text() == broken
+
+
+def test_edited_setup_rejects_duplicate_managed_entry_points(server: Any) -> None:
+    httpd, out = server
+    design = _state(_pkg())
+    assert _post(httpd, "/generate", design)[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    source = setup.read_text()
+    needle = "'talker = demo_pkg.talker:main',"
+    assert needle in source
+    setup.write_text(source.replace(needle, needle + "\n            " + needle))
+
+    status, response = _post(httpd, "/generate", design)
+    assert status == 409, response
+    assert "console script 'talker' must point to 'demo_pkg.talker:main'" in response["error"]
+
+
+def test_edited_setup_accepts_equivalent_entry_point_whitespace(server: Any) -> None:
+    httpd, out = server
+    design = _state(_pkg())
+    assert _post(httpd, "/generate", design)[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(setup.read_text().replace(
+        "talker = demo_pkg.talker:main", "talker=demo_pkg.talker:main"
+    ))
+
+    status, response = _post(httpd, "/generate", design)
+    assert status == 200, response
