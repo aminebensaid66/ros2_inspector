@@ -918,6 +918,8 @@ def _write_atomic(path: Path, data: bytes) -> None:
             stream.write(data)
             if hasattr(os, "fchmod"):
                 os.fchmod(stream.fileno(), mode)
+        if not hasattr(os, "fchmod"):
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
