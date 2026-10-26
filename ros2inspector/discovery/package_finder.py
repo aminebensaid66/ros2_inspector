@@ -41,7 +41,7 @@ def source_search_root(root: Path) -> Path:
     try:
         resolved = root.expanduser().resolve()
         src = resolved / "src"
-        return src if resolved.name != "src" and src.is_dir() else resolved
+        return src if resolved.name != "src" and not (resolved / "package.xml").is_file() and src.is_dir() else resolved
     except PermissionError as exc:
         raise WorkspaceAccessError(root) from exc
 
