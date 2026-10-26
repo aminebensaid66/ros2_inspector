@@ -344,3 +344,20 @@ def test_edited_setup_accepts_equivalent_entry_point_whitespace(server: Any) -> 
 
     status, response = _post(httpd, "/generate", design)
     assert status == 200, response
+
+
+def test_package_rename_rejects_stale_user_imports_before_writing(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    old = out / "demo_pkg"
+    (old / "demo_pkg" / "helper.py").write_text("VALUE = 42\n")
+    node = old / "demo_pkg" / "talker.py"
+    node.write_text(node.read_text() + "\nfrom demo_pkg.helper import VALUE\n")
+    original = node.read_text()
+    renamed = _pkg()
+    renamed["pkg_name"] = "renamed_pkg"
+    status, response = _post(httpd, "/generate", _state(renamed))
+    assert status == 409, response
+    assert "update its imports before renaming" in response["error"]
+    assert node.read_text() == original
+    assert not (out / "renamed_pkg").exists()
