@@ -22,6 +22,7 @@ from rich.console import Console
 
 from ros2inspector.design.codegen import (
     _GENERATED_MARKER,
+    _package_import_references,
     GenerateResult,
     package_name_edits,
     plan_package_edits,
@@ -112,6 +113,28 @@ def _apply_renames(
         return []
     for old_dir, new_dir in moves:
         package_name_edits(old_dir, old_dir.name, new_dir.name)
+        # Other generated packages can also depend on the old module name.
+        # Validate their source imports before staging any directory.
+        for sibling in output_dir.iterdir():
+            if (
+                sibling == old_dir
+                or not sibling.is_dir()
+                or not (sibling / _GENERATED_MARKER).is_file()
+            ):
+                continue
+            for source_file in sibling.rglob("*.py"):
+                if source_file.is_symlink() or not source_file.is_file():
+                    continue
+                try:
+                    text = source_file.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    continue
+                if _package_import_references(text, old_dir.name):
+                    raise ValueError(
+                        f"{source_file.relative_to(output_dir)} imports {old_dir.name!r}; "
+                        "update this sibling package before renaming "
+                        f"the package to {new_dir.name!r}."
+                    )
     staging = Path(tempfile.mkdtemp(prefix=".ros2inspector-rename-", dir=output_dir))
     (staging / "COLCON_IGNORE").write_text("", encoding="utf-8")
     staged: list[tuple[Path, Path, Path]] = []
