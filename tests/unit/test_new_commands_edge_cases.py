@@ -699,3 +699,33 @@ def test_watch_reruns_when_empty_launch_directory_changes(
     monkeypatch.setattr(cmd_watch.time, "sleep", fake_sleep)
     runner.invoke(app, ["watch", str(ws), "--audit", "--no-cache"])
     assert runs["n"] == 2
+
+
+def test_entrypoint_matches_only_its_constructed_node_class(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from ros2inspector.model.uam import _entrypoint_matches_node
+    from ros2inspector.static.python_entrypoints import PythonEntrypoint
+
+    package = tmp_path / "app"
+    module = package / "app" / "nodes.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "class Alpha: pass\n"
+        "class Beta: pass\n"
+        "def helper(): return Alpha()\n"
+        "def main_alpha(): helper()\n"
+        "def main_beta(): Beta()\n"
+    )
+    alpha = SimpleNamespace(
+        language="python", file_path=str(module), source_symbol="Alpha", name="Alpha"
+    )
+    beta = SimpleNamespace(
+        language="python", file_path=str(module), source_symbol="Beta", name="Beta"
+    )
+    run_alpha = PythonEntrypoint("run_alpha", "app.nodes", "main_alpha")
+    run_beta = PythonEntrypoint("run_beta", "app.nodes", "main_beta")
+    assert _entrypoint_matches_node(run_alpha, alpha, package)
+    assert not _entrypoint_matches_node(run_alpha, beta, package)
+    assert _entrypoint_matches_node(run_beta, beta, package)
+    assert not _entrypoint_matches_node(run_beta, alpha, package)
