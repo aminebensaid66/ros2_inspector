@@ -309,16 +309,75 @@ def _could_be(endpoints: list[tuple[str, str | None]], rel: str, name: str) -> b
     return False
 
 
+def _relevant_source_diagnostics(uam: UnifiedArchitectureModel) -> list[dict[str, Any]]:
+    """Ignore unrelated test-file parse errors for production connectivity confidence."""
+    from pathlib import Path
+
+    from ros2inspector.model.uam import _is_test_source
+
+    if getattr(uam, "_include_tests", False):
+        return uam.diagnostics()
+    relevant = []
+    for diagnostic in uam.diagnostics():
+        file_name = diagnostic.get("file")
+        excluded = False
+        if file_name and diagnostic.get("code") == "source_parse_failed":
+            for package in uam.packages():
+                root = Path(package.path)
+                path = Path(str(file_name))
+                if not _is_test_source(path, root):
+                    continue
+                # Imports of test modules from production code are still relevant
+                # because they may contain reachable production endpoints.
+                try:
+                    module = ".".join(path.relative_to(root).with_suffix("").parts)
+                except ValueError:
+                    module = ""
+                import ast
+
+                imported = False
+                for source in root.rglob("*.py"):
+                    if _is_test_source(source, root) or source == path:
+                        continue
+                    try:
+                        tree = ast.parse(source.read_bytes())
+                    except (OSError, SyntaxError, UnicodeError, RecursionError):
+                        continue
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.Import):
+                            imported |= any(
+                                alias.name == module
+                                or alias.name.endswith("." + module)
+                                for alias in node.names
+                            )
+                        elif isinstance(node, ast.ImportFrom) and node.module:
+                            imported |= (
+                                node.module == module
+                                or node.module.endswith("." + module)
+                            )
+                    if imported:
+                        break
+                excluded = not imported
+                break
+        if not excluded:
+            relevant.append(diagnostic)
+    return relevant
+
+
 def _source_gap(uam: UnifiedArchitectureModel) -> bool:
     return any(
         d.get("code") == "source_parse_failed"
         or (d.get("code") == "source_analysis_incomplete" and not d.get("endpoint_kind"))
-        for d in uam.diagnostics()
+        for d in _relevant_source_diagnostics(uam)
     )
 
 
 def _parse_gap_note(uam: UnifiedArchitectureModel) -> str:
-    failed = {d.get("file") for d in uam.diagnostics() if d.get("code") == "source_parse_failed"}
+    failed = {
+        d.get("file")
+        for d in _relevant_source_diagnostics(uam)
+        if d.get("code") == "source_parse_failed"
+    }
     if failed:
         return (
             f"; {len(failed)} source file(s) could not be parsed; missing peer is not proven "
