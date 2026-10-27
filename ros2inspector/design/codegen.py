@@ -786,6 +786,18 @@ def plan_package_edits(
                         f"{expected!r}, but registers {actual!r}. "
                         "Correct the registration before regenerating."
                     )
+        if targets is not None:
+            for previous_label in renamed:
+                dangling = [
+                    target for target in targets.get(previous_label, [])
+                    if target.startswith(f"{pkg}.{previous_label}:")
+                ]
+                if dangling:
+                    plan.problems.append(
+                        f"setup.py still registers the obsolete executable "
+                        f"{previous_label!r} pointing at the renamed module. "
+                        "Update this console_scripts entry before regenerating."
+                    )
         if original is not None and setup_text != original:
             plan.patched["setup.py"] = setup_text
             plan.notes.append(f"registered {', '.join(changed)} in your edited setup.py")
