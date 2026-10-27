@@ -728,3 +728,82 @@ def test_unrelated_broken_test_file_does_not_downgrade_connectivity(tmp_path: Pa
     assert [(v.severity, v.confidence) for v in first] == [
         (v.severity, v.confidence) for v in second
     ]
+
+
+def test_imported_broken_test_preserves_uncertainty_and_completeness(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import analysis_completeness, rule_topic_connectivity
+
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    (pkg / "tests").mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    (pkg / "listener.py").write_text(
+        "from tests import helper\n"
+        "from rclpy.node import Node\n"
+        "from std_msgs.msg import String\n"
+        "class Listener(Node):\n"
+        "    def __init__(self):\n"
+        "        super().__init__('listener')\n"
+        "        self.create_subscription(String, '/missing', lambda m: None, 10)\n"
+    )
+    (pkg / "tests" / "helper.py").write_text("def broken(\n")
+    uam = UAM.build(root, use_cache=False, include_tests=False)
+    findings = rule_topic_connectivity(uam, {})
+    assert any(v.confidence == "uncertain" for v in findings)
+    assert analysis_completeness(uam)["complete"] is False
+    assert analysis_completeness(uam)["relevant_source_parse_failures"] == 1
+
+
+def test_unrelated_test_provenance_index_is_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import _relevant_source_diagnostics, analysis_completeness
+
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    (pkg / "tests").mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    for n in range(20):
+        (pkg / f"module_{n}.py").write_text(f"VALUE = {n}\n")
+    (pkg / "tests" / "broken.py").write_text("def broken(\n")
+    uam = UAM.build(root, use_cache=False)
+    original_rglob = Path.rglob
+    searches = {"count": 0}
+
+    def tracked(path: Path, pattern: str) -> Any:
+        if path == pkg and pattern == "*.py":
+            searches["count"] += 1
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(Path, "rglob", tracked)
+    for _ in range(5):
+        assert analysis_completeness(uam)["excluded_test_parse_failures"] == 1
+        assert not _relevant_source_diagnostics(uam)
+    assert searches["count"] == 1
+
+
+def test_audit_json_reports_production_completeness(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    (pkg / "tests").mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    (pkg / "tests" / "bad.py").write_text("def broken(\n")
+    result = runner.invoke(app, ["-q", "audit", str(root), "--no-cache", "-f", "json"])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["completeness"]["complete"] is True
+    assert report["completeness"]["excluded_test_parse_failures"] == 1
