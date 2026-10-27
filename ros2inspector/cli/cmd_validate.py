@@ -91,6 +91,9 @@ def validate(
     except PolicyConfigError as exc:
         err_console.print(f"Policy error: {exc}", markup=False, soft_wrap=True)
         raise typer.Exit(2) from exc
+    from ros2inspector.policy.rules import analysis_completeness
+
+    completeness = analysis_completeness(uam)
     summary = violation_summary(violations)
 
     scores = {p.name: (p.health_score or 0) for p in uam.packages()}
@@ -106,6 +109,7 @@ def validate(
                 "violations": summary,
             },
             "violations": [v.model_dump(mode="json") for v in violations],
+            "completeness": completeness,
         }
         sys.stdout.write(orjson.dumps(data, option=orjson.OPT_INDENT_2).decode() + "\n")
     else:
