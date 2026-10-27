@@ -182,8 +182,17 @@ def rename_launch_nodes(
         keywords = {kw.arg: kw.value for kw in call.keywords}
         executable = keywords.get("executable")
         package = keywords.get("package")
+        # A foreign launch action does not belong to this managed package,
+        # even when its executable is a dynamic expression.
+        if (
+            package_name is not None
+            and isinstance(package, ast.Constant)
+            and isinstance(package.value, str)
+            and package.value != package_name
+        ):
+            continue
         if not isinstance(executable, ast.Constant) or not isinstance(executable.value, str):
-            raise ValueError("the launch Node executable is not a literal")
+            raise ValueError("the managed launch Node executable is not a literal")
         if package_name is not None and executable.value in renamed:
             if not isinstance(package, ast.Constant) or not isinstance(package.value, str):
                 raise ValueError("the launch Node package cannot be identified safely")
