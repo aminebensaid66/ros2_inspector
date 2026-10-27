@@ -807,3 +807,44 @@ def test_audit_json_reports_production_completeness(tmp_path: Path) -> None:
     report = json.loads(result.stdout)
     assert report["completeness"]["complete"] is True
     assert report["completeness"]["excluded_test_parse_failures"] == 1
+
+
+def test_imported_test_helper_chain_keeps_source_gap(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import analysis_completeness
+
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    (pkg / "tests").mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    (pkg / "main.py").write_text("from tests import gateway\n")
+    (pkg / "tests" / "gateway.py").write_text("from tests import broken\n")
+    (pkg / "tests" / "broken.py").write_text("def broken(\n")
+    uam = UAM.build(root, use_cache=False, include_tests=False)
+    assert analysis_completeness(uam)["relevant_source_parse_failures"] == 1
+
+
+def test_validate_json_contains_analysis_completeness(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    (pkg / "tests").mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    (pkg / "tests" / "broken.py").write_text("def broken(\n")
+    policy = tmp_path / "policy.yaml"
+    policy.write_text("version: 1\nrules: []\n")
+    result = runner.invoke(
+        app, ["-q", "validate", str(root), "--policy", str(policy),
+              "--no-cache", "--format", "json"]
+    )
+    assert result.exit_code == 0, result.output
+    output = json.loads(result.stdout)
+    assert output["completeness"]["complete"] is True
+    assert output["completeness"]["excluded_test_parse_failures"] == 1
