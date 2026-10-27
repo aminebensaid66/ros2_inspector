@@ -360,3 +360,32 @@ def test_rename_preserves_foreign_package_launch_entries(server: Any) -> None:
     result = launch.read_text()
     assert "Node(package='other_pkg', executable='talker', name='talker')" in result
     assert "executable='renamed'" in result
+
+
+def test_scoped_launch_rename_skips_dynamic_foreign_executable() -> None:
+    from ros2inspector.design.source_edits import rename_launch_nodes
+
+    text = (
+        "from launch_ros.actions import Node\n"
+        "from launch.substitutions import LaunchConfiguration\n"
+        "entries = [\n"
+        "    Node(package='foreign_pkg', executable=LaunchConfiguration('bin')),\n"
+        "    Node(package='demo_pkg', executable='talker', name='runtime_custom'),\n"
+        "]\n"
+    )
+    updated, started = rename_launch_nodes(text, {"talker": "renamed"}, "demo_pkg")
+    assert "executable=LaunchConfiguration('bin')" in updated
+    assert "executable='renamed', name='runtime_custom'" in updated
+    assert started == {"renamed"}
+
+
+def test_scoped_launch_rename_refuses_unknown_package_identity() -> None:
+    from ros2inspector.design.source_edits import rename_launch_nodes
+
+    text = (
+        "from launch_ros.actions import Node\n"
+        "from launch.substitutions import LaunchConfiguration\n"
+        "node = Node(package=LaunchConfiguration('package'), executable='talker')\n"
+    )
+    with pytest.raises(ValueError, match="cannot be identified safely"):
+        rename_launch_nodes(text, {"talker": "renamed"}, "demo_pkg")
