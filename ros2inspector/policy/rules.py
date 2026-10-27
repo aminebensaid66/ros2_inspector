@@ -324,8 +324,8 @@ def _relevant_source_diagnostics(uam: UnifiedArchitectureModel) -> list[dict[str
         uam._policy_source_diagnostics = diagnostics
         return diagnostics
 
-    from pathlib import Path
     import ast
+    from pathlib import Path
 
     from ros2inspector.model.uam import _is_test_source
 
@@ -342,9 +342,9 @@ def _relevant_source_diagnostics(uam: UnifiedArchitectureModel) -> list[dict[str
         if not failed_tests:
             continue
 
-        def aliases(path: Path) -> set[str]:
+        def aliases(path: Path, package_dir: Path) -> set[str]:
             try:
-                parts = list(path.relative_to(root).with_suffix("").parts)
+                parts = list(path.relative_to(package_dir).with_suffix("").parts)
             except ValueError:
                 return set()
             if parts and parts[-1] == "__init__":
@@ -358,7 +358,7 @@ def _relevant_source_diagnostics(uam: UnifiedArchitectureModel) -> list[dict[str
         lookup: dict[str, set[Path]] = {}
         imports_by_path: dict[Path, set[str]] = {}
         for path in sources:
-            for name in aliases(path):
+            for name in aliases(path, root):
                 lookup.setdefault(name, set()).add(path)
             try:
                 tree = ast.parse(path.read_bytes(), filename=str(path))
@@ -372,7 +372,7 @@ def _relevant_source_diagnostics(uam: UnifiedArchitectureModel) -> list[dict[str
                     base = node.module or ""
                     # Relative imports are resolved against the source's module.
                     if node.level:
-                        parent = next(iter(sorted(aliases(path))), "")
+                        parent = next(iter(sorted(aliases(path, root))), "")
                         segments = parent.split(".")[:-node.level]
                         base = ".".join([*segments, *( [base] if base else [] )])
                     if base:
