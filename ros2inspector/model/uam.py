@@ -254,6 +254,7 @@ def _effective_deployment_name(nd: NodeDefinition, launch_node: LaunchNode) -> s
 class UnifiedArchitectureModel:
     def __init__(self) -> None:
         self._include_tests: bool = False
+        self._policy_source_diagnostics: list[dict[str, Any]] | None = None
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._packages: list[PackageMetadata] = []
         self._nodes: list[NodeDefinition] = []
