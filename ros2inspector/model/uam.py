@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from collections import Counter
@@ -189,7 +190,8 @@ def _python_modules_for_file(file_path: str | None, package_path: Path) -> set[s
 
 
 def _entrypoint_matches_node(
-    entrypoint: PythonEntrypoint, nd: NodeDefinition, package_path: Path
+    entrypoint: PythonEntrypoint, nd: NodeDefinition, package_path: Path,
+    module_cache: dict[str, ast.Module | None] | None = None,
 ) -> bool:
     if nd.language != "python" or not nd.file_path:
         return False
@@ -200,11 +202,17 @@ def _entrypoint_matches_node(
 
     # An entry point addresses a *callable*, not every Node class in its module.
     # Follow local helper calls and match only constructors reachable from it.
-    import ast
-
-    try:
-        tree = ast.parse(Path(nd.file_path).read_bytes())
-    except (SyntaxError, OSError, UnicodeDecodeError, RecursionError, MemoryError):
+    file_path = str(nd.file_path)
+    if module_cache is not None and file_path in module_cache:
+        tree = module_cache[file_path]
+    else:
+        try:
+            tree = ast.parse(Path(file_path).read_bytes())
+        except (SyntaxError, OSError, UnicodeDecodeError, RecursionError, MemoryError):
+            tree = None
+        if module_cache is not None:
+            module_cache[file_path] = tree
+    if tree is None:
         return False
 
     functions = {
@@ -249,6 +257,7 @@ def _launch_matches_definition(
     package_path: Path,
     entrypoints: dict[str, PythonEntrypoint],
     component_executables: dict[str, str] | None = None,
+    module_cache: dict[str, ast.Module | None] | None = None,
 ) -> bool:
     plugin = launch_node.plugin
     if plugin is None and component_executables:
@@ -262,7 +271,7 @@ def _launch_matches_definition(
     # through to weaker heuristics for a different source module.
     entrypoint = entrypoints.get(launch_node.executable)
     if entrypoint is not None:
-        return _entrypoint_matches_node(entrypoint, nd, package_path)
+        return _entrypoint_matches_node(entrypoint, nd, package_path, module_cache)
 
     # C++ executables and legacy Python packages without discoverable console-script
     # metadata still benefit from conservative executable/symbol matching.
@@ -612,6 +621,9 @@ class UnifiedArchitectureModel:
         pkg_map: dict[str, PackageMetadata],
     ) -> None:
         g = self._graph
+        # Source trees are cached only for this build, so later edits cannot
+        # leak stale callable associations into subsequent scans.
+        module_cache: dict[str, ast.Module | None] = {}
 
         for pkg in packages:
             g.add_node(
@@ -659,7 +671,7 @@ class UnifiedArchitectureModel:
                     )
                 ]
                 if len(candidates) > 1 and not any(
-                    _entrypoint_matches_node(entrypoint, nd, package_path)
+                    _entrypoint_matches_node(entrypoint, nd, package_path, module_cache)
                     for nd in candidates
                 ):
                     self._diagnostics.append(
@@ -714,6 +726,7 @@ class UnifiedArchitectureModel:
                     package_path,
                     self._entrypoints.get(nd.package, {}),
                     self._component_executables.get(nd.package, {}),
+                    module_cache,
                 )
             ]
 
