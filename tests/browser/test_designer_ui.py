@@ -731,23 +731,66 @@ def test_ambiguous_constructor_rename_shows_conflict(
     shot(page, "designer-constructor-conflict")
 
 
-def test_cross_package_topic_links_can_be_connected(
+def test_workspace_overview_shows_real_links_and_confirmed_suggestions(
     page: Page, designer: dict[str, Any]
 ) -> None:
     _open(page, designer)
     page.click(".ptab-add")
     page.click("#an")
     page.evaluate("""() => {
-        const source=S.packages[0].nodes[0];
+        const source=S.packages[0];
         const target=S.packages[1].nodes[0];
-        target.subscribers.push({
-          id:'cross-sub',name:'/not-connected',msgType:source.publishers[0].msgType
-        });
+        const image=source.nodes[0].publishers.find(p=>p.msgType==='sensor_msgs/Image');
+        const string=source.nodes[1].publishers.find(p=>p.msgType==='std_msgs/String');
+        target.subscribers.push(
+          {id:'image',name:'/camera/image',msgType:image.msgType},
+          {id:'connected',name:string.name,msgType:string.msgType},
+          {id:'unrelated',name:'/vehicle/path',msgType:string.msgType}
+        );
         renderAll();
     }""")
     page.click("#wslinks")
     expect(page.locator("#workspace-panel")).to_be_visible()
-    expect(page.locator("#workspace-panel .cross-item")).not_to_have_count(0)
-    page.locator("#workspace-panel .cross-item button", has_text="Connect").first.click()
-    expect(page.locator("#workspace-panel .connected").first).to_have_text("Connected")
+    expect(page.locator("#workspace-map")).to_be_visible()
+    expect(page.locator("#workspace-map .workspace-node")).to_have_count(3)
+    expect(page.locator("#workspace-map .workspace-link")).to_have_count(1)
+    expect(page.locator("#workspace-panel .connected")).to_have_count(1)
+    expect(page.locator("#workspace-panel")).to_contain_text("/camera/image")
+    expect(page.locator("#workspace-panel")).to_contain_text("/image_raw")
+    expect(page.locator("#workspace-panel")).not_to_contain_text("/vehicle/path")
+
+    connect = page.locator("#workspace-panel button", has_text="Change subscriber topic").first
+    page.once("dialog", lambda dialog: dialog.dismiss())
+    connect.click()
+    assert page.evaluate("S.packages[1].nodes[0].subscribers[0].name") == "/camera/image"
+    page.once("dialog", lambda dialog: dialog.accept())
+    connect.click()
+    assert page.evaluate("S.packages[1].nodes[0].subscribers[0].name") == "/image_raw"
+    expect(page.locator("#workspace-map .workspace-link")).to_have_count(2)
+    expect(page.locator("#workspace-panel .connected")).to_have_count(2)
+    assert page.errors.messages == []  # type: ignore[attr-defined]
+
+
+def test_workspace_overview_shows_cross_package_service_and_action_links(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.click(".ptab-add")
+    page.click("#an")
+    page.evaluate("""() => {
+        const source=S.packages[0].nodes[0], target=S.packages[1].nodes[0];
+        source.services.push({id:'svc',name:'/reset',msgType:'std_srvs/Trigger'});
+        target.clients.push({id:'client',name:'/reset',msgType:'std_srvs/Trigger'});
+        source.action_servers.push({
+          id:'action',name:'/navigate',msgType:'example_interfaces/Fibonacci'
+        });
+        target.action_clients.push({
+          id:'action-client',name:'/navigate',msgType:'example_interfaces/Fibonacci'
+        });
+        renderAll();
+    }""")
+    page.click("#wslinks")
+    expect(page.locator("#workspace-map .workspace-link")).to_have_count(2)
+    expect(page.locator("#workspace-panel")).to_contain_text("service:")
+    expect(page.locator("#workspace-panel")).to_contain_text("action:")
     assert page.errors.messages == []  # type: ignore[attr-defined]
