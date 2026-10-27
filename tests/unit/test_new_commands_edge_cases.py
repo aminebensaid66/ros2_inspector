@@ -734,10 +734,10 @@ def test_entrypoint_matches_only_its_constructed_node_class(tmp_path: Path) -> N
 def test_entrypoint_module_parsed_only_once_per_analysis_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from types import SimpleNamespace
+
     from ros2inspector.model.uam import _entrypoint_matches_node
     from ros2inspector.static.python_entrypoints import PythonEntrypoint
-
-    from types import SimpleNamespace
 
     root = tmp_path / "pkg"
     module = root / "pkg" / "nodes.py"
