@@ -718,3 +718,42 @@ def test_generated_package_without_fchmod(tmp_path: Path, monkeypatch: pytest.Mo
         {"id": "n1", "label": "talker"}
     ]}, tmp_path)
     assert (tmp_path / "sample_pkg" / "setup.py").is_file()
+
+
+def test_windows_native_writes(ws: Path, tmp_path: Path) -> None:
+    """Run real installed CLI commands on native Windows Python, no API monkeypatching."""
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("Windows-only native writer smoke test")
+
+    def run(*args: str) -> None:
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from ros2inspector.cli.app import app; app()",
+                *args,
+            ],
+            text=True, capture_output=True, cwd=tmp_path, timeout=90, check=False
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    nodes = tmp_path / "nodes.json"
+    chart = tmp_path / "graph.html"
+    docs = tmp_path / "docs"
+    run("nodes", "-C", str(ws), "--no-cache", "-f", "json", "-o", str(nodes))
+    assert nodes.is_file() and nodes.read_text(encoding="utf-8").startswith("[")
+    run("viz", "-C", str(ws), "--no-open", "--no-cache", "-o", str(chart))
+    assert chart.is_file() and "<html" in chart.read_text(encoding="utf-8").lower()
+    run("docs", "-C", str(ws), "--no-cache", "-o", str(docs))
+    assert (docs / "index.md").is_file()
+
+    from ros2inspector.design.codegen import generate_package_result
+
+    generate_package_result(
+        {"pkg_name": "windows_pkg", "nodes": [{"id": "n1", "label": "talker"}]},
+        tmp_path,
+    )
+    assert (tmp_path / "windows_pkg" / "setup.py").is_file()
+    assert not list(tmp_path.rglob("*.tmp"))
