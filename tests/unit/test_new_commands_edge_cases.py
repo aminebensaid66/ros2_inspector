@@ -804,6 +804,6 @@ def test_audit_json_reports_production_completeness(tmp_path: Path) -> None:
     (pkg / "tests" / "bad.py").write_text("def broken(\n")
     result = runner.invoke(app, ["-q", "audit", str(root), "--no-cache", "-f", "json"])
     assert result.exit_code == 0, result.output
-    report = json.loads(result.output)
+    report = json.loads(result.stdout)
     assert report["completeness"]["complete"] is True
     assert report["completeness"]["excluded_test_parse_failures"] == 1
