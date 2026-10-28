@@ -778,3 +778,74 @@ def test_windows_native_writes(ws: Path, tmp_path: Path) -> None:
     )
     assert (tmp_path / "windows_pkg" / "setup.py").is_file()
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_external_manifest_dependency_is_enforced(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license><depend>rclpy</depend></package>'
+    )
+    uam = UAM.build(root, use_cache=False)
+    assert len(rule_dependency(uam, {"forbidden": [{"from": "app", "to": "rclpy"}]})) == 1
+    assert not rule_dependency(uam, {"required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})
+
+
+def test_conditional_external_dependency_is_reported_as_uncertain(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    package = tmp_path / "ws" / "src" / "app"
+    package.mkdir(parents=True)
+    (package / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>app</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license>'
+        '<depend condition="$ROS_VERSION == 1">roscpp</depend></package>'
+    )
+    uam = UAM.build(tmp_path / "ws", use_cache=False)
+    prohibited = rule_dependency(uam, {
+        "forbidden": [{"from": "app", "to": "roscpp"}]
+    })
+    assert len(prohibited) == 1
+    assert prohibited[0].confidence == "uncertain"
+    assert "conditional" in prohibited[0].message
+    required = rule_dependency(uam, {
+        "required": [{"package": "app", "depends_on": "roscpp"}]
+    })
+    assert len(required) == 1
+    assert required[0].confidence == "uncertain"
+
+
+def test_transitive_external_dependency_respects_rule_flag(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    root = tmp_path / "ws"
+    for name, extra in (("app", "<depend>bridge</depend>"),
+                        ("bridge", "<depend>rclpy</depend>")):
+        pkg = root / "src" / name
+        pkg.mkdir(parents=True)
+        (pkg / "package.xml").write_text(
+            f'<package format="3"><name>{name}</name><version>1.0.0</version>'
+            '<description>pkg</description><maintainer email="a@b.c">Me</maintainer>'
+            f'<license>MIT</license>{extra}</package>'
+        )
+    uam = UAM.build(root, use_cache=False)
+    forbidden = {"forbidden": [{"from": "app", "to": "rclpy"}]}
+    assert len(rule_dependency(uam, forbidden)) == 1
+    assert not rule_dependency(uam, {**forbidden, "transitive": False})
+    assert not rule_dependency(uam, {"required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})
+    assert len(rule_dependency(uam, {"transitive": False, "required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})) == 1
