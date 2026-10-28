@@ -701,6 +701,70 @@ def test_watch_reruns_when_empty_launch_directory_changes(
     assert runs["n"] == 2
 
 
+def test_entrypoint_matches_only_its_constructed_node_class(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from ros2inspector.model.uam import _entrypoint_matches_node
+    from ros2inspector.static.python_entrypoints import PythonEntrypoint
+
+    package = tmp_path / "app"
+    module = package / "app" / "nodes.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "class Alpha: pass\n"
+        "class Beta: pass\n"
+        "def helper(): return Alpha()\n"
+        "def main_alpha(): helper()\n"
+        "def main_beta(): Beta()\n"
+    )
+    alpha = SimpleNamespace(
+        language="python", file_path=str(module), source_symbol="Alpha", name="Alpha"
+    )
+    beta = SimpleNamespace(
+        language="python", file_path=str(module), source_symbol="Beta", name="Beta"
+    )
+    run_alpha = PythonEntrypoint("run_alpha", "app.nodes", "main_alpha")
+    run_beta = PythonEntrypoint("run_beta", "app.nodes", "main_beta")
+    assert _entrypoint_matches_node(run_alpha, alpha, package)
+    assert not _entrypoint_matches_node(run_alpha, beta, package)
+    assert _entrypoint_matches_node(run_beta, beta, package)
+    assert not _entrypoint_matches_node(run_beta, alpha, package)
+
+
+def test_entrypoint_module_parsed_only_once_per_analysis_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from ros2inspector.model.uam import _entrypoint_matches_node
+    from ros2inspector.static.python_entrypoints import PythonEntrypoint
+
+    root = tmp_path / "pkg"
+    module = root / "pkg" / "nodes.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "class Alpha: pass\nclass Beta: pass\n"
+        "def main_alpha(): Alpha()\ndef main_beta(): Beta()\n"
+    )
+    real_read = Path.read_bytes
+    count = {"n": 0}
+
+    def counted_read(path: Path) -> bytes:
+        if path == module:
+            count["n"] += 1
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    cache: dict[str, Any] = {}
+    for symbol in ("Alpha", "Beta"):
+        entry = PythonEntrypoint("launch", "pkg.nodes", "main_" + symbol.lower())
+        node = SimpleNamespace(
+            language="python", file_path=str(module), source_symbol=symbol, name=symbol
+        )
+        assert _entrypoint_matches_node(entry, node, root, cache)
+    assert count["n"] == 1
+
+
 def test_standalone_package_with_src_directory_is_discovered(tmp_path: Path) -> None:
     from ros2inspector.discovery.package_finder import find_package_xml_files, source_search_root
 
