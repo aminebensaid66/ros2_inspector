@@ -23,6 +23,7 @@ from rich.console import Console
 from ros2inspector.design.codegen import (
     _GENERATED_MARKER,
     GenerateResult,
+    _package_import_references,
     package_name_edits,
     plan_package_edits,
     previous_node_labels,
@@ -95,6 +96,35 @@ def _rename_plan(
     return moves
 
 
+def _sibling_import_problems(
+    output_dir: Path, renames: list[tuple[Path, Path]]
+) -> list[str]:
+    """Check package renames against imports in other generated packages."""
+    problems: list[str] = []
+    for old_dir, new_dir in renames:
+        for sibling in output_dir.iterdir():
+            if (
+                sibling == old_dir
+                or not sibling.is_dir()
+                or not (sibling / _GENERATED_MARKER).is_file()
+            ):
+                continue
+            for source_file in sibling.rglob("*.py"):
+                if source_file.is_symlink() or not source_file.is_file():
+                    continue
+                try:
+                    source = source_file.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    continue
+                if _package_import_references(source, old_dir.name):
+                    problems.append(
+                        f"{source_file.relative_to(output_dir)} imports {old_dir.name!r}; "
+                        "update this sibling package before renaming "
+                        f"the package to {new_dir.name!r}."
+                    )
+    return problems
+
+
 def _apply_renames(
     packages: list[dict[str, Any]],
     output_dir: Path,
@@ -112,6 +142,9 @@ def _apply_renames(
         return []
     for old_dir, new_dir in moves:
         package_name_edits(old_dir, old_dir.name, new_dir.name)
+        problems = _sibling_import_problems(output_dir, [(old_dir, new_dir)])
+        if problems:
+            raise ValueError(" ".join(problems))
     staging = Path(tempfile.mkdtemp(prefix=".ros2inspector-rename-", dir=output_dir))
     (staging / "COLCON_IGNORE").write_text("", encoding="utf-8")
     staged: list[tuple[Path, Path, Path]] = []
@@ -303,7 +336,7 @@ def _edit_problems(
 ) -> list[str]:
     """Why regenerating would leave a package that does not run, checked before any write."""
     source_of = {new: old for old, new in renames}
-    problems: list[str] = []
+    problems: list[str] = _sibling_import_problems(output_dir, renames)
     for package in packages:
         if package.id not in rendered:
             continue
