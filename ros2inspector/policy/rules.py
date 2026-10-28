@@ -146,49 +146,94 @@ def rule_naming(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[Poli
 
 
 def rule_dependency(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[PolicyViolation]:
+    """Check direct or transitive manifest declarations, including external packages.
+
+    The default matches the historical rule: transitive dependencies count.
+    A conditional declaration is possible evidence, not an unconditional edge.
+    """
     violations: list[PolicyViolation] = []
     source = cfg.get("_source", "policy")
-    g = uam.graph
+    transitive: bool = cfg.get("transitive", True)
+    packages = {package.name: package for package in uam.packages()}
+
+    def dependency_state(frm: str, to: str) -> str:
+        """known for unconditional paths, uncertain for conditional-only paths."""
+        if frm not in packages:
+            return "absent"
+        pending = [(frm, False)]
+        visited: set[tuple[str, bool]] = set()
+        uncertain = False
+        while pending:
+            current, conditional_path = pending.pop()
+            if (current, conditional_path) in visited:
+                continue
+            visited.add((current, conditional_path))
+            package = packages.get(current)
+            if package is None:
+                continue
+            direct = {
+                name for values in package.dependencies.values() for name in values
+            }
+            conditional = {
+                name for values in package.conditional_dependencies.values()
+                for name in values
+            }
+            for target, conditional_edge in [
+                *((name, False) for name in direct),
+                *((name, True) for name in conditional),
+            ]:
+                is_uncertain = conditional_path or conditional_edge
+                if target == to:
+                    if not is_uncertain:
+                        return "known"
+                    uncertain = True
+                if transitive and target in packages:
+                    pending.append((target, is_uncertain))
+        return "uncertain" if uncertain else "absent"
 
     for forbidden in cfg.get("forbidden", []):
-        frm = forbidden["from"]
-        to = forbidden["to"]
-        severity = _sev(forbidden.get("severity", "error"))
-        src_id = f"pkg:{frm}"
-        dst_id = f"pkg:{to}"
-        if g.has_node(src_id) and g.has_node(dst_id):
-            if g.has_edge(src_id, dst_id) or nx.has_path(g, src_id, dst_id):
-                violations.append(
-                    PolicyViolation(
-                        severity=severity,
-                        rule_type="dependency",
-                        message=f"Forbidden dependency: '{frm}' must not depend on '{to}'",
-                        policy_file=source,
-                        affected_entities=[frm, to],
-                    )
-                )
+        frm, to = forbidden["from"], forbidden["to"]
+        state = dependency_state(frm, to)
+        if state == "absent":
+            continue
+        conditional = state == "uncertain"
+        violations.append(
+            PolicyViolation(
+                severity=_sev(forbidden.get("severity", "error")),
+                confidence="uncertain" if conditional else "known",
+                rule_type="dependency",
+                message=(
+                    f"Potential forbidden dependency (conditional): '{frm}' may depend on '{to}'"
+                    if conditional else
+                    f"Forbidden dependency: '{frm}' must not depend on '{to}'"
+                ),
+                policy_file=source,
+                affected_entities=[frm, to],
+            )
+        )
 
     for required in cfg.get("required", []):
-        pkg_name = required["package"]
-        dep_name = required["depends_on"]
-        severity = _sev(required.get("severity", "warning"))
-        src_id = f"pkg:{pkg_name}"
-        dst_id = f"pkg:{dep_name}"
-        if g.has_node(src_id) and not (
-            g.has_edge(src_id, dst_id) or (g.has_node(dst_id) and nx.has_path(g, src_id, dst_id))
-        ):
-            violations.append(
-                PolicyViolation(
-                    severity=severity,
-                    rule_type="dependency",
-                    message=(
-                        f"Required dependency missing: '{pkg_name}' must depend on '{dep_name}'"
-                    ),
-                    policy_file=source,
-                    affected_entities=[pkg_name, dep_name],
-                )
+        pkg_name, dep_name = required["package"], required["depends_on"]
+        if pkg_name not in packages:
+            continue
+        state = dependency_state(pkg_name, dep_name)
+        if state == "known":
+            continue
+        violations.append(
+            PolicyViolation(
+                severity=_sev(required.get("severity", "warning")),
+                confidence="uncertain" if state == "uncertain" else "known",
+                rule_type="dependency",
+                message=(
+                    f"Required dependency is conditional: '{pkg_name}' may depend on "
+                    f"'{dep_name}', but it is not guaranteed"
+                    if state == "uncertain" else
+                    f"Required dependency missing: '{pkg_name}' must depend on '{dep_name}'"
+                ),
+                policy_file=source,
+                affected_entities=[pkg_name, dep_name],
             )
-
+        )
     return violations
 
 
@@ -309,16 +354,143 @@ def _could_be(endpoints: list[tuple[str, str | None]], rel: str, name: str) -> b
     return False
 
 
+def _relevant_source_diagnostics(uam: UnifiedArchitectureModel) -> list[dict[str, Any]]:
+    """Compute relevant source gaps once per UAM rather than once per policy rule.
+
+    Parse each package's Python sources at most once if excluded test failures
+    exist. Follow imports from production files into test files and through
+    intermediate helpers; unrelated broken tests cannot downgrade findings.
+    """
+    cached = uam._policy_source_diagnostics
+    if cached is not None:
+        return cached
+    diagnostics = uam.diagnostics()
+    if uam._include_tests:
+        uam._policy_source_diagnostics = diagnostics
+        return diagnostics
+
+    import ast
+    from pathlib import Path
+
+    from ros2inspector.model.uam import _is_test_source
+
+    excluded: set[str] = set()
+    for package in uam.packages():
+        root = Path(package.path)
+        failed_tests = {
+            str(d.get("file"))
+            for d in diagnostics
+            if d.get("code") == "source_parse_failed"
+            and d.get("file")
+            and _is_test_source(str(d["file"]), root)
+        }
+        if not failed_tests:
+            continue
+
+        def aliases(path: Path, package_dir: Path) -> set[str]:
+            try:
+                parts = list(path.relative_to(package_dir).with_suffix("").parts)
+            except ValueError:
+                return set()
+            if parts and parts[-1] == "__init__":
+                parts.pop()
+            aliases_ = {".".join(parts)} if parts else set()
+            if parts and parts[0] == "src":
+                aliases_.add(".".join(parts[1:]))
+            return {value for value in aliases_ if value}
+
+        sources = list(root.rglob("*.py"))
+        lookup: dict[str, set[Path]] = {}
+        imports_by_path: dict[Path, set[str]] = {}
+        for path in sources:
+            for name in aliases(path, root):
+                lookup.setdefault(name, set()).add(path)
+            try:
+                tree = ast.parse(path.read_bytes(), filename=str(path))
+            except (OSError, SyntaxError, UnicodeError, RecursionError, MemoryError):
+                continue
+            imports: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    base = node.module or ""
+                    # Relative imports are resolved against the source's module.
+                    if node.level:
+                        parent = next(iter(sorted(aliases(path, root))), "")
+                        segments = parent.split(".")[:-node.level]
+                        base = ".".join([*segments, *( [base] if base else [] )])
+                    if base:
+                        imports.add(base)
+                        imports.update(
+                            base + "." + alias.name for alias in node.names
+                            if alias.name != "*"
+                        )
+            imports_by_path[path] = imports
+
+        pending = [
+            path for path in sources
+            if not _is_test_source(path, root) and path in imports_by_path
+        ]
+        visited: set[Path] = set()
+        while pending:
+            path = pending.pop()
+            if path in visited:
+                continue
+            visited.add(path)
+            for imported in imports_by_path.get(path, set()):
+                # Importing a package __init__ may transitively expose its
+                # submodules; keep the result conservative in this case.
+                candidates = lookup.get(imported, set())
+                for candidate in candidates:
+                    if candidate not in visited:
+                        pending.append(candidate)
+        excluded.update(
+            name for name in failed_tests if Path(name) not in visited
+        )
+
+    result = [
+        d for d in diagnostics
+        if not (d.get("code") == "source_parse_failed"
+                and str(d.get("file")) in excluded)
+    ]
+    uam._policy_source_diagnostics = result
+    return result
+
+
+def analysis_completeness(uam: UnifiedArchitectureModel) -> dict[str, Any]:
+    """Machine-readable scope of any gaps affecting production policy confidence."""
+    diagnostics = uam.diagnostics()
+    relevant = _relevant_source_diagnostics(uam)
+    gaps = [
+        d for d in relevant
+        if d.get("code") == "source_parse_failed"
+        or d.get("code") == "source_analysis_incomplete"
+    ]
+    total_failed = sum(d.get("code") == "source_parse_failed" for d in diagnostics)
+    scoped_failed = sum(d.get("code") == "source_parse_failed" for d in relevant)
+    return {
+        "complete": not gaps,
+        "relevant_source_parse_failures": scoped_failed,
+        "excluded_test_parse_failures": total_failed - scoped_failed,
+        "analysis_gaps": len(gaps),
+    }
+
+
 def _source_gap(uam: UnifiedArchitectureModel) -> bool:
     return any(
         d.get("code") == "source_parse_failed"
         or (d.get("code") == "source_analysis_incomplete" and not d.get("endpoint_kind"))
-        for d in uam.diagnostics()
+        for d in _relevant_source_diagnostics(uam)
     )
 
 
 def _parse_gap_note(uam: UnifiedArchitectureModel) -> str:
-    failed = {d.get("file") for d in uam.diagnostics() if d.get("code") == "source_parse_failed"}
+    failed = {
+        d.get("file")
+        for d in _relevant_source_diagnostics(uam)
+        if d.get("code") == "source_parse_failed"
+    }
     if failed:
         return (
             f"; {len(failed)} source file(s) could not be parsed; missing peer is not proven "
@@ -788,6 +960,7 @@ RULE_SCHEMAS: dict[str, dict[str, FieldSpec]] = {
     "license": {"allowed": _STRINGS},
     "naming": dict.fromkeys(("packages", "nodes", "topics", "services"), _NAMING),
     "dependency": {
+        "transitive": _BOOL,
         "forbidden": FieldSpec(
             "list",
             item=FieldSpec(

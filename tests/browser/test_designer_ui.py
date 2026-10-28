@@ -703,6 +703,9 @@ def test_server_length_errors_open_the_node_and_mark_the_field(
     page.locator("#snm").fill("camera_node_longer")
     page.keyboard.press("Escape")
     expect(page.locator("#sb")).to_have_class("h")
+    # Private names differ after renaming this node; remove the now-invalid wire
+    # so the server can report the independent endpoint-length error.
+    page.evaluate("() => { S.packages[0].edges=[]; renderAll(); }")
     page.click("#gb")
     _toast(page, "err")
     expect(page.locator("#sb")).not_to_have_class("h")

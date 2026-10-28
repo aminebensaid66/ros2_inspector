@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from collections import Counter
@@ -189,11 +190,65 @@ def _python_modules_for_file(file_path: str | None, package_path: Path) -> set[s
 
 
 def _entrypoint_matches_node(
-    entrypoint: PythonEntrypoint, nd: NodeDefinition, package_path: Path
+    entrypoint: PythonEntrypoint, nd: NodeDefinition, package_path: Path,
+    module_cache: dict[str, ast.Module | None] | None = None,
 ) -> bool:
-    if nd.language != "python":
+    if nd.language != "python" or not nd.file_path:
         return False
-    return entrypoint.module in _python_modules_for_file(nd.file_path, package_path)
+    if entrypoint.module not in _python_modules_for_file(nd.file_path, package_path):
+        return False
+    if not entrypoint.callable:
+        return False
+
+    # An entry point addresses a *callable*, not every Node class in its module.
+    # Follow local helper calls and match only constructors reachable from it.
+    file_path = str(nd.file_path)
+    if module_cache is not None and file_path in module_cache:
+        tree = module_cache[file_path]
+    else:
+        try:
+            tree = ast.parse(Path(file_path).read_bytes())
+        except (SyntaxError, OSError, UnicodeDecodeError, RecursionError, MemoryError):
+            tree = None
+        if module_cache is not None:
+            module_cache[file_path] = tree
+    if tree is None:
+        return False
+
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    classes = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+    }
+    seen: set[str] = set()
+    constructed: set[str] = set()
+
+    def walk_callable(name: str) -> None:
+        if name in seen or name not in functions:
+            return
+        seen.add(name)
+        for call in ast.walk(functions[name]):
+            if not isinstance(call, ast.Call):
+                continue
+            if isinstance(call.func, ast.Name):
+                callee = call.func.id
+                if callee in classes:
+                    constructed.add(callee)
+                elif callee in functions:
+                    walk_callable(callee)
+
+    walk_callable(entrypoint.callable.split(".")[0])
+    if constructed:
+        return (nd.source_symbol or nd.name) in constructed
+    # A sole source-node definition (or procedural module) has no competing
+    # class target; retain legacy mapping for common dynamic ROS node factories.
+    # In a multi-class module, missing call evidence remains ambiguous.
+    return len(classes) <= 1
 
 
 def _launch_matches_definition(
@@ -202,6 +257,7 @@ def _launch_matches_definition(
     package_path: Path,
     entrypoints: dict[str, PythonEntrypoint],
     component_executables: dict[str, str] | None = None,
+    module_cache: dict[str, ast.Module | None] | None = None,
 ) -> bool:
     plugin = launch_node.plugin
     if plugin is None and component_executables:
@@ -215,7 +271,7 @@ def _launch_matches_definition(
     # through to weaker heuristics for a different source module.
     entrypoint = entrypoints.get(launch_node.executable)
     if entrypoint is not None:
-        return _entrypoint_matches_node(entrypoint, nd, package_path)
+        return _entrypoint_matches_node(entrypoint, nd, package_path, module_cache)
 
     # C++ executables and legacy Python packages without discoverable console-script
     # metadata still benefit from conservative executable/symbol matching.
@@ -253,6 +309,8 @@ def _effective_deployment_name(nd: NodeDefinition, launch_node: LaunchNode) -> s
 
 class UnifiedArchitectureModel:
     def __init__(self) -> None:
+        self._include_tests: bool = False
+        self._policy_source_diagnostics: list[dict[str, Any]] | None = None
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._packages: list[PackageMetadata] = []
         self._nodes: list[NodeDefinition] = []
@@ -279,6 +337,7 @@ class UnifiedArchitectureModel:
         preset: str | None = None,
     ) -> UnifiedArchitectureModel:
         uam = cls()
+        uam._include_tests = include_tests
 
         xml_files = find_package_xml_files(workspace_root)
         packages = [p for f in xml_files if (p := parse_package_xml(f)) is not None]
@@ -565,6 +624,9 @@ class UnifiedArchitectureModel:
         pkg_map: dict[str, PackageMetadata],
     ) -> None:
         g = self._graph
+        # Source trees are cached only for this build, so later edits cannot
+        # leak stale callable associations into subsequent scans.
+        module_cache: dict[str, ast.Module | None] = {}
 
         for pkg in packages:
             g.add_node(
@@ -589,6 +651,44 @@ class UnifiedArchitectureModel:
                             rel="depends_on",
                             dep_type=dep_type.value,
                         )
+
+        # Do not present unmatched multi-class entry points as complete source
+        # analysis. Their runtime deployment target remains ambiguous.
+        for package_name, launch_nodes in self._launch_remaps.items():
+            package_meta = pkg_map.get(package_name)
+            if package_meta is None:
+                continue
+            package_path = Path(package_meta.path)
+            for launch_node in launch_nodes:
+                entrypoint = self._entrypoints.get(package_name, {}).get(launch_node.executable)
+                if entrypoint is None:
+                    continue
+                candidates = [
+                    nd
+                    for nd in nodes
+                    if nd.package == package_name
+                    and nd.language == "python"
+                    and nd.file_path
+                    and entrypoint.module in _python_modules_for_file(
+                        nd.file_path, package_path
+                    )
+                ]
+                if len(candidates) > 1 and not any(
+                    _entrypoint_matches_node(entrypoint, nd, package_path, module_cache)
+                    for nd in candidates
+                ):
+                    self._diagnostics.append(
+                        {
+                            "severity": "warning",
+                            "code": "source_analysis_incomplete",
+                            "file": candidates[0].file_path,
+                            "message": (
+                                f"Could not associate executable {launch_node.executable!r} "
+                                f"with a node class in {entrypoint.module!r}; "
+                                "the entry point may create nodes dynamically."
+                            ),
+                        }
+                    )
 
         symbol_counts = Counter((nd.package, nd.name) for nd in nodes)
         duplicate_symbols = {key for key, count in symbol_counts.items() if count > 1}
@@ -629,6 +729,7 @@ class UnifiedArchitectureModel:
                     package_path,
                     self._entrypoints.get(nd.package, {}),
                     self._component_executables.get(nd.package, {}),
+                    module_cache,
                 )
             ]
 

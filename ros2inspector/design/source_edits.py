@@ -133,13 +133,23 @@ def console_script_list(tree: ast.AST) -> ast.List:
 
 def rename_script_entries(source: str, renamed: dict[str, str]) -> str:
     listing = console_script_list(_tree(source))
-    replacements = [
-        (entry, renamed[entry.value])
-        for entry in listing.elts
-        if isinstance(entry, ast.Constant)
-        and isinstance(entry.value, str)
-        and entry.value in renamed
-    ]
+    replacements = []
+    expected = {}
+    for previous, replacement in renamed.items():
+        old_executable, separator, old_target = previous.partition("=")
+        if not separator:
+            raise ValueError("invalid old console-script registration")
+        expected[(old_executable.strip(), old_target.strip())] = replacement
+
+    for entry in listing.elts:
+        if not isinstance(entry, ast.Constant) or not isinstance(entry.value, str):
+            continue
+        executable, separator, destination = entry.value.partition("=")
+        if not separator:
+            continue
+        updated_entry = expected.get((executable.strip(), destination.strip()))
+        if updated_entry is not None:
+            replacements.append((entry, updated_entry))
     return replace_constants(source, replacements)
 
 
@@ -172,21 +182,46 @@ def _node_calls(tree: ast.AST) -> list[ast.Call]:
     return calls
 
 
-def rename_launch_nodes(source: str, renamed: dict[str, str]) -> tuple[str, set[str]]:
+def rename_launch_nodes(
+    source: str, renamed: dict[str, str], package_name: str | None = None
+) -> tuple[str, set[str]]:
     tree = _tree(source)
     replacements = []
     started = set()
     for call in _node_calls(tree):
-        for kw in call.keywords:
-            if kw.arg not in {"executable", "name"}:
-                continue
-            if not isinstance(kw.value, ast.Constant) or not isinstance(kw.value.value, str):
-                raise ValueError(f"the launch Node {kw.arg} is not a literal")
-            value = renamed.get(kw.value.value, kw.value.value)
-            if value != kw.value.value:
-                replacements.append((kw.value, value))
-            if kw.arg == "executable":
-                started.add(value)
+        keywords = {kw.arg: kw.value for kw in call.keywords}
+        executable = keywords.get("executable")
+        package = keywords.get("package")
+        # A foreign launch action does not belong to this managed package,
+        # even when its executable is a dynamic expression.
+        if (
+            package_name is not None
+            and isinstance(package, ast.Constant)
+            and isinstance(package.value, str)
+            and package.value != package_name
+        ):
+            continue
+        if not isinstance(executable, ast.Constant) or not isinstance(executable.value, str):
+            raise ValueError("the managed launch Node executable is not a literal")
+        if package_name is not None and executable.value in renamed:
+            if not isinstance(package, ast.Constant) or not isinstance(package.value, str):
+                raise ValueError("the launch Node package cannot be identified safely")
+        if package_name is not None and (
+            not isinstance(package, ast.Constant) or package.value != package_name
+        ):
+            continue
+        result = renamed.get(executable.value, executable.value)
+        if result != executable.value:
+            replacements.append((executable, result))
+            # Preserve intentional runtime-name overrides. Only the generated
+            # default name follows the renamed executable.
+            runtime_name = keywords.get("name")
+            if (
+                isinstance(runtime_name, ast.Constant)
+                and runtime_name.value == executable.value
+            ):
+                replacements.append((runtime_name, result))
+        started.add(result)
     return replace_constants(source, replacements), started
 
 

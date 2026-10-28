@@ -344,3 +344,131 @@ def test_edited_setup_accepts_equivalent_entry_point_whitespace(server: Any) -> 
 
     status, response = _post(httpd, "/generate", design)
     assert status == 200, response
+
+
+def test_package_rename_rejects_stale_user_imports_before_writing(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    old = out / "demo_pkg"
+    (old / "demo_pkg" / "helper.py").write_text("VALUE = 42\n")
+    node = old / "demo_pkg" / "talker.py"
+    node.write_text(node.read_text() + "\nfrom demo_pkg.helper import VALUE\n")
+    original = node.read_text()
+    renamed = _pkg()
+    renamed["pkg_name"] = "renamed_pkg"
+    status, response = _post(httpd, "/generate", _state(renamed))
+    assert status == 409, response
+    assert "update its imports before renaming" in response["error"]
+    assert node.read_text() == original
+    assert not (out / "renamed_pkg").exists()
+
+
+def test_package_rename_rejects_sibling_imports_before_writing(server: Any) -> None:
+    httpd, out = server
+    first = _pkg()
+    second = _pkg("consumer_pkg", "p2", nodes=[_node("listener", "n2")])
+    assert _post(httpd, "/generate", _state(first, second))[0] == 200
+    consumer = out / "consumer_pkg" / "consumer_pkg" / "listener.py"
+    consumer.write_text(consumer.read_text() + "\nfrom demo_pkg.talker import main\n")
+    renamed = _pkg("new_pkg")
+    status, response = _post(httpd, "/generate", _state(renamed, second))
+    assert status == 409, response
+    assert "imports 'demo_pkg'" in response["error"]
+    assert (out / "demo_pkg").is_dir()
+    assert not (out / "new_pkg").exists()
+
+
+def test_rename_matches_console_script_whitespace(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(
+        setup.read_text().replace("talker = demo_pkg.talker:main", "talker=demo_pkg.talker:main")
+    )
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")]))
+    )
+    assert status == 200, response
+    text = setup.read_text()
+    assert "'renamed = demo_pkg.renamed:main'" in text
+    assert "talker=demo_pkg.talker:main" not in text
+
+
+def test_rename_console_script_preserves_double_quoted_entry(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(
+        setup.read_text().replace(
+            "'talker = demo_pkg.talker:main'", '"talker=demo_pkg.talker:main"'
+        )
+    )
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")]))
+    )
+    assert status == 200, response
+    result = setup.read_text()
+    assert '"renamed = demo_pkg.renamed:main"' in result
+    assert "talker=demo_pkg.talker:main" not in result
+
+
+def test_rename_rejects_stale_console_script_with_custom_target(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(
+        setup.read_text().replace(
+            "talker = demo_pkg.talker:main", "talker = demo_pkg.talker:custom_main"
+        )
+    )
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")]))
+    )
+    assert status == 409, response
+    assert "obsolete executable" in response["error"]
+    assert "talker = demo_pkg.talker:custom_main" in setup.read_text()
+
+
+def test_rename_preserves_foreign_package_launch_entries(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    launch = out / "demo_pkg/launch/launch.py"
+    launch.write_text(launch.read_text().replace(
+        "    ])", "        Node(package='other_pkg', executable='talker', name='talker'),\n    ])"
+    ))
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")]))
+    )
+    assert status == 200, response
+    result = launch.read_text()
+    assert "Node(package='other_pkg', executable='talker', name='talker')" in result
+    assert "executable='renamed'" in result
+
+
+def test_scoped_launch_rename_skips_dynamic_foreign_executable() -> None:
+    from ros2inspector.design.source_edits import rename_launch_nodes
+
+    text = (
+        "from launch_ros.actions import Node\n"
+        "from launch.substitutions import LaunchConfiguration\n"
+        "entries = [\n"
+        "    Node(package='foreign_pkg', executable=LaunchConfiguration('bin')),\n"
+        "    Node(package='demo_pkg', executable='talker', name='runtime_custom'),\n"
+        "]\n"
+    )
+    updated, started = rename_launch_nodes(text, {"talker": "renamed"}, "demo_pkg")
+    assert "executable=LaunchConfiguration('bin')" in updated
+    assert "executable='renamed', name='runtime_custom'" in updated
+    assert started == {"renamed"}
+
+
+def test_scoped_launch_rename_refuses_unknown_package_identity() -> None:
+    from ros2inspector.design.source_edits import rename_launch_nodes
+
+    text = (
+        "from launch_ros.actions import Node\n"
+        "from launch.substitutions import LaunchConfiguration\n"
+        "node = Node(package=LaunchConfiguration('package'), executable='talker')\n"
+    )
+    with pytest.raises(ValueError, match="cannot be identified safely"):
+        rename_launch_nodes(text, {"talker": "renamed"}, "demo_pkg")
