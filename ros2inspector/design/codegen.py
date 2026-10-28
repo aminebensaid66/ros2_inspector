@@ -786,6 +786,18 @@ def plan_package_edits(
                         f"{expected!r}, but registers {actual!r}. "
                         "Correct the registration before regenerating."
                     )
+        if targets is not None:
+            for previous_label in renamed:
+                dangling = [
+                    target for target in targets.get(previous_label, [])
+                    if target.startswith(f"{pkg}.{previous_label}:")
+                ]
+                if dangling:
+                    plan.problems.append(
+                        f"setup.py still registers the obsolete executable "
+                        f"{previous_label!r} pointing at the renamed module. "
+                        "Update this console_scripts entry before regenerating."
+                    )
         if original is not None and setup_text != original:
             plan.patched["setup.py"] = setup_text
             plan.notes.append(f"registered {', '.join(changed)} in your edited setup.py")
@@ -795,7 +807,7 @@ def plan_package_edits(
         original = text_of(launch_rel)
         launch_text = original or ""
         try:
-            launch_text, started = rename_launch_nodes(launch_text, renamed)
+            launch_text, started = rename_launch_nodes(launch_text, renamed, pkg)
         except ValueError as exc:
             plan.problems.append(
                 f"{launch_rel} has your edits; update its Node entries by hand: {exc}."
@@ -952,7 +964,10 @@ def _write_atomic(path: Path, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
-            os.fchmod(stream.fileno(), mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), mode)
+        if not hasattr(os, "fchmod"):
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

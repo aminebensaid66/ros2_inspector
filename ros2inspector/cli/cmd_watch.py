@@ -88,6 +88,12 @@ def _snapshot(root: Path, extra: tuple[Path, ...] = ()) -> Snapshot:
             # Ignored subtree: only watch the marker itself, so removing it is noticed.
             dirnames[:] = []
             filenames = [name for name in filenames if name in _STOP_MARKERS]
+        elif "package.xml" in filenames:
+            # Package health counts launch directories even when they are empty.
+            for relative in ("launch", "bringup/launch"):
+                if (base / relative).is_dir():
+                    key = (base / relative).relative_to(source_root).as_posix() + "/"
+                    snap[key] = (0, 0, 0, 0)
         for filename in filenames:
             if (
                 filename not in WATCH_NAMES

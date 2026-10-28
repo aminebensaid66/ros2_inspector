@@ -657,3 +657,195 @@ def test_watch_recovers_exit_status_when_policy_is_fixed(
     assert "keeping previous rules" in result.output
     assert "Policy reloaded." in result.output
     assert result.exit_code == 0, result.output
+
+def test_snapshot_tracks_health_relevant_empty_launch_directories(ws: Path) -> None:
+    package = ws / "src" / "pkg_a"
+    before = cmd_watch._snapshot(ws)
+    (package / "launch").mkdir()
+    after = cmd_watch._snapshot(ws)
+    assert "pkg_a/launch/" in cmd_watch._changed_files(before, after)
+
+    (package / "bringup" / "launch").mkdir(parents=True)
+    nested = cmd_watch._snapshot(ws)
+    assert "pkg_a/bringup/launch/" in cmd_watch._changed_files(after, nested)
+
+    (package / "launch").rmdir()
+    removed = cmd_watch._snapshot(ws)
+    assert "pkg_a/launch/" in cmd_watch._changed_files(nested, removed)
+
+
+def test_watch_reruns_when_empty_launch_directory_changes(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = ws / "src" / "pkg_a"
+    monkeypatch.setattr(cmd_watch, "_DEBOUNCE_SECONDS", 0)
+    real_run = cmd_watch._run_once
+    runs = {"n": 0}
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        runs["n"] += 1
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(cmd_watch, "_run_once", counting)
+    ticks = {"n": 0}
+
+    def fake_sleep(_: float) -> None:
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            (package / "launch").mkdir()
+        elif ticks["n"] > 3:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cmd_watch.time, "sleep", fake_sleep)
+    runner.invoke(app, ["watch", str(ws), "--audit", "--no-cache"])
+    assert runs["n"] == 2
+
+
+def test_standalone_package_with_src_directory_is_discovered(tmp_path: Path) -> None:
+    from ros2inspector.discovery.package_finder import find_package_xml_files, source_search_root
+
+    root = tmp_path / "standalone"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "node.cpp").write_text("int main() { return 0; }\\n")
+    (root / "package.xml").write_text(
+        '<package format="3"><name>standalone</name><version>1.0.0</version>'
+        '<description>standalone</description><maintainer email="a@b.c">A</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    assert source_search_root(root) == root
+    assert find_package_xml_files(root) == [root / "package.xml"]
+
+
+def test_tree_sitter_runtime_compatibility_requirement() -> None:
+    source = (Path(__file__).parents[2] / "pyproject.toml").read_text()
+    assert '"tree-sitter>=0.25"' in source
+    assert '"tree-sitter-cpp>=0.23.4"' in source
+
+
+def test_atomic_output_without_fchmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ros2inspector.cli._output import atomic_write_text
+
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    target = tmp_path / "result.txt"
+    atomic_write_text(target, "hello")
+    assert target.read_text() == "hello"
+
+
+def test_generated_package_without_fchmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ros2inspector.design.codegen import generate_package_result
+
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    generate_package_result({"pkg_name": "sample_pkg", "nodes": [
+        {"id": "n1", "label": "talker"}
+    ]}, tmp_path)
+    assert (tmp_path / "sample_pkg" / "setup.py").is_file()
+
+
+def test_windows_native_writes(ws: Path, tmp_path: Path) -> None:
+    """Run real installed CLI commands on native Windows Python, no API monkeypatching."""
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("Windows-only native writer smoke test")
+
+    def run(*args: str) -> None:
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from ros2inspector.cli.app import app; app()",
+                *args,
+            ],
+            text=True, capture_output=True, cwd=tmp_path, timeout=90, check=False
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    nodes = tmp_path / "nodes.json"
+    chart = tmp_path / "graph.html"
+    docs = tmp_path / "docs"
+    run("nodes", "-C", str(ws), "--no-cache", "-f", "json", "-o", str(nodes))
+    assert nodes.is_file() and nodes.read_text(encoding="utf-8").startswith("[")
+    run("viz", "-C", str(ws), "--no-open", "--no-cache", "-o", str(chart))
+    assert chart.is_file() and "<html" in chart.read_text(encoding="utf-8").lower()
+    run("docs", "-C", str(ws), "--no-cache", "-o", str(docs))
+    assert (docs / "index.md").is_file()
+
+    from ros2inspector.design.codegen import generate_package_result
+
+    generate_package_result(
+        {"pkg_name": "windows_pkg", "nodes": [{"id": "n1", "label": "talker"}]},
+        tmp_path,
+    )
+    assert (tmp_path / "windows_pkg" / "setup.py").is_file()
+    assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_external_manifest_dependency_is_enforced(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license><depend>rclpy</depend></package>'
+    )
+    uam = UAM.build(root, use_cache=False)
+    assert len(rule_dependency(uam, {"forbidden": [{"from": "app", "to": "rclpy"}]})) == 1
+    assert not rule_dependency(uam, {"required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})
+
+
+def test_conditional_external_dependency_is_reported_as_uncertain(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    package = tmp_path / "ws" / "src" / "app"
+    package.mkdir(parents=True)
+    (package / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>app</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license>'
+        '<depend condition="$ROS_VERSION == 1">roscpp</depend></package>'
+    )
+    uam = UAM.build(tmp_path / "ws", use_cache=False)
+    prohibited = rule_dependency(uam, {
+        "forbidden": [{"from": "app", "to": "roscpp"}]
+    })
+    assert len(prohibited) == 1
+    assert prohibited[0].confidence == "uncertain"
+    assert "conditional" in prohibited[0].message
+    required = rule_dependency(uam, {
+        "required": [{"package": "app", "depends_on": "roscpp"}]
+    })
+    assert len(required) == 1
+    assert required[0].confidence == "uncertain"
+
+
+def test_transitive_external_dependency_respects_rule_flag(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    root = tmp_path / "ws"
+    for name, extra in (("app", "<depend>bridge</depend>"),
+                        ("bridge", "<depend>rclpy</depend>")):
+        pkg = root / "src" / name
+        pkg.mkdir(parents=True)
+        (pkg / "package.xml").write_text(
+            f'<package format="3"><name>{name}</name><version>1.0.0</version>'
+            '<description>pkg</description><maintainer email="a@b.c">Me</maintainer>'
+            f'<license>MIT</license>{extra}</package>'
+        )
+    uam = UAM.build(root, use_cache=False)
+    forbidden = {"forbidden": [{"from": "app", "to": "rclpy"}]}
+    assert len(rule_dependency(uam, forbidden)) == 1
+    assert not rule_dependency(uam, {**forbidden, "transitive": False})
+    assert not rule_dependency(uam, {"required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})
+    assert len(rule_dependency(uam, {"transitive": False, "required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})) == 1

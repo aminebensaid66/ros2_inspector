@@ -146,49 +146,94 @@ def rule_naming(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[Poli
 
 
 def rule_dependency(uam: UnifiedArchitectureModel, cfg: dict[str, Any]) -> list[PolicyViolation]:
+    """Check direct or transitive manifest declarations, including external packages.
+
+    The default matches the historical rule: transitive dependencies count.
+    A conditional declaration is possible evidence, not an unconditional edge.
+    """
     violations: list[PolicyViolation] = []
     source = cfg.get("_source", "policy")
-    g = uam.graph
+    transitive: bool = cfg.get("transitive", True)
+    packages = {package.name: package for package in uam.packages()}
+
+    def dependency_state(frm: str, to: str) -> str:
+        """known for unconditional paths, uncertain for conditional-only paths."""
+        if frm not in packages:
+            return "absent"
+        pending = [(frm, False)]
+        visited: set[tuple[str, bool]] = set()
+        uncertain = False
+        while pending:
+            current, conditional_path = pending.pop()
+            if (current, conditional_path) in visited:
+                continue
+            visited.add((current, conditional_path))
+            package = packages.get(current)
+            if package is None:
+                continue
+            direct = {
+                name for values in package.dependencies.values() for name in values
+            }
+            conditional = {
+                name for values in package.conditional_dependencies.values()
+                for name in values
+            }
+            for target, conditional_edge in [
+                *((name, False) for name in direct),
+                *((name, True) for name in conditional),
+            ]:
+                is_uncertain = conditional_path or conditional_edge
+                if target == to:
+                    if not is_uncertain:
+                        return "known"
+                    uncertain = True
+                if transitive and target in packages:
+                    pending.append((target, is_uncertain))
+        return "uncertain" if uncertain else "absent"
 
     for forbidden in cfg.get("forbidden", []):
-        frm = forbidden["from"]
-        to = forbidden["to"]
-        severity = _sev(forbidden.get("severity", "error"))
-        src_id = f"pkg:{frm}"
-        dst_id = f"pkg:{to}"
-        if g.has_node(src_id) and g.has_node(dst_id):
-            if g.has_edge(src_id, dst_id) or nx.has_path(g, src_id, dst_id):
-                violations.append(
-                    PolicyViolation(
-                        severity=severity,
-                        rule_type="dependency",
-                        message=f"Forbidden dependency: '{frm}' must not depend on '{to}'",
-                        policy_file=source,
-                        affected_entities=[frm, to],
-                    )
-                )
+        frm, to = forbidden["from"], forbidden["to"]
+        state = dependency_state(frm, to)
+        if state == "absent":
+            continue
+        conditional = state == "uncertain"
+        violations.append(
+            PolicyViolation(
+                severity=_sev(forbidden.get("severity", "error")),
+                confidence="uncertain" if conditional else "known",
+                rule_type="dependency",
+                message=(
+                    f"Potential forbidden dependency (conditional): '{frm}' may depend on '{to}'"
+                    if conditional else
+                    f"Forbidden dependency: '{frm}' must not depend on '{to}'"
+                ),
+                policy_file=source,
+                affected_entities=[frm, to],
+            )
+        )
 
     for required in cfg.get("required", []):
-        pkg_name = required["package"]
-        dep_name = required["depends_on"]
-        severity = _sev(required.get("severity", "warning"))
-        src_id = f"pkg:{pkg_name}"
-        dst_id = f"pkg:{dep_name}"
-        if g.has_node(src_id) and not (
-            g.has_edge(src_id, dst_id) or (g.has_node(dst_id) and nx.has_path(g, src_id, dst_id))
-        ):
-            violations.append(
-                PolicyViolation(
-                    severity=severity,
-                    rule_type="dependency",
-                    message=(
-                        f"Required dependency missing: '{pkg_name}' must depend on '{dep_name}'"
-                    ),
-                    policy_file=source,
-                    affected_entities=[pkg_name, dep_name],
-                )
+        pkg_name, dep_name = required["package"], required["depends_on"]
+        if pkg_name not in packages:
+            continue
+        state = dependency_state(pkg_name, dep_name)
+        if state == "known":
+            continue
+        violations.append(
+            PolicyViolation(
+                severity=_sev(required.get("severity", "warning")),
+                confidence="uncertain" if state == "uncertain" else "known",
+                rule_type="dependency",
+                message=(
+                    f"Required dependency is conditional: '{pkg_name}' may depend on "
+                    f"'{dep_name}', but it is not guaranteed"
+                    if state == "uncertain" else
+                    f"Required dependency missing: '{pkg_name}' must depend on '{dep_name}'"
+                ),
+                policy_file=source,
+                affected_entities=[pkg_name, dep_name],
             )
-
+        )
     return violations
 
 
@@ -788,6 +833,7 @@ RULE_SCHEMAS: dict[str, dict[str, FieldSpec]] = {
     "license": {"allowed": _STRINGS},
     "naming": dict.fromkeys(("packages", "nodes", "topics", "services"), _NAMING),
     "dependency": {
+        "transitive": _BOOL,
         "forbidden": FieldSpec(
             "list",
             item=FieldSpec(
