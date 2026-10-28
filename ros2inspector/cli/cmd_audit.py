@@ -212,6 +212,9 @@ def audit(
     from ros2inspector.policy.engine import attach_source_locations
 
     attach_source_locations(uam, violations)
+    from ros2inspector.policy.rules import analysis_completeness
+
+    completeness = analysis_completeness(uam)
     if baseline_prints is not None:
         violations = apply_baseline(violations, baseline_prints)
 
@@ -223,13 +226,16 @@ def audit(
         _render_table(violations, agg, summary_counts)
     elif fmt == AuditFormat.SARIF:
         sarif = to_sarif(violations, __version__, root)
+        sarif["runs"][0]["properties"] = {"analysisCompleteness": completeness}
         sys.stdout.write(orjson.dumps(sarif, option=orjson.OPT_INDENT_2).decode() + "\n")
     elif fmt == AuditFormat.JSON:
         data = _build_data(violations, agg, summary_counts)
         data["diagnostics"] = uam.diagnostics()
+        data["completeness"] = completeness
         sys.stdout.write(orjson.dumps(data, option=orjson.OPT_INDENT_2).decode() + "\n")
     else:
         data = _build_data(violations, agg, summary_counts)
+        data["completeness"] = completeness
         sys.stdout.write(yaml.dump(data, default_flow_style=False))
 
     effective_fail = "warning" if strict else fail_on

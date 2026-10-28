@@ -309,6 +309,8 @@ def _effective_deployment_name(nd: NodeDefinition, launch_node: LaunchNode) -> s
 
 class UnifiedArchitectureModel:
     def __init__(self) -> None:
+        self._include_tests: bool = False
+        self._policy_source_diagnostics: list[dict[str, Any]] | None = None
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._packages: list[PackageMetadata] = []
         self._nodes: list[NodeDefinition] = []
@@ -335,6 +337,7 @@ class UnifiedArchitectureModel:
         preset: str | None = None,
     ) -> UnifiedArchitectureModel:
         uam = cls()
+        uam._include_tests = include_tests
 
         xml_files = find_package_xml_files(workspace_root)
         packages = [p for f in xml_files if (p := parse_package_xml(f)) is not None]
