@@ -830,3 +830,19 @@ def test_cycle_rename_failure_restores_all_user_files(tmp_path: Path, monkeypatc
     for name in names:
         assert (tmp_path / name / "USER.txt").read_text() == f"user-data:{name}"
     assert not list(tmp_path.glob(".ros2inspector-rename-*"))
+
+
+def test_wires_compare_expanded_ros_topic_names() -> None:
+    import pytest
+
+    private = _pkg("p1", "demo_pkg", [
+        _node("n1", "sender", publishers=[_endpoint("pub", "~/chat", "std_msgs/String")]),
+        _node("n2", "receiver", subscribers=[_endpoint("sub", "~/chat", "std_msgs/String")]),
+    ])
+    private["edges"] = [{"id": "e1", "fn": "n1", "ft": "pub", "tn": "n2", "tt": "sub"}]
+    with pytest.raises(ValidationError, match="topic names differ"):
+        PackageSpec.model_validate(private)
+
+    private["nodes"][0]["publishers"][0]["name"] = "chat"
+    private["nodes"][1]["subscribers"][0]["name"] = "/chat"
+    assert len(PackageSpec.model_validate(private).edges) == 1
