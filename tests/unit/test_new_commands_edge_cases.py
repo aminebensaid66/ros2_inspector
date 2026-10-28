@@ -714,3 +714,9 @@ def test_standalone_package_with_src_directory_is_discovered(tmp_path: Path) -> 
     )
     assert source_search_root(root) == root
     assert find_package_xml_files(root) == [root / "package.xml"]
+
+
+def test_tree_sitter_runtime_compatibility_requirement() -> None:
+    source = (Path(__file__).parents[2] / "pyproject.toml").read_text()
+    assert '"tree-sitter>=0.25"' in source
+    assert '"tree-sitter-cpp>=0.23.4"' in source
