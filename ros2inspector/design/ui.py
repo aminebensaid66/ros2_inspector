@@ -455,7 +455,7 @@ function edgeEnds(p,e){
   if(!fn||!tn) return null;
   const pub=fn.publishers.find(x=>x.id===e.ft), sub=tn.subscribers.find(x=>x.id===e.tt);
   if(!pub||!sub) return null;
-  return {fn,tn,pub,sub,ok:pub.name===sub.name&&sameType(pub.msgType,sub.msgType)};
+  return {fn,tn,pub,sub,ok:expandedName(pub.name,fn.label)===expandedName(sub.name,tn.label)&&sameType(pub.msgType,sub.msgType)};
 }
 
 // Drop wires whose endpoints were deleted; return wires that no longer match.
@@ -1007,7 +1007,7 @@ document.addEventListener('mouseup',e=>{
             showToast(`✗ Type mismatch: ${pub.msgType} → ${sub.msgType}. A wire needs the same type on both ends.`,'err');
             break outer;
           }
-          if(pub&&pub.name!==sub.name){
+          if(pub&&expandedName(pub.name,p.nodes.find(n=>n.id===eDrag.fn).label)!==expandedName(sub.name,nd.label)){
             showToast(`Subscriber renamed ${sub.name} → ${pub.name} so the wire is a real connection.`,'ok');
             sub.name=pub.name;
           }

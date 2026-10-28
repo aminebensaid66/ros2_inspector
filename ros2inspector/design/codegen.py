@@ -786,6 +786,18 @@ def plan_package_edits(
                         f"{expected!r}, but registers {actual!r}. "
                         "Correct the registration before regenerating."
                     )
+        if targets is not None:
+            for previous_label in renamed:
+                dangling = [
+                    target for target in targets.get(previous_label, [])
+                    if target.startswith(f"{pkg}.{previous_label}:")
+                ]
+                if dangling:
+                    plan.problems.append(
+                        f"setup.py still registers the obsolete executable "
+                        f"{previous_label!r} pointing at the renamed module. "
+                        "Update this console_scripts entry before regenerating."
+                    )
         if original is not None and setup_text != original:
             plan.patched["setup.py"] = setup_text
             plan.notes.append(f"registered {', '.join(changed)} in your edited setup.py")
@@ -795,7 +807,7 @@ def plan_package_edits(
         original = text_of(launch_rel)
         launch_text = original or ""
         try:
-            launch_text, started = rename_launch_nodes(launch_text, renamed)
+            launch_text, started = rename_launch_nodes(launch_text, renamed, pkg)
         except ValueError as exc:
             plan.problems.append(
                 f"{launch_rel} has your edits; update its Node entries by hand: {exc}."
@@ -881,10 +893,46 @@ def _is_launch_file(relative: str) -> bool:
     return parts[0] == "launch" or ".launch." in parts[-1]
 
 
+def _package_import_references(source: str, old_name: str) -> bool:
+    """Detect imports a package rename cannot preserve without code migration."""
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            alias.name == old_name or alias.name.startswith(old_name + ".")
+            for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module and (
+            node.module == old_name or node.module.startswith(old_name + ".")
+        ):
+            return True
+    return False
+
+
 def package_name_edits(package_dir: Path, old_name: str, new_name: str) -> dict[str, bytes]:
     """Plan metadata changes completely before a package directory can move."""
     if old_name == new_name:
         return {}
+    # A moved module can keep edited imports of its old package name.
+    # Refuse the rename before any directory moves rather than break user code.
+    for python_file in package_dir.rglob("*.py"):
+        if python_file.is_symlink() or not python_file.is_file():
+            continue
+        try:
+            source = python_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        if _package_import_references(source, old_name):
+            relative = python_file.relative_to(package_dir).as_posix()
+            raise ValueError(
+                f"{relative} imports {old_name!r}; update its imports before renaming "
+                f"the package to {new_name!r}."
+            )
     manifest = read_manifest(package_dir) or {}
     pending: dict[str, bytes] = {}
     for relative, digest in sorted(manifest.items()):
@@ -916,7 +964,10 @@ def _write_atomic(path: Path, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
-            os.fchmod(stream.fileno(), mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), mode)
+        if not hasattr(os, "fchmod"):
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
