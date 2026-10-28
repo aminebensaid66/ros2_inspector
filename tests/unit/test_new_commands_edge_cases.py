@@ -699,3 +699,18 @@ def test_watch_reruns_when_empty_launch_directory_changes(
     monkeypatch.setattr(cmd_watch.time, "sleep", fake_sleep)
     runner.invoke(app, ["watch", str(ws), "--audit", "--no-cache"])
     assert runs["n"] == 2
+
+
+def test_standalone_package_with_src_directory_is_discovered(tmp_path: Path) -> None:
+    from ros2inspector.discovery.package_finder import find_package_xml_files, source_search_root
+
+    root = tmp_path / "standalone"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "node.cpp").write_text("int main() { return 0; }\\n")
+    (root / "package.xml").write_text(
+        '<package format="3"><name>standalone</name><version>1.0.0</version>'
+        '<description>standalone</description><maintainer email="a@b.c">A</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    assert source_search_root(root) == root
+    assert find_package_xml_files(root) == [root / "package.xml"]
