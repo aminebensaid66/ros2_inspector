@@ -195,6 +195,26 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   cursor:pointer;white-space:nowrap}
 .btn-warn:hover{background:rgba(248,113,113,.26)}
 
+/* Cross-package connections are computed from ROS names, not serialized wires. */
+#workspace-panel{margin:8px 12px;padding:12px 16px;border:1px solid #334155;
+  border-radius:9px;background:#101827;color:#cbd5e1;font-size:12px;max-height:230px;
+  overflow:auto}
+#workspace-panel[hidden]{display:none}
+#workspace-panel .cross-item{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:6px 0;border-top:1px solid #243044}
+#workspace-panel button{background:#24344f;border:1px solid #475569;border-radius:5px;
+  padding:5px 9px;color:#e2e8f0;cursor:pointer}
+#workspace-panel .connected{color:#34d399}
+#workspace-map{position:absolute;inset:0;overflow:auto;background:#0b1020;z-index:4}
+#workspace-map[hidden]{display:none}
+#workspace-map svg{display:block}
+#workspace-panel h3{font-size:13px;margin:12px 0 6px;color:#e2e8f0}
+#workspace-panel .cross-item span{overflow-wrap:anywhere}
+#workspace-panel .cross-item button{white-space:nowrap}
+#workspace-panel .hint{color:#94a3b8;margin:6px 0}
+#cv.workspace-open{cursor:default}
+#cv.workspace-open #world,#cv.workspace-open #es{display:none}
+
 /* field errors in the node inspector */
 .sinp.bad,.ssel.bad{border-color:#f87171;background:rgba(248,113,113,.08)}
 .ferr{color:#f87171;font-size:11px;line-height:1.45;margin:0 0 6px 12px;overflow-wrap:anywhere}
@@ -209,6 +229,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   <input class="tb-inp" id="pn" value="my_package" spellcheck="false">
   <div class="sep"></div>
   <button class="btn" id="an">+ Add Node</button>
+  <button class="btn" id="wslinks" aria-expanded="false">⇄ Workspace links</button>
   <button class="btn-save" id="sv">💾 Save</button>
   <button class="btn-p" id="gb" disabled>↓ Generate All</button>
   <button class="btn" id="fit" title="Bring the design back into view: centred when it fits, otherwise from its top-left node">⊡ Show all</button>
@@ -222,9 +243,11 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 </div>
 
 <div id="pt"></div>
+<div id="workspace-panel" hidden aria-label="Cross-package connections"></div>
 
 <div id="main">
   <div id="cv">
+    <div id="workspace-map" hidden role="region" aria-label="Workspace connection diagram"></div>
     <div id="world">
       <svg id="svo" xmlns="http://www.w3.org/2000/svg">
         <defs>
@@ -489,6 +512,244 @@ function renderTabs(){
 }
 
 // ── render ─────────────────────────────────────────────────────────────────
+function workspaceTopicPairs(){
+  const pairs=[];
+  for(const fromPkg of S.packages){
+    for(const fromNode of fromPkg.nodes){
+      for(const pub of fromNode.publishers){
+        for(const toPkg of S.packages){
+          if(toPkg.id===fromPkg.id) continue;
+          for(const toNode of toPkg.nodes){
+            for(const sub of toNode.subscribers){
+              if(!sameType(pub.msgType,sub.msgType)) continue;
+              const sourceName=expandedName(pub.name,fromNode.label);
+              const targetName=expandedName(sub.name,toNode.label);
+              pairs.push({
+                fromPkg,fromNode,pub,toPkg,toNode,sub,sourceName,targetName,
+                connected:sourceName===targetName
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  return pairs;
+}
+function workspaceRpcPairs(){
+  const pairs=[];
+  for(const [kind,providers,consumers] of [
+    ['service','services','clients'],
+    ['action','action_servers','action_clients']
+  ]){
+    for(const fromPkg of S.packages){
+      for(const fromNode of fromPkg.nodes){
+        for(const pub of (fromNode[providers]||[])){
+          for(const toPkg of S.packages){
+            if(toPkg.id===fromPkg.id) continue;
+            for(const toNode of toPkg.nodes){
+              for(const sub of (toNode[consumers]||[])){
+                if(!sameType(pub.msgType,sub.msgType)) continue;
+                const sourceName=expandedName(pub.name,fromNode.label);
+                const targetName=expandedName(sub.name,toNode.label);
+                if(sourceName!==targetName) continue;
+                pairs.push({
+                  fromPkg,fromNode,pub,toPkg,toNode,sub,sourceName,targetName,
+                  connected:true,kind
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return pairs;
+}
+function topicTokens(name){
+  return new Set(name.toLowerCase().split(/[^a-z0-9]+/).filter(
+    word=>word.length>2&&!['topic','data','input','output','node'].includes(word)
+  ));
+}
+function likelyTopicMatch(pair){
+  const left=topicTokens(pair.sourceName), right=topicTokens(pair.targetName);
+  return [...left].some(token=>right.has(token));
+}
+
+function renderWorkspaceMap(pairs){
+  const map=document.getElementById('workspace-map');
+  if(map.hidden) return;
+  map.replaceChildren();
+  const ns='http://www.w3.org/2000/svg';
+  const make=(tag,attributes={})=>{
+    const el=document.createElementNS(ns,tag);
+    for(const [name,value] of Object.entries(attributes)) el.setAttribute(name,String(value));
+    return el;
+  };
+  const gap=320,cardW=230,cardH=62;
+  const positions=new Map();
+  const width=Math.max(850,S.packages.length*gap+80);
+  const height=Math.max(430,...S.packages.map(p=>130+p.nodes.length*105));
+  const svg=make('svg',{viewBox:'0 0 '+width+' '+height,'aria-label':'Package and topic graph'});
+  svg.style.width=width+'px';
+  svg.style.height=height+'px';
+  const defs=make('defs');
+  const marker=make('marker',{id:'workspace-arrow',markerWidth:8,markerHeight:8,
+    refX:8,refY:3,orient:'auto'});
+  marker.appendChild(make('path',{d:'M0,0 L0,6 L8,3 Z',fill:'#22d3ee'}));
+  defs.appendChild(marker);svg.appendChild(defs);
+  S.packages.forEach((p,i)=>{
+    const x=55+i*gap;
+    const heading=make('text',{x:x+6,y:42,fill:'#c4b5fd','font-size':16,'font-weight':600});
+    heading.textContent=p.pkg_name;
+    svg.appendChild(heading);
+    p.nodes.forEach((nd,j)=>{
+      const y=85+j*105;
+      positions.set(p.id+'|'+nd.id,{x,y});
+      const group=make('g',{class:'workspace-node',role:'button',tabindex:0});
+      group.style.cursor='pointer';
+      const open=()=>{
+        document.getElementById('wslinks').click();
+        switchPkg(p.id);
+        S.sel=nd.id;renderSB();
+      };
+      group.addEventListener('click',open);
+      group.addEventListener('keydown',e=>{
+        if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}
+      });
+      group.appendChild(make('rect',{x,y,width:cardW,height:cardH,rx:10,
+        fill:'#1e293b',stroke:'#64748b'}));
+      const label=make('text',{x:x+12,y:y+24,fill:'#f1f5f9','font-size':14});
+      label.textContent=nd.label;group.appendChild(label);
+      const counts=make('text',{x:x+12,y:y+45,fill:'#94a3b8','font-size':11});
+      counts.textContent=nd.publishers.length+' pub · '+nd.subscribers.length+
+        ' sub · '+nd.services.length+' svc · '+nd.action_servers.length+' actions';
+      group.appendChild(counts);
+      group.appendChild(make('circle',{cx:x+cardW,cy:y+cardH/2,r:5,fill:'#22d3ee'}));
+      group.appendChild(make('circle',{cx:x,cy:y+cardH/2,r:5,fill:'#a78bfa'}));
+      svg.appendChild(group);
+    });
+  });
+  for(const pair of pairs.filter(p=>p.connected)){
+    const a=positions.get(pair.fromPkg.id+'|'+pair.fromNode.id);
+    const b=positions.get(pair.toPkg.id+'|'+pair.toNode.id);
+    if(!a||!b) continue;
+    const goingRight=b.x>a.x;
+    const x1=a.x+(goingRight?cardW:0), x2=b.x+(goingRight?0:cardW);
+    const y1=a.y+cardH/2,y2=b.y+cardH/2;
+    const mid=(x1+x2)/2;
+    const path=make('path',{class:'workspace-link',
+      d:'M '+x1+' '+y1+' C '+mid+' '+y1+', '+mid+' '+y2+', '+x2+' '+y2,
+      stroke:pair.kind==='service'?'#a78bfa':pair.kind==='action'?'#fbbf24':'#22d3ee',
+      'stroke-width':2,fill:'none','marker-end':'url(#workspace-arrow)'});
+    const title=make('title');
+    title.textContent=pair.fromPkg.pkg_name+'/'+pair.fromNode.label+
+      ' → '+pair.toPkg.pkg_name+'/'+pair.toNode.label+' · '+pair.sourceName;
+    path.appendChild(title);
+    svg.insertBefore(path,svg.children[1]);
+  }
+  map.appendChild(svg);
+}
+let showAllCandidates=false;
+function renderWorkspaceConnections(){
+  const panel=document.getElementById('workspace-panel');
+  if(panel.hidden) return;
+  panel.replaceChildren();
+  const topics=workspaceTopicPairs(), rpc=workspaceRpcPairs();
+  const pairs=[...topics,...rpc];
+  renderWorkspaceMap(pairs);
+  const heading=document.createElement('h3');
+  heading.textContent='Connected cross-package topics';
+  panel.appendChild(heading);
+  const connected=topics.filter(pair=>pair.connected);
+  const addRow=(pair,proposal)=>{
+    const row=document.createElement('div');
+    row.className='cross-item';
+    const label=document.createElement('span');
+    label.textContent=pair.fromPkg.pkg_name+'/'+pair.fromNode.label+
+      ' publishes '+pair.sourceName+' ('+pair.pub.msgType+') → '+
+      pair.toPkg.pkg_name+'/'+pair.toNode.label+
+      ' subscribes '+pair.targetName;
+    row.appendChild(label);
+    if(!proposal){
+      const status=document.createElement('span');
+      status.className='connected';
+      status.textContent='Connected';
+      row.appendChild(status);
+    }else{
+      const button=document.createElement('button');
+      button.textContent='Change subscriber topic…';
+      button.addEventListener('click',()=>{
+        const explanation='Change '+pair.toPkg.pkg_name+'/'+pair.toNode.label+
+          ' subscription from '+pair.targetName+' to '+pair.sourceName+
+          '? This replaces its existing topic and may disconnect its current publisher.';
+        if(!confirm(explanation)) return;
+        if(nameLengthError('subscribers',pair.sourceName,pair.toNode.label)){
+          showToast('The selected topic name is too long for ROS 2.','err');return;
+        }
+        pair.sub.name=pair.sourceName;
+        renderAll();
+        showToast('Subscription changed to '+pair.sourceName+'.','ok');
+      });
+      row.appendChild(button);
+    }
+    panel.appendChild(row);
+  };
+  if(!connected.length){
+    const empty=document.createElement('p');empty.className='hint';
+    empty.textContent='No matching topics across packages yet.';
+    panel.appendChild(empty);
+  }
+  connected.forEach(pair=>addRow(pair,false));
+  const rpcHeading=document.createElement('h3');
+  rpcHeading.textContent='Services and actions across packages';
+  panel.appendChild(rpcHeading);
+  if(!rpc.length){
+    const empty=document.createElement('p');empty.className='hint';
+    empty.textContent='No matching service or action endpoints across packages yet.';
+    panel.appendChild(empty);
+  }
+  for(const pair of rpc){
+    const row=document.createElement('div');row.className='cross-item';
+    const label=document.createElement('span');
+    label.textContent=pair.kind+': '+pair.fromPkg.pkg_name+'/'+pair.fromNode.label+
+      ' → '+pair.toPkg.pkg_name+'/'+pair.toNode.label+
+      ' · '+pair.sourceName+' ('+pair.pub.msgType+')';
+    row.appendChild(label);
+    panel.appendChild(row);
+  }
+  const label=document.createElement('h3');
+  label.textContent='Potential connections (not wired)';
+  panel.appendChild(label);
+  const explanation=document.createElement('p');explanation.className='hint';
+  explanation.textContent='Candidates share a message type and topic-name keyword. '+
+    'Changing a subscriber topic requires explicit confirmation.';
+  panel.appendChild(explanation);
+  const candidates=topics.filter(pair=>!pair.connected &&
+    (showAllCandidates||likelyTopicMatch(pair)));
+  if(!candidates.length){
+    const empty=document.createElement('p');empty.className='hint';
+    empty.textContent='No likely topic matches. You can inspect other type-compatible pairs.';
+    panel.appendChild(empty);
+  }
+  candidates.forEach(pair=>addRow(pair,true));
+  const toggle=document.createElement('button');
+  toggle.textContent=showAllCandidates?'Hide unrelated candidates':'Show all type-compatible candidates';
+  toggle.addEventListener('click',()=>{
+    showAllCandidates=!showAllCandidates;renderWorkspaceConnections();
+  });
+  panel.appendChild(toggle);
+}
+document.getElementById('wslinks').addEventListener('click',()=>{
+  const panel=document.getElementById('workspace-panel');
+  const map=document.getElementById('workspace-map');
+  panel.hidden=!panel.hidden;
+  map.hidden=panel.hidden;
+  CV.classList.toggle('workspace-open',!panel.hidden);
+  document.getElementById('wslinks').setAttribute('aria-expanded',String(!panel.hidden));
+  renderWorkspaceConnections();
+});
+
 function renderAll(){
   renderNodes();
   sizeLayers();
@@ -498,6 +759,7 @@ function renderAll(){
   ES.classList.toggle('h', !!(p&&p.nodes.length>0));
   GB.disabled = !S.packages.some(p=>p.nodes.length>0);
   renderTabs();
+  renderWorkspaceConnections();
 }
 
 function renderEdges(){
