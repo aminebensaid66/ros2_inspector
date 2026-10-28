@@ -346,6 +346,57 @@ def test_edited_setup_accepts_equivalent_entry_point_whitespace(server: Any) -> 
     assert status == 200, response
 
 
+def test_rename_matches_console_script_whitespace(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(
+        setup.read_text().replace("talker = demo_pkg.talker:main", "talker=demo_pkg.talker:main")
+    )
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")]))
+    )
+    assert status == 200, response
+    text = setup.read_text()
+    assert "'renamed = demo_pkg.renamed:main'" in text
+    assert "talker=demo_pkg.talker:main" not in text
+
+
+def test_rename_console_script_preserves_double_quoted_entry(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(
+        setup.read_text().replace(
+            "'talker = demo_pkg.talker:main'", '"talker=demo_pkg.talker:main"'
+        )
+    )
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")]))
+    )
+    assert status == 200, response
+    result = setup.read_text()
+    assert '"renamed = demo_pkg.renamed:main"' in result
+    assert "talker=demo_pkg.talker:main" not in result
+
+
+def test_rename_rejects_stale_console_script_with_custom_target(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(
+        setup.read_text().replace(
+            "talker = demo_pkg.talker:main", "talker = demo_pkg.talker:custom_main"
+        )
+    )
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")]))
+    )
+    assert status == 409, response
+    assert "obsolete executable" in response["error"]
+    assert "talker = demo_pkg.talker:custom_main" in setup.read_text()
+
+
 def test_rename_preserves_foreign_package_launch_entries(server: Any) -> None:
     httpd, out = server
     assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
