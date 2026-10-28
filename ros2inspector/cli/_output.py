@@ -47,13 +47,17 @@ def atomic_write_text(path: Path, text: str) -> None:
             temp_name = stream.name
             stream.write(text)
             stream.flush()
-            os.fchmod(stream.fileno(), mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), mode)
             os.fsync(stream.fileno())
+        if not hasattr(os, "fchmod"):
+            os.chmod(temp_name, mode)
         os.replace(temp_name, path)
-    except OSError as exc:
+    except (OSError, AttributeError) as exc:
         if temp_name:
             try:
                 Path(temp_name).unlink(missing_ok=True)
             except OSError:
                 pass
-        raise OutputWriteError(f"cannot write '{path}': {exc.strerror or exc}") from exc
+        detail = getattr(exc, "strerror", None) or str(exc)
+        raise OutputWriteError(f"cannot write '{path}': {detail}") from exc
