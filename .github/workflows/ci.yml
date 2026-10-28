@@ -42,6 +42,20 @@ jobs:
       - name: Run tests
         run: pytest -m "not requires_ros2"
 
+  tree-sitter-compat:
+    name: Constrained Tree-sitter compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install minimum supported Tree-sitter combination
+        run: python -m pip install -e . "tree-sitter==0.25.0" "tree-sitter-cpp==0.23.4"
+      - name: Import CLI and parse C++ source
+        run: |
+          python -c "import ros2inspector.cli.app; from ros2inspector.static.cpp_parser import _CPP_LANG; from tree_sitter import Parser; assert Parser(_CPP_LANG).parse(b'class Example {};').root_node is not None"
+
   windows-writes:
     name: Native Windows writes (Python ${{ matrix.python-version }})
     runs-on: windows-latest
