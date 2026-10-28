@@ -848,3 +848,217 @@ def test_validate_json_contains_analysis_completeness(tmp_path: Path) -> None:
     output = json.loads(result.stdout)
     assert output["completeness"]["complete"] is True
     assert output["completeness"]["excluded_test_parse_failures"] == 1
+
+
+def test_entrypoint_matches_only_its_constructed_node_class(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from ros2inspector.model.uam import _entrypoint_matches_node
+    from ros2inspector.static.python_entrypoints import PythonEntrypoint
+
+    package = tmp_path / "app"
+    module = package / "app" / "nodes.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "class Alpha: pass\n"
+        "class Beta: pass\n"
+        "def helper(): return Alpha()\n"
+        "def main_alpha(): helper()\n"
+        "def main_beta(): Beta()\n"
+    )
+    alpha = SimpleNamespace(
+        language="python", file_path=str(module), source_symbol="Alpha", name="Alpha"
+    )
+    beta = SimpleNamespace(
+        language="python", file_path=str(module), source_symbol="Beta", name="Beta"
+    )
+    run_alpha = PythonEntrypoint("run_alpha", "app.nodes", "main_alpha")
+    run_beta = PythonEntrypoint("run_beta", "app.nodes", "main_beta")
+    assert _entrypoint_matches_node(run_alpha, alpha, package)
+    assert not _entrypoint_matches_node(run_alpha, beta, package)
+    assert _entrypoint_matches_node(run_beta, beta, package)
+    assert not _entrypoint_matches_node(run_beta, alpha, package)
+
+
+def test_entrypoint_module_parsed_only_once_per_analysis_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from ros2inspector.model.uam import _entrypoint_matches_node
+    from ros2inspector.static.python_entrypoints import PythonEntrypoint
+
+    root = tmp_path / "pkg"
+    module = root / "pkg" / "nodes.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "class Alpha: pass\nclass Beta: pass\n"
+        "def main_alpha(): Alpha()\ndef main_beta(): Beta()\n"
+    )
+    real_read = Path.read_bytes
+    count = {"n": 0}
+
+    def counted_read(path: Path) -> bytes:
+        if path == module:
+            count["n"] += 1
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    cache: dict[str, Any] = {}
+    for symbol in ("Alpha", "Beta"):
+        entry = PythonEntrypoint("launch", "pkg.nodes", "main_" + symbol.lower())
+        node = SimpleNamespace(
+            language="python", file_path=str(module), source_symbol=symbol, name=symbol
+        )
+        assert _entrypoint_matches_node(entry, node, root, cache)
+    assert count["n"] == 1
+
+
+def test_standalone_package_with_src_directory_is_discovered(tmp_path: Path) -> None:
+    from ros2inspector.discovery.package_finder import find_package_xml_files, source_search_root
+
+    root = tmp_path / "standalone"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "node.cpp").write_text("int main() { return 0; }\\n")
+    (root / "package.xml").write_text(
+        '<package format="3"><name>standalone</name><version>1.0.0</version>'
+        '<description>standalone</description><maintainer email="a@b.c">A</maintainer>'
+        '<license>MIT</license></package>'
+    )
+    assert source_search_root(root) == root
+    assert find_package_xml_files(root) == [root / "package.xml"]
+
+
+def test_tree_sitter_runtime_compatibility_requirement() -> None:
+    source = (Path(__file__).parents[2] / "pyproject.toml").read_text()
+    assert '"tree-sitter>=0.25"' in source
+    assert '"tree-sitter-cpp>=0.23.4"' in source
+
+
+def test_atomic_output_without_fchmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ros2inspector.cli._output import atomic_write_text
+
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    target = tmp_path / "result.txt"
+    atomic_write_text(target, "hello")
+    assert target.read_text() == "hello"
+
+
+def test_generated_package_without_fchmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from ros2inspector.design.codegen import generate_package_result
+
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    generate_package_result({"pkg_name": "sample_pkg", "nodes": [
+        {"id": "n1", "label": "talker"}
+    ]}, tmp_path)
+    assert (tmp_path / "sample_pkg" / "setup.py").is_file()
+
+
+def test_windows_native_writes(ws: Path, tmp_path: Path) -> None:
+    """Run real installed CLI commands on native Windows Python, no API monkeypatching."""
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("Windows-only native writer smoke test")
+
+    def run(*args: str) -> None:
+        result = subprocess.run(
+            [
+                sys.executable, "-c",
+                "from ros2inspector.cli.app import app; app()",
+                *args,
+            ],
+            text=True, capture_output=True, cwd=tmp_path, timeout=90, check=False
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    nodes = tmp_path / "nodes.json"
+    chart = tmp_path / "graph.html"
+    docs = tmp_path / "docs"
+    run("nodes", "-C", str(ws), "--no-cache", "-f", "json", "-o", str(nodes))
+    assert nodes.is_file() and nodes.read_text(encoding="utf-8").startswith("[")
+    run("viz", "-C", str(ws), "--no-open", "--no-cache", "-o", str(chart))
+    assert chart.is_file() and "<html" in chart.read_text(encoding="utf-8").lower()
+    run("docs", "-C", str(ws), "--no-cache", "-o", str(docs))
+    assert (docs / "index.md").is_file()
+
+    from ros2inspector.design.codegen import generate_package_result
+
+    generate_package_result(
+        {"pkg_name": "windows_pkg", "nodes": [{"id": "n1", "label": "talker"}]},
+        tmp_path,
+    )
+    assert (tmp_path / "windows_pkg" / "setup.py").is_file()
+    assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_external_manifest_dependency_is_enforced(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    root = tmp_path / "ws"
+    pkg = root / "src" / "app"
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license><depend>rclpy</depend></package>'
+    )
+    uam = UAM.build(root, use_cache=False)
+    assert len(rule_dependency(uam, {"forbidden": [{"from": "app", "to": "rclpy"}]})) == 1
+    assert not rule_dependency(uam, {"required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})
+
+
+def test_conditional_external_dependency_is_reported_as_uncertain(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    package = tmp_path / "ws" / "src" / "app"
+    package.mkdir(parents=True)
+    (package / "package.xml").write_text(
+        '<package format="3"><name>app</name><version>1.0.0</version>'
+        '<description>app</description><maintainer email="a@b.c">Me</maintainer>'
+        '<license>MIT</license>'
+        '<depend condition="$ROS_VERSION == 1">roscpp</depend></package>'
+    )
+    uam = UAM.build(tmp_path / "ws", use_cache=False)
+    prohibited = rule_dependency(uam, {
+        "forbidden": [{"from": "app", "to": "roscpp"}]
+    })
+    assert len(prohibited) == 1
+    assert prohibited[0].confidence == "uncertain"
+    assert "conditional" in prohibited[0].message
+    required = rule_dependency(uam, {
+        "required": [{"package": "app", "depends_on": "roscpp"}]
+    })
+    assert len(required) == 1
+    assert required[0].confidence == "uncertain"
+
+
+def test_transitive_external_dependency_respects_rule_flag(tmp_path: Path) -> None:
+    from ros2inspector.model.uam import UAM
+    from ros2inspector.policy.rules import rule_dependency
+
+    root = tmp_path / "ws"
+    for name, extra in (("app", "<depend>bridge</depend>"),
+                        ("bridge", "<depend>rclpy</depend>")):
+        pkg = root / "src" / name
+        pkg.mkdir(parents=True)
+        (pkg / "package.xml").write_text(
+            f'<package format="3"><name>{name}</name><version>1.0.0</version>'
+            '<description>pkg</description><maintainer email="a@b.c">Me</maintainer>'
+            f'<license>MIT</license>{extra}</package>'
+        )
+    uam = UAM.build(root, use_cache=False)
+    forbidden = {"forbidden": [{"from": "app", "to": "rclpy"}]}
+    assert len(rule_dependency(uam, forbidden)) == 1
+    assert not rule_dependency(uam, {**forbidden, "transitive": False})
+    assert not rule_dependency(uam, {"required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})
+    assert len(rule_dependency(uam, {"transitive": False, "required": [
+        {"package": "app", "depends_on": "rclpy"}
+    ]})) == 1
