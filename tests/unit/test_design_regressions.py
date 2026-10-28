@@ -795,3 +795,19 @@ def test_saved_state_does_not_hide_invalid_nodes_by_dropping_wires(tmp_path: Pat
     (tmp_path / STATE_FILE).write_text(json.dumps(invalid))
     assert _load_state(tmp_path) is None
     assert json.loads((tmp_path / f"{STATE_FILE}.invalid").read_text()) == invalid
+
+
+def test_wires_compare_expanded_ros_topic_names() -> None:
+    import pytest
+
+    private = _pkg("p1", "demo_pkg", [
+        _node("n1", "sender", publishers=[_endpoint("pub", "~/chat", "std_msgs/String")]),
+        _node("n2", "receiver", subscribers=[_endpoint("sub", "~/chat", "std_msgs/String")]),
+    ])
+    private["edges"] = [{"id": "e1", "fn": "n1", "ft": "pub", "tn": "n2", "tt": "sub"}]
+    with pytest.raises(ValidationError, match="topic names differ"):
+        PackageSpec.model_validate(private)
+
+    private["nodes"][0]["publishers"][0]["name"] = "chat"
+    private["nodes"][1]["subscribers"][0]["name"] = "/chat"
+    assert len(PackageSpec.model_validate(private).edges) == 1
