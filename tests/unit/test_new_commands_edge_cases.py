@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from typer.testing import CliRunner
 
 from ros2inspector.cache.analysis_cache import AnalysisCache
@@ -1062,3 +1064,70 @@ def test_transitive_external_dependency_respects_rule_flag(tmp_path: Path) -> No
     assert len(rule_dependency(uam, {"transitive": False, "required": [
         {"package": "app", "depends_on": "rclpy"}
     ]})) == 1
+
+
+_APP_MANIFEST = (
+    '<package format="3"><name>app</name><version>1.0.0</version>'
+    '<description>package</description><maintainer email="a@b.c">Me</maintainer>'
+    '<license>MIT</license></package>'
+)
+
+
+def _relative_import_workspace(
+    root: Path, source: str, statement: str, broken: str
+) -> dict[str, Any]:
+    from ros2inspector.policy.rules import analysis_completeness
+
+    pkg = root / "src" / "app"
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text(_APP_MANIFEST)
+    for relative, text in ((source, statement + "\n"), (broken, "def broken(\n")):
+        (pkg / relative).parent.mkdir(parents=True, exist_ok=True)
+        (pkg / relative).write_text(text)
+    (pkg / "test" / "unrelated.py").parent.mkdir(exist_ok=True)
+    (pkg / "test" / "unrelated.py").write_text("def broken(\n")
+    return analysis_completeness(UAM.build(root, use_cache=False, include_tests=False))
+
+
+@pytest.mark.parametrize(
+    ("source", "statement", "broken"),
+    [
+        ("app/__init__.py", "from .tests import helpers", "app/tests/helpers.py"),
+        ("app/__init__.py", "from . import tests", "app/tests/__init__.py"),
+        ("app/node.py", "from .tests import helpers", "app/tests/helpers.py"),
+        ("app/sub/__init__.py", "from ..tests import helpers", "app/tests/helpers.py"),
+        ("src/app/__init__.py", "from .tests import helpers", "src/app/tests/helpers.py"),
+    ],
+    ids=["init", "init-bare", "module", "init-level-2", "src-layout"],
+)
+def test_relative_import_of_broken_test_helper_keeps_source_gap(
+    tmp_path: Path, source: str, statement: str, broken: str
+) -> None:
+    completeness = _relative_import_workspace(tmp_path / "ws", source, statement, broken)
+    assert completeness["complete"] is False
+    assert completeness["relevant_source_parse_failures"] == 1
+    assert completeness["excluded_test_parse_failures"] == 1
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    packages=st.lists(st.sampled_from(["core", "io", "util"]), min_size=1, max_size=3),
+    is_init=st.booleans(),
+    data=st.data(),
+)
+def test_relative_imports_resolve_like_python(
+    packages: list[str], is_init: bool, data: st.DataObject
+) -> None:
+    import importlib.util
+    import tempfile
+
+    package = ".".join(["app", *packages[:-1]]) if not is_init else ".".join(["app", *packages])
+    source = "/".join(["app", *packages]) + ("/__init__.py" if is_init else ".py")
+    level = data.draw(st.integers(min_value=1, max_value=len(package.split("."))))
+    target = importlib.util.resolve_name("." * level + "tests", package)
+    broken = target.replace(".", "/") + "/helpers.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        completeness = _relative_import_workspace(
+            Path(tmp) / "ws", source, f"from {'.' * level}tests import helpers", broken
+        )
+    assert completeness["relevant_source_parse_failures"] == 1, (source, level, target)

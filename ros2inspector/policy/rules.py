@@ -414,13 +414,23 @@ def _relevant_source_diagnostics(uam: UnifiedArchitectureModel) -> list[dict[str
                 if isinstance(node, ast.Import):
                     imports.update(alias.name for alias in node.names)
                 elif isinstance(node, ast.ImportFrom):
-                    base = node.module or ""
-                    # Relative imports are resolved against the source's module.
+                    module = node.module or ""
+                    bases = {module}
+                    # Relative imports are resolved against the source's package, under
+                    # every name the source has. An __init__ module is its own package.
                     if node.level:
-                        parent = next(iter(sorted(aliases(path, root))), "")
-                        segments = parent.split(".")[:-node.level]
-                        base = ".".join([*segments, *( [base] if base else [] )])
-                    if base:
+                        bases = set()
+                        for name in aliases(path, root):
+                            parts = name.split(".")
+                            if path.name != "__init__.py":
+                                parts.pop()
+                            if node.level - 1 > len(parts):
+                                continue
+                            parts = parts[: len(parts) - (node.level - 1)]
+                            bases.add(".".join([*parts, *([module] if module else [])]))
+                    for base in bases:
+                        if not base:
+                            continue
                         imports.add(base)
                         imports.update(
                             base + "." + alias.name for alias in node.names
