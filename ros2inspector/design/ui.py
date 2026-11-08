@@ -13,39 +13,112 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ROS2 Inspector — Package Designer</title>
-<link rel="icon" href="data:,">
+<meta name="theme-color" content="#050B1F">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><g fill='none' stroke-linecap='round' stroke-linejoin='round'><path d='M18 5H10Q5 5 5 10V18M46 5H54Q59 5 59 10V18' stroke='%231E5BFF' stroke-width='4'/><path d='M5 46V54Q5 59 10 59H18M46 59H54Q59 59 59 54V46' stroke='%2336D6FF' stroke-width='4'/><path d='M14 27L31 31L34 14M14 27L20 43L31 31' stroke='%231E5BFF' stroke-width='2.5'/><path d='M31 31L49 27L40 50L31 31' stroke='%2336D6FF' stroke-width='2.5'/></g><circle cx='14' cy='27' r='5' fill='%230A1230' stroke='%231E5BFF' stroke-width='1.5'/><circle cx='20' cy='43' r='4.5' fill='%23050B1F' stroke='%231E5BFF' stroke-width='1.5'/><circle cx='34' cy='14' r='4.5' fill='%231E5BFF'/><circle cx='49' cy='27' r='4' fill='none' stroke='%2336D6FF' stroke-width='3'/><circle cx='40' cy='50' r='5' fill='%2336D6FF'/><circle cx='31' cy='31' r='6' fill='%231E5BFF'/><circle cx='31' cy='31' r='2' fill='%237FE5FF'/></svg>">
 <style>
+/* ── design tokens ────────────────────────────────────────────────────────────
+   The ROS2 Inspector brand palette (website and logo pack). Every colour on the page comes
+   from here; the script reads the few it needs for SVG attributes through cssToken(). */
+:root{
+  color-scheme:dark;
+  /* surfaces, darkest to lightest */
+  --bg:#050b1f;            /* brand navy: canvas */
+  --surface:#0a1230;       /* brand navy-2: toolbar, tabs, inspector */
+  --card:#0e1838;          /* node cards, toasts */
+  --raised:#14214a;        /* active tab, hovered rows */
+  --field:rgba(127,168,255,.05);
+  --field-border:rgba(127,168,255,.16);
+  --line:rgba(74,134,255,.14);
+  --line-strong:rgba(74,134,255,.32);
+  --grid:rgba(74,134,255,.13);
+  /* text */
+  --text:#e2e8f0;
+  --text-2:#a9b6cc;
+  --muted:#7c8aa0;         /* >= 5:1 on every surface above */
+  /* brand */
+  --primary:#1e5bff;
+  --primary-hover:#3a70ff;
+  --primary-text:#7fa8ff;  /* brand blue for text on navy */
+  --accent:#36d6ff;
+  --accent-soft:#7fe5ff;
+  --brand-gradient:linear-gradient(135deg,#1e5bff,#36d6ff);
+  /* ROS endpoint roles. Publishers are filled cyan dots, subscribers blue rings, so the two
+     ends of a wire differ in shape as well as colour. */
+  --pub:#36d6ff;
+  --pub-ring:#7fe5ff;
+  --sub:#7fa8ff;
+  --srv:#34d399;
+  --srv-client:#10b981;
+  --act:#f472b6;
+  --act-client:#ec4899;
+  /* status */
+  --ok:#34d399;
+  --warn:#fbbf24;
+  --danger:#f87171;
+  --danger-soft:#fecaca;
+  /* type and shape */
+  --font-ui:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif;
+  --font-mono:ui-monospace,'SF Mono','JetBrains Mono',Menlo,Consolas,monospace;
+  --radius-sm:6px;
+  --radius:8px;
+  --radius-lg:12px;
+  --shadow:0 8px 28px rgba(0,0,0,.45);
+  --focus:0 0 0 2px var(--bg),0 0 0 4px rgba(54,214,255,.65);
+}
+
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d9;
-  display:flex;flex-direction:column;height:100vh;overflow:hidden;user-select:none}
+body{font-family:var(--font-ui);background:var(--bg);color:var(--text);
+  display:flex;flex-direction:column;height:100vh;overflow:hidden;user-select:none;
+  -webkit-font-smoothing:antialiased}
+button{font-family:inherit}
+:focus-visible{outline:none;box-shadow:var(--focus)}
+.ic{width:14px;height:14px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
 
 /* toolbar */
-#tb{height:52px;background:#0e0e1c;border-bottom:1px solid rgba(139,92,246,.22);
+#tb{height:52px;background:var(--surface);border-bottom:1px solid var(--line);
   display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0}
-.brand{font-weight:700;font-size:14px;color:#a78bfa;white-space:nowrap}
-.sep{width:1px;height:20px;background:rgba(255,255,255,.08);flex-shrink:0}
-.tb-lbl{color:#7c8aa0;font-size:12px;white-space:nowrap}
-.tb-inp{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);
-  border-radius:6px;color:#e2e8f0;padding:5px 9px;
-  font-family:monospace;font-size:12px;outline:none;width:160px}
-.tb-inp:focus{border-color:rgba(139,92,246,.5)}
-.btn{background:rgba(139,92,246,.12);border:1px solid rgba(139,92,246,.28);
-  border-radius:8px;color:#a78bfa;padding:6px 14px;font-size:12px;
-  font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s}
-.btn:hover{background:rgba(139,92,246,.24)}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.btn-save{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.28);
-  border-radius:8px;color:#34d399;padding:6px 14px;font-size:12px;
-  font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s}
-.btn-save:hover{background:rgba(52,211,153,.2)}
-.btn-save:disabled{opacity:.4;cursor:not-allowed}
-.btn-p{background:linear-gradient(135deg,#8b5cf6,#6d28d9);border:none;
-  border-radius:8px;color:#fff;padding:6px 14px;font-size:12px;
-  font-weight:600;cursor:pointer;white-space:nowrap;transition:opacity .15s}
-.btn-p:hover{opacity:.88}
-.btn-p:disabled{opacity:.4;cursor:not-allowed}
-.tb-hint{color:#7c8aa0;font-size:11px;margin-left:auto;font-style:italic;white-space:nowrap;
+.brand{display:flex;align-items:center;gap:9px;white-space:nowrap;flex-shrink:0}
+.brand-mark{width:26px;height:26px;flex-shrink:0}
+.brand-name{font-weight:700;font-size:14px;letter-spacing:.01em;color:var(--text)}
+.brand-name b{font-weight:800;background:var(--brand-gradient);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.brand-tag{font-size:11px;font-weight:600;color:var(--primary-text);
+  padding:2px 8px;border:1px solid var(--line-strong);border-radius:999px;
+  background:rgba(30,91,255,.1)}
+.sep{width:1px;height:20px;background:var(--line);flex-shrink:0}
+.tb-lbl{color:var(--muted);font-size:12px;white-space:nowrap}
+.tb-inp{background:var(--field);border:1px solid var(--field-border);
+  border-radius:var(--radius-sm);color:var(--text);padding:5px 9px;
+  font-family:var(--font-mono);font-size:12px;outline:none;width:160px;
+  transition:border-color .15s}
+.tb-inp:focus{border-color:var(--accent);box-shadow:none}
+
+/* buttons: one shape, three emphasis levels */
+.btn,.btn-save,.btn-p{display:inline-flex;align-items:center;gap:6px;
+  border-radius:var(--radius);padding:6px 13px;font-size:12px;font-weight:600;
+  cursor:pointer;white-space:nowrap;line-height:1.2;
+  transition:background .15s,border-color .15s,color .15s}
+.btn{background:rgba(30,91,255,.1);border:1px solid var(--line-strong);color:var(--primary-text)}
+.btn:hover{background:rgba(30,91,255,.2);border-color:rgba(74,134,255,.5);color:#a9c4ff}
+.btn-save{background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.3);color:var(--ok)}
+.btn-save:hover{background:rgba(52,211,153,.16)}
+.btn-p{background:var(--primary);border:1px solid var(--primary);color:#fff;
+  box-shadow:0 1px 0 rgba(255,255,255,.12) inset,0 4px 14px rgba(30,91,255,.3)}
+.btn-p:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
+.btn:disabled,.btn-save:disabled,.btn-p:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+/* busy: a spinner takes the icon's place while a request runs */
+.busy .ic{display:none}
+.busy::before{content:'';width:12px;height:12px;flex-shrink:0;border-radius:50%;
+  border:2px solid currentColor;border-right-color:transparent;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.tb-hint{color:var(--muted);font-size:11px;margin-left:auto;white-space:nowrap;
   min-width:0;overflow:hidden;text-overflow:ellipsis}
+.tb-hint kbd{font-family:var(--font-mono);font-size:10px;color:var(--text-2);
+  padding:1px 5px;border:1px solid var(--field-border);border-radius:4px;background:var(--field)}
+/* Medium windows: keep the mark and name, drop the tag. */
+@media (max-width:1180px){ .brand-tag{display:none} }
 /* Narrow windows: the buttons matter more than the brand and the hint. */
 @media (max-width:900px){
   .brand,.brand+.sep,.tb-hint{display:none}
@@ -62,37 +135,36 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 }
 
 /* package tabs bar */
-#pt{height:40px;background:#0b0b19;border-bottom:1px solid rgba(139,92,246,.15);
+#pt{height:40px;background:var(--surface);border-bottom:1px solid var(--line);
   display:flex;align-items:flex-end;padding:0 12px;gap:2px;flex-shrink:0;overflow-x:auto}
 #pt::-webkit-scrollbar{height:3px}
 #pt::-webkit-scrollbar-track{background:transparent}
-#pt::-webkit-scrollbar-thumb{background:rgba(139,92,246,.3);border-radius:2px}
-.ptab{height:32px;display:flex;align-items:center;gap:6px;
-  padding:0 10px 0 12px;
-  background:rgba(255,255,255,.03);
-  border:1px solid rgba(255,255,255,.07);border-bottom:none;
-  border-radius:6px 6px 0 0;
-  font-size:12px;font-family:monospace;color:#7c8aa0;
+#pt::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:2px}
+.ptab{height:32px;display:flex;align-items:center;gap:6px;padding:0 10px 0 12px;
+  background:transparent;border:1px solid transparent;border-bottom:none;
+  border-radius:var(--radius-sm) var(--radius-sm) 0 0;
+  font-size:12px;font-family:var(--font-mono);color:var(--muted);
   cursor:pointer;white-space:nowrap;transition:background .15s,color .15s}
-.ptab.active{background:#12121e;border-color:rgba(139,92,246,.4);color:#e2e8f0}
-.ptab:hover:not(.active){background:rgba(255,255,255,.06);color:#94a3b8}
-.ptab-del{background:none;border:none;color:#7c8aa0;cursor:pointer;
+.ptab.active{background:var(--bg);border-color:var(--line-strong);color:var(--text);
+  box-shadow:inset 0 2px 0 var(--accent)}
+.ptab:hover:not(.active){background:var(--field);color:var(--text-2)}
+.ptab-del{background:none;border:none;color:var(--muted);cursor:pointer;
   font-size:14px;padding:1px 3px;line-height:1;border-radius:3px;
   transition:color .15s;flex-shrink:0}
-.ptab-del:hover{color:#f87171}
-.ptab-add{height:26px;align-self:center;margin-left:4px;
-  background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.18);
-  border-radius:6px;color:#8b5cf6;padding:0 10px;font-size:11px;
-  font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0}
-.ptab-add:hover{background:rgba(139,92,246,.16)}
+.ptab-del:hover{color:var(--danger)}
+.ptab-add{height:26px;align-self:center;margin-left:6px;
+  background:transparent;border:1px dashed var(--line-strong);
+  border-radius:var(--radius-sm);color:var(--primary-text);padding:0 10px;font-size:11px;
+  font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:background .15s}
+.ptab-add:hover{background:rgba(30,91,255,.12)}
 
 /* layout */
 #main{display:flex;flex:1;overflow:hidden}
 
 /* canvas */
 #cv{flex:1;position:relative;overflow:hidden;
-  background-color:#0a0a18;
-  background-image:radial-gradient(rgba(139,92,246,.12) 1px,transparent 1px);
+  background-color:var(--bg);
+  background-image:radial-gradient(var(--grid) 1px,transparent 1px);
   background-size:28px 28px;cursor:grab}
 #cv.panning{cursor:grabbing}
 /* Everything on the canvas lives in #world, which is translated to pan the view.
@@ -105,128 +177,208 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 #svh{z-index:2}
 
 /* nodes */
-.node{position:absolute;z-index:1;width:280px;cursor:default;background:#12121e;
-  border:1px solid rgba(139,92,246,.35);border-radius:12px;overflow:hidden;
-  box-shadow:0 4px 24px rgba(0,0,0,.4);transition:border-color .2s,box-shadow .2s}
-.node.sel{border-color:#8b5cf6;
-  box-shadow:0 0 0 2px rgba(139,92,246,.3),0 8px 32px rgba(0,0,0,.5)}
+.node{position:absolute;z-index:1;width:280px;cursor:default;background:var(--card);
+  border:1px solid var(--line-strong);border-radius:var(--radius-lg);overflow:hidden;
+  box-shadow:0 4px 20px rgba(0,0,0,.35);transition:border-color .2s,box-shadow .2s}
+.node:hover{border-color:rgba(74,134,255,.5)}
+.node.sel{border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(54,214,255,.18),0 10px 32px rgba(0,0,0,.5)}
 .nh{height:44px;display:flex;align-items:center;padding:0 12px;gap:8px;
-  background:linear-gradient(135deg,rgba(139,92,246,.18),rgba(34,211,238,.08));
-  border-bottom:1px solid rgba(139,92,246,.12);cursor:move}
-.ndot{width:8px;height:8px;border-radius:50%;
-  background:linear-gradient(135deg,#8b5cf6,#22d3ee);flex-shrink:0}
-.nlbl{font-weight:700;font-size:13px;color:#e2e8f0;flex:1;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace}
-.ndel{background:none;border:none;color:#7c8aa0;cursor:pointer;
+  background:linear-gradient(135deg,rgba(30,91,255,.22),rgba(54,214,255,.05));
+  border-bottom:1px solid var(--line);cursor:move}
+.ndot{width:9px;height:9px;border-radius:50%;background:var(--brand-gradient);flex-shrink:0;
+  box-shadow:0 0 0 3px rgba(30,91,255,.18)}
+.nlbl{font-weight:700;font-size:13px;color:var(--text);flex:1;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono)}
+.ndel{background:none;border:none;color:var(--muted);cursor:pointer;
   font-size:16px;padding:2px 4px;line-height:1;border-radius:4px;flex-shrink:0;
   transition:color .15s}
-.ndel:hover{color:#f87171}
+.ndel:hover{color:var(--danger)}
 .nch{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
-  border-bottom:1px solid rgba(255,255,255,.04);padding:3px 0}
-.clbl{font-size:9px;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;padding:0 10px}
+  border-bottom:1px solid var(--line);padding:3px 0}
+.clbl{font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.08em;padding:0 10px}
 .clbl.r{text-align:right}
 .ncols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
-.sc{border-right:1px solid rgba(255,255,255,.04)}
+.sc{border-right:1px solid var(--line)}
 .tr{height:40px;display:flex;align-items:center;padding:0 10px}
 .tr.sub{padding-left:18px}
 .tr.pub{padding-right:18px;flex-direction:row-reverse}
 .ti{display:flex;flex-direction:column;gap:1px;min-width:0;max-width:100%}
-.tn{font-size:12px;color:#e2e8f0;font-family:monospace;line-height:1.2}
-.tt{font-size:10px;color:#7c8aa0;line-height:1.2}
+.tn{font-size:12px;color:var(--text);font-family:var(--font-mono);line-height:1.2}
+.tt{font-size:10px;color:var(--muted);line-height:1.2}
 .tn,.tt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tr.pub .ti{text-align:right}
 .ec{height:40px;display:flex;align-items:center;padding:0 10px;
-  color:#7c8aa0;font-size:11px;font-style:italic}
+  color:var(--muted);font-size:11px;font-style:italic}
 .ec.r{justify-content:flex-end}
+.nfoot{padding:7px 10px;border-top:1px solid var(--line);font-size:10px;color:var(--muted);
+  background:rgba(5,11,31,.35)}
 
-/* sidebar */
-#sb{width:300px;flex-shrink:0;background:#0e0e1c;
-  border-left:1px solid rgba(139,92,246,.18);
+/* inspector sidebar */
+#sb{width:300px;flex-shrink:0;background:var(--surface);
+  border-left:1px solid var(--line);
   display:flex;flex-direction:column;overflow-y:auto;
   padding:20px 16px;gap:20px;transition:width .2s,padding .2s}
 #sb.h{width:0;padding:0;overflow:hidden;border:none}
-.stit{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#8b5cf6}
-.slbl{display:block;font-size:10px;font-weight:700;text-transform:uppercase;
-  letter-spacing:.08em;color:#7c8aa0;margin-bottom:6px}
-.sinp{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);
-  border-radius:6px;color:#e2e8f0;padding:6px 10px;
-  font-family:monospace;font-size:12px;outline:none;width:100%}
-.sinp:focus{border-color:rgba(139,92,246,.5)}
+#sb::-webkit-scrollbar{width:6px}
+#sb::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:3px}
+.shead{display:flex;align-items:center;justify-content:space-between}
+.stit{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--primary-text)}
+.sb-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px;
+  line-height:1;padding:2px 6px;border-radius:4px;transition:color .15s,background .15s}
+.sb-close:hover{color:var(--text);background:var(--field)}
+.slbl{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
+.sinp{background:var(--field);border:1px solid var(--field-border);
+  border-radius:var(--radius-sm);color:var(--text);padding:6px 10px;
+  font-family:var(--font-mono);font-size:12px;outline:none;width:100%;transition:border-color .15s}
+.sinp:focus,.ssel:focus{border-color:var(--accent);box-shadow:none}
 .srow{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-.addb{background:rgba(139,92,246,.1);border:1px solid rgba(139,92,246,.22);
-  border-radius:6px;color:#a78bfa;padding:3px 8px;font-size:11px;font-weight:600;cursor:pointer}
-.tc{background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);
-  border-radius:8px;padding:10px;margin-bottom:8px}
+.srow .slbl{margin:0}
+.addb{background:rgba(30,91,255,.1);border:1px solid var(--line-strong);
+  border-radius:var(--radius-sm);color:var(--primary-text);padding:3px 8px;font-size:11px;
+  font-weight:600;cursor:pointer;transition:background .15s}
+.addb:hover{background:rgba(30,91,255,.2)}
+.tc{background:var(--field);border:1px solid var(--line);
+  border-radius:var(--radius);padding:10px;margin-bottom:8px}
 .tcr{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-.tdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.trem{background:none;border:none;color:#7c8aa0;cursor:pointer;
+.tcr .sinp{flex:1;padding:4px 8px;font-size:11px}
+/* role markers: filled dot, or ring for subscribers (matching the canvas handles) */
+.tdot,.ldot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:var(--c)}
+.tdot.ring,.ldot.ring{background:transparent;box-shadow:inset 0 0 0 1.5px var(--c)}
+.trem{background:none;border:none;color:var(--muted);cursor:pointer;
   font-size:14px;padding:2px 4px;line-height:1;transition:color .15s}
-.trem:hover{color:#f87171}
-.ssel{background:#0a0a18;border:1px solid rgba(255,255,255,.09);
-  border-radius:6px;color:#e2e8f0;padding:4px 8px;
-  font-family:monospace;font-size:11px;width:100%;outline:none;cursor:pointer}
+.trem:hover{color:var(--danger)}
+.ssel{background:var(--bg);border:1px solid var(--field-border);
+  border-radius:var(--radius-sm);color:var(--text);padding:4px 8px;
+  font-family:var(--font-mono);font-size:11px;width:100%;outline:none;cursor:pointer;
+  transition:border-color .15s}
+.none{color:var(--muted);font-size:12px;font-style:italic}
 .shnote{margin-top:auto;padding:10px 12px;
-  background:rgba(139,92,246,.06);border-radius:8px;
-  border:1px solid rgba(139,92,246,.1);
-  font-size:11px;color:#7c8aa0;line-height:1.6}
+  background:rgba(30,91,255,.06);border-radius:var(--radius);
+  border:1px solid var(--line);
+  font-size:11px;color:var(--muted);line-height:1.6}
+.k-pub{color:var(--pub)}
+.k-sub{color:var(--sub)}
 
 /* empty state */
 #es{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-  text-align:center;color:#7c8aa0;pointer-events:none}
+  display:flex;flex-direction:column;align-items:center;gap:10px;
+  max-width:360px;text-align:center;color:var(--muted);pointer-events:none}
 #es.h{display:none}
-#es .big{font-size:48px;margin-bottom:10px}
-#es p{font-size:13px}
+.es-mark{width:88px;height:88px;margin-bottom:6px;
+  filter:drop-shadow(0 6px 24px rgba(30,91,255,.35))}
+#es h2{font-size:17px;font-weight:650;color:var(--text);letter-spacing:.01em}
+#es p{font-size:13px;line-height:1.55}
+#es strong{color:var(--primary-text);font-weight:600}
+#es code{font-family:var(--font-mono);font-size:12px;color:var(--text-2)}
 
 /* toast */
 #toast{position:fixed;bottom:24px;right:24px;
-  background:#12121e;border:1px solid rgba(139,92,246,.3);border-radius:12px;
-  padding:14px 18px;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,.5);
+  background:var(--card);border:1px solid var(--line-strong);border-radius:var(--radius-lg);
+  padding:14px 18px;font-size:13px;box-shadow:var(--shadow);
   max-width:420px;line-height:1.5;z-index:9999;
   opacity:0;transform:translateY(16px);
   transition:opacity .25s ease,transform .25s ease;pointer-events:none}
 #toast.show{opacity:1;transform:translateY(0)}
-#toast.ok{border-color:rgba(52,211,153,.4);color:#34d399}
-#toast.err{border-color:rgba(248,113,113,.4);color:#f87171}
-#toast.warn{border-color:rgba(251,191,36,.45);color:#fbbf24}
+#toast.ok{border-color:rgba(52,211,153,.4);color:var(--ok)}
+#toast.err{border-color:rgba(248,113,113,.4);color:var(--danger)}
+#toast.warn{border-color:rgba(251,191,36,.45);color:var(--warn)}
 /* Errors and warnings stay until clicked, so a long message can be read in full. */
 #toast.show.err,#toast.show.warn{pointer-events:auto;cursor:pointer}
 
 /* unsaved-design banner: stays until the design is saved */
 #banner{display:none;flex-shrink:0;align-items:center;gap:10px;flex-wrap:wrap;
   padding:10px 16px;background:rgba(248,113,113,.1);
-  border-bottom:1px solid rgba(248,113,113,.45);color:#fecaca;font-size:13px;line-height:1.5}
+  border-bottom:1px solid rgba(248,113,113,.45);color:var(--danger-soft);font-size:13px;line-height:1.5}
 #banner.show{display:flex}
 #banner .bmsg{flex:1 1 320px;min-width:0;overflow-wrap:anywhere}
-#banner .bmsg strong{color:#f87171}
-.btn-warn{background:rgba(248,113,113,.14);border:1px solid rgba(248,113,113,.45);
-  border-radius:8px;color:#fecaca;padding:6px 14px;font-size:12px;font-weight:600;
+#banner .bmsg strong{color:var(--danger)}
+.btn-warn{display:inline-flex;align-items:center;gap:6px;
+  background:rgba(248,113,113,.14);border:1px solid rgba(248,113,113,.45);
+  border-radius:var(--radius);color:var(--danger-soft);padding:6px 14px;font-size:12px;font-weight:600;
   cursor:pointer;white-space:nowrap}
 .btn-warn:hover{background:rgba(248,113,113,.26)}
 
 /* field errors in the node inspector */
-.sinp.bad,.ssel.bad{border-color:#f87171;background:rgba(248,113,113,.08)}
-.ferr{color:#f87171;font-size:11px;line-height:1.45;margin:0 0 6px 12px;overflow-wrap:anywhere}
+.sinp.bad,.ssel.bad{border-color:var(--danger);background:rgba(248,113,113,.08)}
+.ferr{color:var(--danger);font-size:11px;line-height:1.45;margin:0 0 6px 12px;overflow-wrap:anywhere}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition:none!important;animation-duration:1.5s!important}
+}
 </style>
 </head>
 <body>
 
+<!-- Shared artwork: the ROS2 Inspector mark (dark-background variant) and toolbar icons. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="lg-frame-blue" x1="30" y1="30" x2="170" y2="170" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E5BFF"/><stop offset="1" stop-color="#36D6FF"/>
+    </linearGradient>
+    <linearGradient id="lg-frame-cyan" x1="340" y1="30" x2="482" y2="482" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#36D6FF"/><stop offset="1" stop-color="#1E5BFF"/>
+    </linearGradient>
+    <linearGradient id="lg-node" x1="220" y1="210" x2="360" y2="410" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E5BFF"/><stop offset="1" stop-color="#36D6FF"/>
+    </linearGradient>
+    <symbol id="logo-mark" viewBox="0 0 512 512">
+      <g fill="none" stroke="#36D6FF" stroke-linecap="round" stroke-linejoin="round" opacity=".12">
+        <path d="M362 30H450Q482 30 482 62V152M362 482H450Q482 482 482 450V360" stroke-width="36"/>
+        <path d="M255 247L396 217L330 400L255 247" stroke-width="21"/>
+      </g>
+      <circle cx="330" cy="400" r="42" fill="#36D6FF" opacity=".10"/>
+      <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="18">
+        <path d="M150 30H62Q30 30 30 62V152" stroke="url(#lg-frame-blue)"/>
+        <path d="M362 30H450Q482 30 482 62V152" stroke="url(#lg-frame-cyan)"/>
+        <path d="M30 360V450Q30 482 62 482H150" stroke="url(#lg-frame-blue)"/>
+        <path d="M362 482H450Q482 482 482 450V360" stroke="url(#lg-frame-cyan)"/>
+      </g>
+      <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="7">
+        <path d="M111 220L255 247M111 220L155 335L255 247M255 247L274 102M255 247L396 217" stroke="#1E5BFF"/>
+        <path d="M255 247L330 400M396 217L330 400" stroke="#36D6FF"/>
+      </g>
+      <circle cx="111" cy="220" r="36" fill="#0A1230" stroke="#1E5BFF" stroke-width="4"/>
+      <circle cx="155" cy="335" r="29" fill="#050B1F" stroke="#1E5BFF" stroke-width="4"/>
+      <circle cx="274" cy="102" r="29" fill="#1E5BFF"/>
+      <circle cx="396" cy="217" r="28" fill="none" stroke="#36D6FF" stroke-width="13"/>
+      <circle cx="330" cy="400" r="31" fill="#36D6FF"/>
+      <circle cx="255" cy="247" r="39" fill="url(#lg-node)"/>
+      <path d="M269 229A22 22 0 1 0 269 265" fill="none" stroke="#7FE5FF" stroke-width="10" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></symbol>
+    <symbol id="i-generate" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M16 21h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-export" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></symbol>
+  </defs>
+</svg>
+
 <div id="tb">
-  <span class="brand">🤖 Package Designer</span>
+  <span class="brand" title="ROS2 Inspector · Package Designer">
+    <svg class="brand-mark" aria-hidden="true"><use href="#logo-mark"/></svg>
+    <span class="brand-name">ROS<b>2</b> Inspector</span>
+    <span class="brand-tag">Package Designer</span>
+  </span>
   <div class="sep"></div>
   <span class="tb-lbl">pkg:</span>
-  <input class="tb-inp" id="pn" value="my_package" spellcheck="false">
+  <input class="tb-inp" id="pn" value="my_package" spellcheck="false" aria-label="Package name">
   <div class="sep"></div>
-  <button class="btn" id="an">+ Add Node</button>
-  <button class="btn-save" id="sv">💾 Save</button>
-  <button class="btn-p" id="gb" disabled>↓ Generate All</button>
-  <button class="btn" id="fit" title="Bring the design back into view: centred when it fits, otherwise from its top-left node">⊡ Show all</button>
-  <span class="tb-hint">Click node to configure · Drag cyan handles to connect · Drag the background or scroll to pan · Ctrl+S to save</span>
+  <button class="btn" id="an"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span class="lbl">Add Node</span></button>
+  <button class="btn-save" id="sv"><svg class="ic" aria-hidden="true"><use href="#i-save"/></svg><span class="lbl">Save</span></button>
+  <button class="btn-p" id="gb" disabled><svg class="ic" aria-hidden="true"><use href="#i-generate"/></svg><span class="lbl">Generate All</span></button>
+  <button class="btn" id="fit" title="Bring the design back into view: centred when it fits, otherwise from its top-left node"><svg class="ic" aria-hidden="true"><use href="#i-fit"/></svg><span class="lbl">Show all</span></button>
+  <span class="tb-hint">Click a node to configure · Drag cyan handles to connect · Drag the background or scroll to pan · <kbd>Ctrl</kbd>+<kbd>S</kbd> to save</span>
 </div>
 
 <div id="banner" role="alert">
   <span class="bmsg" id="bmsg"></span>
-  <button class="btn-warn" id="bexp" title="Download the current design as JSON">⤓ Export design</button>
-  <button class="btn-warn" id="bretry">↻ Try saving again</button>
+  <button class="btn-warn" id="bexp" title="Download the current design as JSON"><svg class="ic" aria-hidden="true"><use href="#i-export"/></svg>Export design</button>
+  <button class="btn-warn" id="bretry"><svg class="ic" aria-hidden="true"><use href="#i-retry"/></svg>Try saving again</button>
 </div>
 
 <div id="pt"></div>
@@ -237,10 +389,10 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
       <svg id="svo" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <marker id="arr" markerWidth="8" markerHeight="8" refX="8" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L8,3 z" fill="#22d3ee"/>
+            <path d="M0,0 L0,6 L8,3 z" style="fill:var(--pub)"/>
           </marker>
           <marker id="arr-bad" markerWidth="8" markerHeight="8" refX="8" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L8,3 z" fill="#f87171"/>
+            <path d="M0,0 L0,6 L8,3 z" style="fill:var(--danger)"/>
           </marker>
         </defs>
         <g id="wh"></g>
@@ -252,8 +404,11 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
       </svg>
     </div>
     <div id="es">
-      <div class="big">⬡</div>
-      <p>Click <strong style="color:#a78bfa">+ Add Node</strong> to start designing</p>
+      <svg class="es-mark" aria-hidden="true"><use href="#logo-mark"/></svg>
+      <h2>Design your ROS 2 package</h2>
+      <p>Add nodes, give them topics, services and actions, then wire publishers to
+        subscribers. Generate writes a ready-to-build <code>ament_python</code> package.</p>
+      <p>Click <strong>Add Node</strong> to start designing</p>
     </div>
   </div>
 
@@ -268,6 +423,16 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
 <script>
 // ── constants ──────────────────────────────────────────────────────────────
 const NW=280, NH=44, CH=26, RH=40;
+
+// SVG presentation attributes cannot use var(), so the few colours drawn from script are read
+// once from the design tokens in the stylesheet, which stay the single source of truth.
+function cssToken(name){
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+const COL={
+  pub:cssToken('--pub'), pubRing:cssToken('--pub-ring'),
+  sub:cssToken('--sub'), card:cssToken('--card'), danger:cssToken('--danger'),
+};
 
 // Suggested interfaces; any other pkg/Type can be typed into the field.
 const IFACES=__INTERFACES_SLOT__;
@@ -526,7 +691,7 @@ function renderEdges(){
     const d=wirePath(p,fn,tn,sp.x+HR,sp.y,tp2.x-HR,tp2.y,lane);
     if(!d.includes(' C')) lane++;
     path.setAttribute('d',d);
-    path.setAttribute('stroke',ends&&ends.ok?'#22d3ee':'#f87171');
+    path.setAttribute('stroke',ends&&ends.ok?COL.pub:COL.danger);
     if(ends&&!ends.ok) path.setAttribute('stroke-dasharray','6 4');
     path.setAttribute('stroke-width','2');
     path.setAttribute('fill','none');
@@ -559,7 +724,7 @@ function renderHandles(){
   for(const node of p.nodes){
     node.publishers.forEach((pub,i)=>{
       const {x,y}=hp(node,'pub',i);
-      const c=makeHandle(x,y,'#22d3ee','#67e8f9');
+      const c=makeHandle(x,y,COL.pub,COL.pubRing,1.5);
       c.dataset.nid=node.id; c.dataset.tid=pub.id; c.dataset.side='pub';
       c.style.cursor='crosshair';
       c.addEventListener('mousedown',onHDown);
@@ -567,20 +732,21 @@ function renderHandles(){
     });
     node.subscribers.forEach((sub,i)=>{
       const {x,y}=hp(node,'sub',i);
-      const c=makeHandle(x,y,'#8b5cf6','#a78bfa');
+      // A ring, not a dot: subscribers differ from publishers in shape as well as colour.
+      const c=makeHandle(x,y,COL.card,COL.sub,2.5);
       c.dataset.nid=node.id; c.dataset.tid=sub.id; c.dataset.side='sub';
       HG.appendChild(c);
     });
   }
 }
 
-function makeHandle(x,y,fill,stroke){
+function makeHandle(x,y,fill,stroke,strokeWidth){
   const c=makeSVG('circle');
   c.setAttribute('cx',x); c.setAttribute('cy',y);
   c.setAttribute('r',String(HR));
   c.setAttribute('fill',fill);
   c.setAttribute('stroke',stroke);
-  c.setAttribute('stroke-width','1.5');
+  c.setAttribute('stroke-width',String(strokeWidth));
   c.style.pointerEvents='all';
   return c;
 }
@@ -653,7 +819,7 @@ function nodeHTML(nd){
       <div class="sc">${subs}</div>
       <div>${pubs}</div>
     </div>
-    <div style="padding:7px 10px;border-top:1px solid #1e293b;font-size:10px;color:#7c8aa0">
+    <div class="nfoot">
       Services ${serviceCount}/${clientCount} provider/client · Actions ${actionServerCount}/${actionClientCount} server/client
     </div>`;
 }
@@ -666,9 +832,9 @@ function renderSB(){
   const nd=p.nodes.find(n=>n.id===S.sel);
   if(!nd) return;
   SB.innerHTML=`
-    <div style="display:flex;align-items:center;justify-content:space-between">
+    <div class="shead">
       <span class="stit">Node Config</span>
-      <button onclick="closeSB()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:18px;line-height:1">×</button>
+      <button class="sb-close" onclick="closeSB()" title="Close" aria-label="Close node config">×</button>
     </div>
 
     <div>
@@ -678,8 +844,8 @@ function renderSB(){
 
     <div>
       <div class="srow">
-        <label class="slbl" style="margin:0">
-          <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#22d3ee;margin-right:5px;vertical-align:middle"></span>
+        <label class="slbl">
+          <span class="ldot" style="--c:var(--pub)"></span>
           Publishers
         </label>
         <button class="addb" onclick="addT('pub')">+ Add</button>
@@ -689,8 +855,8 @@ function renderSB(){
 
     <div>
       <div class="srow">
-        <label class="slbl" style="margin:0">
-          <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#a78bfa;margin-right:5px;vertical-align:middle"></span>
+        <label class="slbl">
+          <span class="ldot ring" style="--c:var(--sub)"></span>
           Subscribers
         </label>
         <button class="addb" onclick="addT('sub')">+ Add</button>
@@ -698,14 +864,14 @@ function renderSB(){
       <div id="ssubs">${tHTML(nd.subscribers,'sub')}</div>
     </div>
 
-    ${endpointSection('services','Service Providers',nd.services||[],SRVS,'#34d399')}
-    ${endpointSection('clients','Service Clients',nd.clients||[],SRVS,'#10b981')}
-    ${endpointSection('action_servers','Action Servers',nd.action_servers||[],ACTIONS,'#f472b6')}
-    ${endpointSection('action_clients','Action Clients',nd.action_clients||[],ACTIONS,'#ec4899')}
+    ${endpointSection('services','Service Providers',nd.services||[],SRVS,'var(--srv)')}
+    ${endpointSection('clients','Service Clients',nd.clients||[],SRVS,'var(--srv-client)')}
+    ${endpointSection('action_servers','Action Servers',nd.action_servers||[],ACTIONS,'var(--act)')}
+    ${endpointSection('action_clients','Action Clients',nd.action_clients||[],ACTIONS,'var(--act-client)')}
 
     <div class="shnote">
-      Drag from a <span style="color:#22d3ee">cyan handle ●</span> (publisher) to a
-      <span style="color:#a78bfa">violet handle ●</span> (subscriber) to wire topics.
+      Drag from a <span class="k-pub">cyan dot ●</span> (publisher) to a
+      <span class="k-sub">blue ring ○</span> (subscriber) to wire topics.
       Click an edge to remove it.
     </div>`;
 
@@ -725,14 +891,16 @@ function renderSB(){
 }
 
 function tHTML(topics,side){
-  const col=side==='pub'?'#22d3ee':'#a78bfa';
+  const dot=side==='pub'
+    ? '<span class="tdot" style="--c:var(--pub)"></span>'
+    : '<span class="tdot ring" style="--c:var(--sub)"></span>';
   const group=side==='pub'?'publishers':'subscribers';
-  if(!topics.length) return '<p style="color:#7c8aa0;font-size:12px;font-style:italic">None yet</p>';
+  if(!topics.length) return '<p class="none">None yet</p>';
   return topics.map(t=>`
     <div class="tc">
       <div class="tcr">
-        <span class="tdot" style="background:${col}"></span>
-        <input class="sinp${ferrFor(group,t.id)?' bad':''}" style="flex:1;padding:4px 8px;font-size:11px"
+        ${dot}
+        <input class="sinp${ferrFor(group,t.id)?' bad':''}"
           data-ep="${esc(group+'|'+t.id)}"
           value="${esc(t.name)}" spellcheck="false"
           onchange="updT(${jsa(side)},${jsa(t.id)},'name',this.value)" placeholder="/topic">
@@ -748,8 +916,8 @@ function tHTML(topics,side){
 function endpointSection(kind,label,endpoints,typeList,color){
   return `<div>
     <div class="srow">
-      <label class="slbl" style="margin:0">
-        <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>
+      <label class="slbl">
+        <span class="ldot" style="--c:${color}"></span>
         ${label}
       </label>
       <button class="addb" onclick="addEndpoint(${jsa(kind)})">+ Add</button>
@@ -759,12 +927,12 @@ function endpointSection(kind,label,endpoints,typeList,color){
 }
 
 function endpointHTML(kind,endpoints,typeList,color){
-  if(!endpoints.length) return '<p style="color:#7c8aa0;font-size:12px;font-style:italic">None yet</p>';
+  if(!endpoints.length) return '<p class="none">None yet</p>';
   return endpoints.map(t=>`
     <div class="tc">
       <div class="tcr">
-        <span class="tdot" style="background:${color}"></span>
-        <input class="sinp${ferrFor(kind,t.id)?' bad':''}" style="flex:1;padding:4px 8px;font-size:11px"
+        <span class="tdot" style="--c:${color}"></span>
+        <input class="sinp${ferrFor(kind,t.id)?' bad':''}"
           data-ep="${esc(kind+'|'+t.id)}"
           value="${esc(t.name)}" spellcheck="false"
           onchange="updEndpoint(${jsa(kind)},${jsa(t.id)},'name',this.value)" placeholder="/name">
@@ -1008,7 +1176,7 @@ document.addEventListener('mousemove',e=>{
   if(eDrag){
     const {x:tx,y:ty}=toWorld(e);
     TG.innerHTML=`<path d="${bez(eDrag.sx,eDrag.sy,tx,ty)}"
-      stroke="#22d3ee" stroke-width="1.5" fill="none"
+      stroke="${COL.pub}" stroke-width="1.5" fill="none"
       stroke-dasharray="6 4" opacity=".6"/>`;
   }
 });
@@ -1178,18 +1346,26 @@ window.addEventListener('beforeunload',e=>{
   if(JSON.stringify(snapshot())!==lastSaved){ e.preventDefault(); e.returnValue=''; }
 });
 
+// A toolbar button shows a spinner and a short label while its request runs.
+function setBusy(button,busy,label){
+  button.disabled=busy;
+  button.classList.toggle('busy',busy);
+  button.setAttribute('aria-busy',String(busy));
+  button.querySelector('.lbl').textContent=label;
+}
+
 // ── save ──────────────────────────────────────────────────────────────────
 async function saveState(){
   const state=snapshot();
   const sv=document.getElementById('sv');
-  sv.disabled=true; sv.textContent='⏳ Saving…';
+  setBusy(sv,true,'Saving…');
   try{
     const res=await fetch('/save',{
       method:'POST',
       headers:{'Content-Type':'application/json','X-ROS2Inspector-Token':SESSION_TOKEN},
       body:JSON.stringify(state),
     });
-    if(res.ok){ markSaved(); hideSaveProblem(); showToast('💾 Design saved.','ok'); }
+    if(res.ok){ markSaved(); hideSaveProblem(); showToast('✓ Design saved.','ok'); }
     else {
       const data=await res.json().catch(()=>({error:`HTTP ${res.status}`}));
       if(data.state_saved===false) showSaveProblem(data.state_error||data.error,false);
@@ -1198,7 +1374,7 @@ async function saveState(){
   }catch(err){
     showToast(`✗ ${err.message}`,'err');
   }finally{
-    sv.disabled=false; sv.textContent='💾 Save';
+    setBusy(sv,false,'Save');
   }
 }
 
@@ -1212,7 +1388,7 @@ GB.addEventListener('click',async()=>{
     return;
   }
   const payload=snapshot();
-  GB.disabled=true; GB.textContent='⏳ Generating…';
+  setBusy(GB,true,'Generating…');
   try{
     const res=await fetch('/generate',{
       method:'POST',
@@ -1244,7 +1420,7 @@ GB.addEventListener('click',async()=>{
   }catch(err){
     showToast(`✗ ${err.message}`,'err');
   }finally{
-    GB.disabled=false; GB.textContent='↓ Generate All';
+    setBusy(GB,false,'Generate All');
     renderAll();
   }
 });

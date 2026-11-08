@@ -787,3 +787,41 @@ def test_every_toolbar_button_is_reachable_on_a_phone(
         box = page.locator(button).bounding_box()
         assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= 390, button
     context.close()
+
+
+def test_designer_uses_the_ros2inspector_brand(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    # The logo mark, not an emoji, identifies the page in the toolbar and the browser tab.
+    expect(page.locator("#tb .brand use[href='#logo-mark']")).to_have_count(1)
+    expect(page.locator("#tb .brand-name")).to_have_text("ROS2 Inspector")
+    assert "🤖" not in page.content()
+    assert page.evaluate(
+        "document.querySelector('link[rel=icon]').href.startsWith('data:image/svg+xml')"
+    )
+    # Colours drawn from script come from the stylesheet's brand tokens.
+    tokens = page.evaluate(
+        "['--bg','--pub','--sub'].map(t=>getComputedStyle(document.documentElement)"
+        ".getPropertyValue(t).trim())"
+    )
+    assert tokens == ["#050b1f", "#36d6ff", "#7fa8ff"]
+    publisher = page.locator("#hg circle[data-side='pub']").first
+    subscriber = page.locator("#hg circle[data-side='sub']").first
+    expect(publisher).to_have_attribute("fill", "#36d6ff")
+    expect(page.locator("#eg path").first).to_have_attribute("stroke", "#36d6ff")
+    # Subscribers are rings: they differ from publishers in shape, not only in hue.
+    expect(subscriber).to_have_attribute("stroke", "#7fa8ff")
+    assert subscriber.get_attribute("fill") != subscriber.get_attribute("stroke")
+
+
+def test_busy_toolbar_button_keeps_its_icon_slot_and_restores_its_label(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.evaluate("setBusy(document.getElementById('sv'),true,'Saving…')")
+    expect(page.locator("#sv")).to_be_disabled()
+    expect(page.locator("#sv")).to_have_attribute("aria-busy", "true")
+    expect(page.locator("#sv .lbl")).to_have_text("Saving…")
+    page.evaluate("setBusy(document.getElementById('sv'),false,'Save')")
+    expect(page.locator("#sv")).to_be_enabled()
+    expect(page.locator("#sv .lbl")).to_have_text("Save")
+    expect(page.locator("#sv svg.ic")).to_be_visible()
