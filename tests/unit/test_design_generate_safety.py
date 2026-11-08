@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import textwrap
+import threading
+from collections.abc import Iterator
+from http.server import HTTPServer
 from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from rich.console import Console
 
 from ros2inspector.design import server as design_server
 from ros2inspector.design.codegen import (
@@ -17,8 +26,9 @@ from ros2inspector.design.codegen import (
     add_console_scripts,
     console_scripts,
 )
-from ros2inspector.design.server import STATE_FILE
-from tests.unit.test_design_server_http import _node, _pkg, _post, _state, server
+from ros2inspector.design.server import STATE_FILE, _make_handler
+from ros2inspector.design.ui import build_html
+from tests.unit.test_design_server_http import TOKEN, _node, _pkg, _post, _state, server
 
 __all__ = ["server"]
 
@@ -429,6 +439,30 @@ def test_rename_rejects_stale_console_script_with_custom_target(server: Any) -> 
     assert "talker = demo_pkg.talker:custom_main" in setup.read_text()
 
 
+@pytest.mark.parametrize(
+    "renamed_labels",
+    [("listener", "talker"), ("speaker", "talker")],
+    ids=["swap", "chain"],
+)
+def test_rename_reusing_an_old_label_keeps_edited_setup(
+    server: Any, renamed_labels: tuple[str, str]
+) -> None:
+    httpd, out = server
+    two = _pkg(nodes=[_node("talker", "n1"), _node("listener", "n2")])
+    assert _post(httpd, "/generate", _state(two))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(setup.read_text() + "# USER_EDIT_RETAINED\n")
+    first, second = renamed_labels
+    status, response = _post(
+        httpd, "/generate", _state(_pkg(nodes=[_node(first, "n1"), _node(second, "n2")]))
+    )
+    assert status == 200, response
+    text = setup.read_text()
+    assert f"'{first} = demo_pkg.{first}:main'" in text
+    assert f"'{second} = demo_pkg.{second}:main'" in text
+    assert "# USER_EDIT_RETAINED" in text
+
+
 def test_rename_preserves_foreign_package_launch_entries(server: Any) -> None:
     httpd, out = server
     assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
@@ -472,3 +506,186 @@ def test_scoped_launch_rename_refuses_unknown_package_identity() -> None:
     )
     with pytest.raises(ValueError, match="cannot be identified safely"):
         rename_launch_nodes(text, {"talker": "renamed"}, "demo_pkg")
+
+
+
+def test_scoped_launch_rename_passes_unidentified_nodes_it_does_not_rename() -> None:
+    from ros2inspector.design.source_edits import rename_launch_nodes
+
+    text = (
+        "from launch_ros.actions import Node\n"
+        "entries = [\n"
+        "    Node(package=pick(), executable='helper'),\n"
+        "    Node(executable='tool'),\n"
+        "    Node(package='demo_pkg', executable='talker', name='talker'),\n"
+        "]\n"
+    )
+    updated, started = rename_launch_nodes(text, {"talker": "renamed"}, "demo_pkg")
+    assert "Node(package=pick(), executable='helper')" in updated
+    assert "executable='renamed', name='renamed'" in updated
+    assert started == {"renamed"}
+
+
+def test_scoped_launch_rename_refuses_dynamic_managed_executable() -> None:
+    from ros2inspector.design.source_edits import rename_launch_nodes
+
+    text = (
+        "from launch_ros.actions import Node\n"
+        "from launch.substitutions import LaunchConfiguration\n"
+        "node = Node(package='demo_pkg', executable=LaunchConfiguration('bin'))\n"
+    )
+    with pytest.raises(ValueError, match="executable is not a literal"):
+        rename_launch_nodes(text, {"talker": "renamed"}, "demo_pkg")
+
+def test_launch_package_given_by_a_module_constant_is_recognised() -> None:
+    from ros2inspector.design.source_edits import rename_launch_nodes
+
+    text = (
+        "from launch_ros.actions import Node\n"
+        "PKG = 'demo_pkg'\n"
+        "OTHER = 'other_pkg'\n"
+        "REUSED = 'demo_pkg'\n"
+        "REUSED = 'other_pkg'\n"
+        "entries = [\n"
+        "    Node(package=PKG, executable='talker', name='talker'),\n"
+        "    Node(package=PKG, executable='listener'),\n"
+        "    Node(package=OTHER, executable='talker'),\n"
+        "    Node(package=REUSED, executable='helper'),\n"
+        "]\n"
+    )
+    updated, started = rename_launch_nodes(text, {"talker": "renamed"}, "demo_pkg")
+    assert "Node(package=PKG, executable='renamed', name='renamed')" in updated
+    assert "Node(package=OTHER, executable='talker')" in updated
+    assert started == {"renamed", "listener"}
+
+def test_script_rename_skips_entries_it_cannot_read_before_the_target() -> None:
+    from ros2inspector.design.source_edits import rename_script_entries
+
+    source = (
+        "from setuptools import setup\n"
+        "EXTRA = 'tool = demo_pkg.tool:main'\n"
+        "setup(entry_points={'console_scripts': [\n"
+        "    EXTRA,\n"
+        "    'not an entry',\n"
+        "    'talker=demo_pkg.talker:main',\n"
+        "]})\n"
+    )
+    updated = rename_script_entries(
+        source, {"talker = demo_pkg.talker:main": "renamed = demo_pkg.renamed:main"}
+    )
+    assert "'renamed = demo_pkg.renamed:main'" in updated
+    assert "EXTRA,\n    'not an entry'," in updated
+
+_LABELS = ("alpha", "beta", "gamma", "delta")
+
+
+@contextlib.contextmanager
+def _serving(out: Path) -> Iterator[HTTPServer]:
+    handler = _make_handler(
+        build_html(None, session_token=TOKEN), out, Console(quiet=True), session_token=TOKEN
+    )
+    httpd = HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+    )
+    thread.start()
+    try:
+        yield httpd
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+@settings(max_examples=25, deadline=None)
+@given(st.permutations(_LABELS).map(lambda labels: labels[:3]))
+def test_any_rename_mapping_keeps_edited_setup_registered(renamed: list[str]) -> None:
+    with tempfile.TemporaryDirectory() as tmp, _serving(Path(tmp)) as httpd:
+        out = Path(tmp)
+        before = [_node(label, f"n{i}") for i, label in enumerate(_LABELS[:3])]
+        assert _post(httpd, "/generate", _state(_pkg(nodes=before)))[0] == 200
+        setup = out / "demo_pkg/setup.py"
+        setup.write_text(setup.read_text() + "# USER_EDIT_RETAINED\n")
+        after = [_node(label, f"n{i}") for i, label in enumerate(renamed)]
+        status, response = _post(httpd, "/generate", _state(_pkg(nodes=after)))
+        assert status == 200, response
+        registered = console_scripts(setup.read_text())
+        assert registered is not None
+        assert set(renamed) <= registered
+        assert not (set(_LABELS[:3]) - set(renamed)) & registered
+
+
+def test_deleting_a_node_still_started_by_edited_files_is_refused(server: Any) -> None:
+    httpd, out = server
+    two = _pkg(nodes=[_node("talker", "n1"), _node("listener", "n2")])
+    assert _post(httpd, "/generate", _state(two))[0] == 200
+    for edited in ("demo_pkg/setup.py", "demo_pkg/launch/launch.py"):
+        path = out / edited
+        path.write_text(path.read_text() + "# USER_EDIT_RETAINED\n")
+    status, response = _post(httpd, "/generate", _state(_pkg(nodes=[_node("talker", "n1")])))
+    assert status == 409, response
+    assert "setup.py has your edits and still registers 'listener'" in response["error"]
+    assert "starts 'listener', whose node was deleted" in response["error"]
+    assert (out / "demo_pkg/demo_pkg/listener.py").is_file()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason="needs POSIX permissions as non-root"
+)
+def test_package_rename_into_read_only_directory_is_refused_before_moving(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    launch = out / "demo_pkg/launch/launch.py"
+    launch.write_text(launch.read_text() + "# USER_EDIT_RETAINED\n")
+    launch.parent.chmod(0o555)
+    try:
+        status, response = _post(httpd, "/generate", _state(_pkg(name="renamed_pkg")))
+    finally:
+        launch.parent.chmod(0o755)
+    assert status == 400, response
+    assert "demo_pkg/launch cannot be written" in response["error"]
+    assert (out / "demo_pkg").is_dir() and not (out / "renamed_pkg").exists()
+    assert "package='demo_pkg'" in launch.read_text()
+
+
+def test_topic_rename_warns_about_an_edited_node_module(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    module = out / "demo_pkg/demo_pkg/talker.py"
+    module.write_text(module.read_text() + "# USER_EDIT_RETAINED\n")
+    node = _node()
+    node["publishers"][0]["name"] = "/news"
+    status, response = _post(httpd, "/generate", _state(_pkg(nodes=[node])))
+    assert status == 200, response
+    expected = "talker.py has your edits and does not use '/news'"
+    assert any(expected in warning for warning in response["warnings"])
+
+
+def test_package_rename_warns_about_old_name_left_in_edited_files(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    launch = out / "demo_pkg/launch/launch.py"
+    launch.write_text(launch.read_text() + "SHARE = 'demo_pkg'\n")
+    status, response = _post(httpd, "/generate", _state(_pkg(name="renamed_pkg")))
+    assert status == 200, response
+    assert any("still names the package 'demo_pkg'" in w for w in response["warnings"])
+
+
+def test_rename_note_names_double_quoted_console_scripts(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    setup = out / "demo_pkg/setup.py"
+    setup.write_text(setup.read_text().replace("'", '"'))
+    status, response = _post(httpd, "/generate", _state(_pkg(nodes=[_node("renamed", "n1")])))
+    assert status == 200, response
+    assert "demo_pkg: registered renamed in your edited setup.py" in response["updated_in"]
+
+
+def test_regenerating_an_unchanged_design_touches_no_file(server: Any) -> None:
+    httpd, out = server
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    files = [path for path in out.rglob("*") if path.is_file()]
+    for path in files:
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    assert _post(httpd, "/generate", _state(_pkg()))[0] == 200
+    touched = [path.name for path in files if path.stat().st_mtime_ns != 1_000_000_000]
+    assert touched == []

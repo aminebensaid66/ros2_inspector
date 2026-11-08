@@ -732,3 +732,58 @@ def test_ambiguous_constructor_rename_shows_conflict(
     assert module.read_text() == source
     assert not module.with_name("camera_renamed.py").exists()
     shot(page, "designer-constructor-conflict")
+
+
+def test_private_publisher_rename_keeps_the_wire_connected(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.locator(".node").nth(0).click()  # camera_node feeds detector_node
+    _set_field(page, "#spubs .sinp", "~/image")
+    detector_sub = page.locator(".node").nth(1).locator(".tr.sub .tn")
+    expect(detector_sub).to_have_text("/camera_node/image")
+    expect(page.locator("#eg path[stroke='#f87171']")).to_have_count(0)
+
+    page.locator("#snm").fill("cam")
+    expect(detector_sub).to_have_text("/cam/image")
+    expect(page.locator("#eg path[stroke='#f87171']")).to_have_count(0)
+    page.click("#gb")
+    assert "file(s) written" in _toast(page, "ok")
+
+
+def test_wiring_a_private_publisher_uses_its_expanded_name(
+    page: Page, designer: dict[str, Any]
+) -> None:
+    _open(page, designer)
+    page.locator(".node").nth(0).click()
+    _set_field(page, "#spubs .sinp", "~/image")
+    page.keyboard.press("Escape")
+    page.locator(".node").nth(1).click()
+    page.locator("#sb .addb").nth(1).click()  # second subscriber on detector_node
+    _set_field(page, "#ssubs .sinp >> nth=1", "/other")
+    _set_field(page, "#ssubs .ssel >> nth=1", "sensor_msgs/Image")
+    _drag(page, "#hg circle[data-side='pub'] >> nth=0", "#hg circle[data-side='sub'] >> nth=1")
+    assert "→ /camera_node/image" in _toast(page, "ok")
+    expect(page.locator("#ssubs .sinp").nth(1)).to_have_value("/camera_node/image")
+    expect(page.locator("#eg path[stroke='#f87171']")).to_have_count(0)
+
+
+def test_design_wide_errors_have_no_blank_location(page: Page, designer: dict[str, Any]) -> None:
+    _open(page, designer)
+    text = page.evaluate(
+        "errorText({fields:[{path:'',message:'package names must be unique'}]},{})"
+    )
+    assert text == "package names must be unique"
+
+
+def test_every_toolbar_button_is_reachable_on_a_phone(
+    browser: Any, designer: dict[str, Any]
+) -> None:
+    context = browser.new_context(viewport={"width": 390, "height": 800})
+    page = context.new_page()
+    _open(page, designer)
+    assert page.evaluate("document.documentElement.scrollWidth") <= 390
+    for button in ("#an", "#sv", "#gb", "#fit"):
+        box = page.locator(button).bounding_box()
+        assert box is not None and box["x"] >= 0 and box["x"] + box["width"] <= 390, button
+    context.close()

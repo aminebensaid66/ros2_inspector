@@ -14,6 +14,7 @@ from typing import Any
 from jinja2 import Environment, StrictUndefined
 
 from ros2inspector.design.models import (
+    _ENDPOINT_ROLES,
     EndpointSpec,
     InterfaceKind,
     NodeSpec,
@@ -545,10 +546,14 @@ def _write_marker(package_dir: Path, files: dict[str, str], nodes: dict[str, str
         "files": files,
         "nodes": nodes,
     }
-    _write_atomic(
-        package_dir / _GENERATED_MARKER,
-        (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-    )
+    path = package_dir / _GENERATED_MARKER
+    data = (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        if path.read_bytes() == data:
+            return  # unchanged: a no-op regenerate touches nothing
+    except OSError:
+        pass
+    _write_atomic(path, data)
 
 
 def _console_scripts_list(tree: ast.AST) -> ast.List | None:
@@ -698,6 +703,12 @@ def plan_package_edits(
         for node in package.nodes
         if previous_nodes.get(node.id) not in (None, node.label)
     }
+    # Deleted nodes whose module goes away with them; an edited module is kept and still runs.
+    deleted = sorted(
+        label
+        for label in set(previous_nodes.values()) - set(labels) - set(renamed)
+        if not edited(f"{pkg}/{label}.py")
+    )
     for old, new in renamed.items():
         old_rel, new_rel = f"{pkg}/{old}.py", f"{pkg}/{new}.py"
         if not edited(old_rel):
@@ -739,6 +750,27 @@ def plan_package_edits(
         plan.patched[new_rel] = updated
         plan.notes.append(f"moved your edited {old_rel} to {new_rel}")
 
+    # An edited node module is kept as it is, so a topic renamed in the design does not reach
+    # it. Say so rather than report a wire the running code no longer has.
+    for node in package.nodes:
+        module_rel = f"{pkg}/{node.label}.py"
+        module = plan.patched.get(module_rel)
+        if module is None and edited(module_rel):
+            module = text_of(module_rel)
+        if module is None:
+            continue
+        stale = [
+            endpoint.name
+            for group, _ in _ENDPOINT_ROLES
+            for endpoint in getattr(node, group)
+            if f"'{endpoint.name}'" not in module and f'"{endpoint.name}"' not in module
+        ]
+        if stale:
+            plan.warnings.append(
+                f"{module_rel} has your edits and does not use "
+                f"{', '.join(repr(name) for name in stale)}; update it to match the design."
+            )
+
     entries = {label: f"{label} = {pkg}.{label}:main" for label in labels}
     registered: set[str] | None = set(labels)
     if edited("setup.py"):
@@ -754,7 +786,13 @@ def plan_package_edits(
                 plan.problems.append(
                     f"setup.py has your edits; update console_scripts by hand: {exc}."
                 )
-        changed = sorted(new for old, new in renamed.items() if repr(entries[new]) in setup_text)
+        # Compare parsed targets: the entry may be written with either quote style.
+        script_targets = console_script_targets(setup_text) or {}
+        changed = sorted(
+            new
+            for new in renamed.values()
+            if script_targets.get(new) == [entries[new].partition("=")[2].strip()]
+        )
         registered = console_scripts(setup_text) if original is not None else None
         missing = [
             entry
@@ -788,6 +826,10 @@ def plan_package_edits(
                     )
         if targets is not None:
             for previous_label in renamed:
+                # A swap or chain gives the old executable name to another node; its
+                # registration was already checked against that node's target above.
+                if previous_label in entries:
+                    continue
                 dangling = [
                     target for target in targets.get(previous_label, [])
                     if target.startswith(f"{pkg}.{previous_label}:")
@@ -797,6 +839,13 @@ def plan_package_edits(
                         f"setup.py still registers the obsolete executable "
                         f"{previous_label!r} pointing at the renamed module. "
                         "Update this console_scripts entry before regenerating."
+                    )
+            for gone in deleted:
+                if any(target.startswith(f"{pkg}.{gone}:") for target in targets.get(gone, [])):
+                    plan.problems.append(
+                        f"setup.py has your edits and still registers '{gone}', whose node was "
+                        "deleted, so its module is removed. Remove that console_scripts entry, "
+                        "or undo your edits so it can be regenerated."
                     )
         if original is not None and setup_text != original:
             plan.patched["setup.py"] = setup_text
@@ -820,6 +869,14 @@ def plan_package_edits(
                     f"{launch_rel} has your edits and starts '{executable}', which setup.py "
                     "does not register, so ros2 launch would fail. Update the launch file, or "
                     "undo your edits so it can be regenerated."
+                )
+        for gone in deleted:
+            # Without a registration the check above already refused it.
+            if gone in started and (registered is None or gone in registered):
+                plan.problems.append(
+                    f"{launch_rel} has your edits and starts '{gone}', whose node was deleted, "
+                    "so ros2 launch would fail. Remove that Node entry, or undo your edits so "
+                    "it can be regenerated."
                 )
         not_started = [label for label in labels if label not in started]
         if not_started:

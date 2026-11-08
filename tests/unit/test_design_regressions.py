@@ -358,7 +358,13 @@ def test_package_xml_declares_launch_dependencies() -> None:
     assert "packages=[package_name]" in files["setup.py"]
 
 
-@pytest.mark.parametrize("name", ["test", "tests", "rclpy", "launch", "std_msgs", "json", "class"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "test", "tests", "rclpy", "launch", "std_msgs", "json", "class",
+        "ament_cmake", "ament_python", "ament_pep257",
+    ],
+)
 def test_reserved_package_names_are_rejected(name: str) -> None:
     with pytest.raises(ValidationError):
         PackageSpec.model_validate(_pkg("p1", name))

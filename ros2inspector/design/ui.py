@@ -52,6 +52,14 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#c9d1d
   #tb{gap:8px;padding:0 10px}
   .tb-inp{width:120px}
 }
+/* Phones: wrap the toolbar onto a second row rather than push buttons off-screen. */
+@media (max-width:600px){
+  #tb{height:auto;min-height:52px;flex-wrap:wrap;row-gap:6px;padding:6px 10px}
+  .tb-lbl,.sep{display:none}
+  .tb-inp{flex:1 1 100%;width:auto}
+  .btn,.btn-save,.btn-p{padding:6px 9px}
+  #sb{width:min(300px,82vw)}
+}
 
 /* package tabs bar */
 #pt{height:40px;background:#0b0b19;border-bottom:1px solid rgba(139,92,246,.15);
@@ -703,7 +711,16 @@ function renderSB(){
 
   document.getElementById('snm').addEventListener('input',e=>{
     const n=pkg()&&pkg().nodes.find(x=>x.id===S.sel);
-    if(n){ n.label=e.target.value; renderAll(); }
+    if(!n) return;
+    // A private '~/' publisher moves with its node: keep the other nodes it feeds connected.
+    const p=pkg();
+    const wired=p.edges.filter(x=>x.fn===n.id&&x.tn!==n.id&&edgeEnds(p,x)?.ok);
+    n.label=e.target.value;
+    for(const x of wired){
+      const ends=edgeEnds(p,x);
+      if(ends&&!ends.ok) ends.sub.name=wiredName(ends.pub.name,n.label,ends.tn.label);
+    }
+    renderAll();
   });
 }
 
@@ -874,7 +891,9 @@ function updT(side,tid,field,value){
     for(const e of p.edges.filter(x=>x.fn===nd.id&&x.ft===tid)){
       const tn=p.nodes.find(n=>n.id===e.tn);
       const sub=tn&&tn.subscribers.find(x=>x.id===e.tt);
-      if(sub){ sub[field]=value; if(field==='name') checkName('subscribers',tn,sub); }
+      if(!sub) continue;
+      sub[field]=field==='name'?wiredName(value,nd.label,tn.label):value;
+      if(field==='name') checkName('subscribers',tn,sub);
     }
   }
   renderAll();
@@ -919,6 +938,11 @@ function expandedName(name,label){
   if(name.startsWith('/')) return name;
   if(name.startsWith('~/')) return '/'+label+'/'+name.slice(2);
   return '/'+name;
+}
+// The name a subscriber needs to hear a publisher: '~/x' is private to the publishing node,
+// so a subscriber on another node gets the expanded name instead of a '~/' of its own.
+function wiredName(name,fromLabel,toLabel){
+  return name.startsWith('~/')&&fromLabel!==toLabel?expandedName(name,fromLabel):name;
 }
 function nameLengthError(group,name,label){
   const action=group.startsWith('action_');
@@ -1007,9 +1031,10 @@ document.addEventListener('mouseup',e=>{
             showToast(`✗ Type mismatch: ${pub.msgType} → ${sub.msgType}. A wire needs the same type on both ends.`,'err');
             break outer;
           }
-          if(pub&&expandedName(pub.name,p.nodes.find(n=>n.id===eDrag.fn).label)!==expandedName(sub.name,nd.label)){
-            showToast(`Subscriber renamed ${sub.name} → ${pub.name} so the wire is a real connection.`,'ok');
-            sub.name=pub.name;
+          if(pub&&expandedName(pub.name,src.label)!==expandedName(sub.name,nd.label)){
+            const name=wiredName(pub.name,src.label,nd.label);
+            showToast(`Subscriber renamed ${sub.name} → ${name} so the wire is a real connection.`,'ok');
+            sub.name=name;
           }
           const dup=p.edges.some(x=>x.fn===eDrag.fn&&x.ft===eDrag.ft&&x.tn===nd.id&&x.tt===sub.id);
           if(!dup) p.edges.push({id:'e'+Date.now(),fn:eDrag.fn,ft:eDrag.ft,tn:nd.id,tt:sub.id});
@@ -1137,7 +1162,10 @@ function prettyPath(path,state){
 
 function errorText(data,state){
   const fields=(data&&data.fields)||[];
-  if(fields.length) return fields.map(x=>`${prettyPath(x.path,state)}: ${x.message}`).join('; ');
+  if(fields.length) return fields.map(x=>{
+    const where=prettyPath(x.path,state);
+    return where?`${where}: ${x.message}`:x.message;
+  }).join('; ');
   return (data&&data.error)||'Request failed.';
 }
 

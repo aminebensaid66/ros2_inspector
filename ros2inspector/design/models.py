@@ -80,6 +80,13 @@ RESERVED_PACKAGE_NAMES = frozenset(
         "std_srvs",
         "builtin_interfaces",
         "rosidl_runtime_py",
+        # Build and test tooling: a workspace package with one of these names overlays the
+        # system one, so colcon builds (and lints) everything against the wrong package.
+        "ament_cmake",
+        "ament_python",
+        "ament_copyright",
+        "ament_flake8",
+        "ament_pep257",
     }
     | {name for names in KNOWN_INTERFACES.values() for name in (n.split("/")[0] for n in names)}
     | set(sys.stdlib_module_names)

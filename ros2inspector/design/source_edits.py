@@ -5,6 +5,7 @@ import configparser
 import io
 import re
 import tokenize
+from collections import Counter
 from xml.parsers import expat
 
 import yaml
@@ -182,33 +183,55 @@ def _node_calls(tree: ast.AST) -> list[ast.Call]:
     return calls
 
 
+def _string_constants(tree: ast.AST) -> dict[str, str]:
+    """Module-level ``NAME = 'text'`` constants that are never assigned anywhere else."""
+    stores = Counter(
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    )
+    constants = {}
+    for statement in getattr(tree, "body", []):
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+            and stores[statement.targets[0].id] == 1
+        ):
+            constants[statement.targets[0].id] = statement.value.value
+    return constants
+
+
 def rename_launch_nodes(
     source: str, renamed: dict[str, str], package_name: str | None = None
 ) -> tuple[str, set[str]]:
     tree = _tree(source)
+    constants = _string_constants(tree)
     replacements = []
     started = set()
     for call in _node_calls(tree):
         keywords = {kw.arg: kw.value for kw in call.keywords}
         executable = keywords.get("executable")
         package = keywords.get("package")
+        # The package is a literal or a module constant such as PKG = 'my_pkg'; anything
+        # else cannot be identified.
+        if isinstance(package, ast.Constant) and isinstance(package.value, str):
+            package_value: str | None = package.value
+        elif isinstance(package, ast.Name):
+            package_value = constants.get(package.id)
+        else:
+            package_value = None
         # A foreign launch action does not belong to this managed package,
         # even when its executable is a dynamic expression.
-        if (
-            package_name is not None
-            and isinstance(package, ast.Constant)
-            and isinstance(package.value, str)
-            and package.value != package_name
-        ):
+        if package_name is not None and package_value not in (None, package_name):
             continue
         if not isinstance(executable, ast.Constant) or not isinstance(executable.value, str):
             raise ValueError("the managed launch Node executable is not a literal")
-        if package_name is not None and executable.value in renamed:
-            if not isinstance(package, ast.Constant) or not isinstance(package.value, str):
-                raise ValueError("the launch Node package cannot be identified safely")
-        if package_name is not None and (
-            not isinstance(package, ast.Constant) or package.value != package_name
-        ):
+        if package_name is not None and executable.value in renamed and package_value is None:
+            raise ValueError("the launch Node package cannot be identified safely")
+        if package_name is not None and package_value != package_name:
             continue
         result = renamed.get(executable.value, executable.value)
         if result != executable.value:

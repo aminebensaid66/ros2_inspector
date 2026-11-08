@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -125,6 +126,47 @@ def _sibling_import_problems(
     return problems
 
 
+def _unwritable_dirs(package_dir: Path, pending: dict[str, bytes]) -> list[str]:
+    """Directories a package rename writes into that cannot be written.
+
+    Edited files are rewritten after the package directory has moved, and that step cannot be
+    rolled back, so a read-only directory must refuse the rename before anything moves.
+    """
+    name = package_dir.name
+    targets = {package_dir, package_dir / "resource", package_dir / name}
+    targets.update((package_dir / relative).parent for relative in pending)
+    return sorted(
+        path.relative_to(package_dir.parent).as_posix()
+        for path in targets
+        if path.is_dir() and not os.access(path, os.W_OK)
+    )
+
+
+def _stale_package_names(renames: list[tuple[Path, Path]]) -> list[str]:
+    """Kept files that still name a renamed package in a string literal.
+
+    Run after regenerating: every generated file then uses the new name, so a quoted old name
+    is left in user code, e.g. ``get_package_share_directory('old')``, which fails at runtime.
+    """
+    warnings = []
+    for old_dir, new_dir in renames:
+        quoted = re.compile(rf"""(['"]){re.escape(old_dir.name)}\1""")
+        for path in sorted(new_dir.rglob("*")):
+            if path.suffix not in {".py", ".yaml", ".yml"} or path.is_symlink():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                continue
+            if quoted.search(text):
+                relative = path.relative_to(new_dir).as_posix()
+                warnings.append(
+                    f"{new_dir.name}: {relative} has your edits and still names the package "
+                    f"'{old_dir.name}'; change it to '{new_dir.name}'."
+                )
+    return warnings
+
+
 def _apply_renames(
     packages: list[dict[str, Any]],
     output_dir: Path,
@@ -141,7 +183,13 @@ def _apply_renames(
     if not moves:
         return []
     for old_dir, new_dir in moves:
-        package_name_edits(old_dir, old_dir.name, new_dir.name)
+        pending = package_name_edits(old_dir, old_dir.name, new_dir.name)
+        unwritable = _unwritable_dirs(old_dir, pending)
+        if unwritable:
+            raise PermissionError(
+                f"Cannot rename '{old_dir.name}' to '{new_dir.name}': "
+                f"{', '.join(unwritable)} cannot be written. Fix the permissions and try again."
+            )
         problems = _sibling_import_problems(output_dir, [(old_dir, new_dir)])
         if problems:
             raise ValueError(" ".join(problems))
@@ -275,6 +323,11 @@ def _save_state(output_dir: Path, state: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     state_path = output_dir / STATE_FILE
     data = json.dumps(state, indent=2, sort_keys=True).encode("utf-8")
+    try:
+        if state_path.read_bytes() == data:
+            return  # unchanged: leave the file (and its mtime) alone
+    except OSError:
+        pass
     fd, temp_name = tempfile.mkstemp(prefix=f".{STATE_FILE}.", suffix=".tmp", dir=output_dir)
     try:
         with os.fdopen(fd, "wb") as stream:
@@ -589,6 +642,7 @@ def _make_handler(
             # 4. Rename, then write. Save state on the way out so names never go stale.
             results: list[GenerateResult] = []
             renamed_in: list[str] = []
+            stale_names: list[str] = []
             try:
                 renamed_in = _apply_renames(package_payloads, self._out, old_state)
                 for path in renamed_in:
@@ -611,6 +665,9 @@ def _make_handler(
                     package_payload["_generated_name"] = package.pkg_name
                     results.append(result)
                     self._report(result)
+                stale_names = _stale_package_names(renames)
+                for warning in stale_names:
+                    self._con.print(f"  [yellow]warning:[/yellow] {warning}")
             except (OSError, ValueError, KeyError) as exc:
                 self._con.print(f"[red]✗ Error:[/red] {exc}")
                 state_error = self._try_save(payload)
@@ -637,7 +694,10 @@ def _make_handler(
                     ],
                     "renamed_in": renamed_in,
                     "updated_in": [f"{r.package}: {note}" for r in results for note in r.notes],
-                    "warnings": [f"{r.package}: {text}" for r in results for text in r.warnings],
+                    "warnings": [
+                        *(f"{r.package}: {text}" for r in results for text in r.warnings),
+                        *stale_names,
+                    ],
                     "state_saved": state_error is None,
                     "state_error": state_error,
                 },
