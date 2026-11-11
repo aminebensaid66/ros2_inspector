@@ -21,3 +21,7 @@ ros2inspector_graph.html
 .vscode/
 .idea/
 *.swp
+
+# Debian packaging outputs
+deb-out/
+deb-inputs/
