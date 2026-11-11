@@ -44,6 +44,18 @@ Run it once without keeping it installed:
 pipx run ros2inspector --help
 ```
 
+On Ubuntu 22.04, 24.04 or 26.04 (amd64 or arm64), you can install it with `apt` from the project's signed package repository. The package bundles its Python dependencies under `/opt/ros2inspector` and does not touch your system or ROS 2 Python packages:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://aminebensaid66.github.io/ros2inspector-apt/ros2inspector-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/ros2inspector.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/ros2inspector.gpg] https://aminebensaid66.github.io/ros2inspector-apt $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
+  | sudo tee /etc/apt/sources.list.d/ros2inspector.list
+sudo apt update
+sudo apt install ros2inspector
+```
+
 Inside an existing Python virtual environment, use `pip`:
 
 ```bash

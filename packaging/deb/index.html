@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ros2inspector apt repository</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; color: #1b1f24; background: #fff; }
+  pre { background: #f3f4f6; padding: 1rem; overflow-x: auto; border-radius: 6px; }
+  code { font-family: ui-monospace, monospace; font-size: 0.9em; }
+  @media (prefers-color-scheme: dark) { body { color: #e6e6e6; background: #0d1117; } pre { background: #161b22; } a { color: #58a6ff; } }
+</style>
+</head>
+<body>
+<h1>ros2inspector apt repository</h1>
+<p>Signed Ubuntu packages for <a href="https://github.com/aminebensaid66/ros2_inspector">ros2inspector</a>,
+built for Ubuntu 22.04 (jammy), 24.04 (noble) and 26.04 (resolute) on amd64 and arm64.
+The package bundles its Python dependencies and does not need ROS 2 to be installed.</p>
+<h2>Install</h2>
+<pre><code>sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL @REPO_URL@/ros2inspector-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/ros2inspector.gpg &gt; /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/ros2inspector.gpg] @REPO_URL@ $(. /etc/os-release &amp;&amp; echo "$VERSION_CODENAME") main" \
+  | sudo tee /etc/apt/sources.list.d/ros2inspector.list
+sudo apt update
+sudo apt install ros2inspector</code></pre>
+<h2>Remove</h2>
+<pre><code>sudo apt remove ros2inspector
+sudo rm /etc/apt/sources.list.d/ros2inspector.list /etc/apt/keyrings/ros2inspector.gpg</code></pre>
+</body>
+</html>

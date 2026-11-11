@@ -1,0 +1,178 @@
+name: Publish apt packages
+
+# Builds self-contained ros2inspector .deb packages for each supported Ubuntu release,
+# installs and smoke-tests them in a clean container, then publishes them to a signed
+# apt repository served by GitHub Pages from a separate repository.
+# One-time setup is described in RELEASING.md under "apt repository".
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - "packaging/deb/**"
+      - ".github/workflows/apt.yml"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the built packages to the apt repository"
+        type: boolean
+        default: false
+      revision:
+        description: "Debian revision (bump to re-publish the same upstream version)"
+        type: string
+        default: "1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apt-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Build wheel and pinned requirements
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Verify release tag matches package version
+        if: github.event_name == 'release'
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          if os.environ["RELEASE_TAG"] != f"v{version}":
+              raise SystemExit(f"Release tag {os.environ['RELEASE_TAG']!r} does not match v{version}")
+          PY
+      - name: Install build tools
+        run: python -m pip install --upgrade build uv
+      - name: Build wheel
+        run: python -m build --wheel --outdir deb-inputs
+      - name: Export hashed runtime requirements from uv.lock
+        run: uv export --frozen --no-dev --no-emit-project --format requirements-txt -o deb-inputs/requirements.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-inputs
+          path: deb-inputs/
+          if-no-files-found: error
+
+  build:
+    name: .deb ${{ matrix.dist.codename }} ${{ matrix.arch.name }}
+    needs: prepare
+    runs-on: ${{ matrix.arch.runner }}
+    container: ${{ matrix.dist.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        dist:
+          - { codename: jammy, image: "ubuntu:22.04" }
+          - { codename: noble, image: "ubuntu:24.04" }
+          - { codename: resolute, image: "ubuntu:26.04" }
+        arch:
+          - { name: amd64, runner: ubuntu-24.04 }
+          - { name: arm64, runner: ubuntu-24.04-arm }
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          # build-essential and python3-dev are only a fallback for wheels missing on a new Python.
+          apt-get install -y --no-install-recommends \
+            ca-certificates git python3 python3-venv python3-dev build-essential
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb-inputs
+          path: deb-inputs/
+      - name: Build package
+        run: |
+          packaging/deb/build-deb.sh \
+            --wheel deb-inputs/ros2inspector-*.whl \
+            --requirements deb-inputs/requirements.txt \
+            --revision "${{ inputs.revision || '1' }}" \
+            --out deb-out
+      - name: Install the package in a clean state and smoke-test it
+        run: |
+          rm -rf /opt/ros2inspector
+          apt-get install -y ./deb-out/*.deb
+          workspace="$PWD/tests/fixtures/workspaces/workspace_a"
+          cd /
+          ros2inspector --version
+          ros2inspector doctor --help > /dev/null
+          ros2inspector scan "$workspace" --format json > /tmp/scan.json
+          ros2inspector nodes -C "$workspace" --no-cache --format json > /tmp/nodes.json
+          /opt/ros2inspector/bin/python -c "from ros2inspector.static.cpp_parser import _CPP_LANG; from tree_sitter import Parser; assert Parser(_CPP_LANG).parse(b'class Example {};').root_node is not None"
+          apt-get remove -y ros2inspector
+          test ! -e /opt/ros2inspector
+          test ! -e /usr/bin/ros2inspector
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-${{ matrix.dist.codename }}-${{ matrix.arch.name }}
+          path: deb-out/*.deb
+          if-no-files-found: error
+
+  publish:
+    name: Publish to the apt repository
+    needs: build
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    environment:
+      name: apt
+      url: https://${{ github.repository_owner }}.github.io/${{ vars.APT_REPOSITORY_NAME || 'ros2inspector-apt' }}/
+    env:
+      APT_REPOSITORY: ${{ github.repository_owner }}/${{ vars.APT_REPOSITORY_NAME || 'ros2inspector-apt' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: source
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: deb-*-*
+          merge-multiple: true
+          path: debs/
+      - name: Check out the apt repository
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.APT_REPOSITORY }}
+          ssh-key: ${{ secrets.APT_REPO_DEPLOY_KEY }}
+          path: apt-repo
+      - name: Install apt-utils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends apt-utils
+      - name: Import signing key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::error::Set the APT_SIGNING_KEY secret (see RELEASING.md)."
+            exit 1
+          fi
+          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+          fpr="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')"
+          echo "APT_KEY_FPR=$fpr" >> "$GITHUB_ENV"
+      - name: Update and sign the repository
+        run: |
+          source/packaging/deb/update-apt-repo.sh --repo apt-repo --debs debs --key "$APT_KEY_FPR"
+          sed "s|@REPO_URL@|https://${{ github.repository_owner }}.github.io/${{ vars.APT_REPOSITORY_NAME || 'ros2inspector-apt' }}|g" \
+            source/packaging/deb/index.html > apt-repo/index.html
+      - name: Commit and push
+        working-directory: apt-repo
+        run: |
+          git config user.name "aminebensaid66"
+          git config user.email "143949159+aminebensaid66@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing new to publish."
+            exit 0
+          fi
+          git commit -m "Publish ros2inspector ${{ github.event.release.tag_name || github.sha }}"
+          git push
