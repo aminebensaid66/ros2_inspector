@@ -8,6 +8,17 @@ The current alpha ships eleven commands: `scan`, `packages`, `nodes`, `graph`, `
 
 **Website and documentation:** [ros2-inspector-theta.vercel.app](https://ros2-inspector-theta.vercel.app/)
 
+<p align="center">
+  <img src="docs/assets/ros2inspector-designer.gif" width="900" alt="The Package Designer: two nodes are added, a publisher is wired to a subscriber, and Generate writes a ready-to-build ament_python package">
+</p>
+
+**New in 0.2.0: the Package Designer.** Sketch nodes, wire publishers to subscribers, and generate an `ament_python` package that passes `colcon build` and `colcon test`:
+
+```bash
+pipx install ros2inspector
+ros2inspector design -o ~/ros2_ws/src
+```
+
 ## Features
 
 - Static node and endpoint discovery with Python AST and Tree-sitter C++ parsers
